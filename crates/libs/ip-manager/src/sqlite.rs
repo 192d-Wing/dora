@@ -1,6 +1,6 @@
 use std::{
     collections::HashSet,
-    net::{IpAddr, Ipv4Addr},
+    net::{IpAddr, Ipv6Addr},
     ops::RangeInclusive,
     str::FromStr,
     time::{Duration, SystemTime},
@@ -76,9 +76,21 @@ impl Storage for SqliteDb {
                 )
                 .await?)
             }
-            _ => {
-                panic!("ipv6 not yet implemented");
+            (IpAddr::V6(start), IpAddr::V6(end), IpAddr::V6(_network)) => {
+                let now = util::systime_epoch(SystemTime::now());
+                let (leased, _probate) = state.unwrap_or(IpState::Reserve).into();
+                Ok(util_v6::update_next_expired(
+                    &self.inner,
+                    now,
+                    id,
+                    &util_v6::to_bytes(start),
+                    &util_v6::to_bytes(end),
+                    util::systime_epoch(expires_at),
+                    leased,
+                )
+                .await?)
             }
+            _ => panic!("mixed v4/v6 address families in next_expired"),
         }
     }
 
@@ -86,8 +98,7 @@ impl Storage for SqliteDb {
     async fn insert_max_in_range(
         &self,
         range: RangeInclusive<IpAddr>,
-        // TODO should not mix Ip and Ipv4 in args
-        exclusions: &HashSet<Ipv4Addr>,
+        exclusions: &HashSet<IpAddr>,
         network: IpAddr,
         id: &[u8],
         expires_at: SystemTime,
@@ -140,9 +151,37 @@ impl Storage for SqliteDb {
                     Ok(None)
                 }
             }
-            _ => {
-                panic!("ipv6 not yet implemented");
+            (IpAddr::V6(start), IpAddr::V6(end), IpAddr::V6(network)) => {
+                let id = id.to_vec();
+                debug!("no expired v6 entries, finding start of range");
+                let mut conn = self.inner.begin().await?;
+                // find the highest allocated address in the range, then step to the
+                // next available one; if the range is empty, use its start
+                let ip = match util_v6::max_in_range(&mut conn, &util_v6::to_bytes(start), &util_v6::to_bytes(end)).await? {
+                    Some(State::Leased(cur) | State::Reserved(cur) | State::Probated(cur)) => {
+                        util_v6::inc_ip(cur.ip, IpAddr::V6(end), exclusions)
+                    }
+                    None => Some(IpAddr::V6(start)),
+                };
+                if let Some(IpAddr::V6(v6_ip)) = ip {
+                    util_v6::insert(
+                        &mut conn,
+                        &util_v6::to_bytes(v6_ip),
+                        &util_v6::to_bytes(network),
+                        &id,
+                        util::systime_epoch(expires_at),
+                        state.map(|s| s.into()),
+                    )
+                    .await?;
+                    conn.commit().await?;
+                    Ok(ip)
+                } else {
+                    debug!("unable to find start of v6 range");
+                    conn.rollback().await?;
+                    Ok(None)
+                }
             }
+            _ => panic!("mixed v4/v6 address families in insert_max_in_range"),
         }
     }
 
@@ -166,9 +205,17 @@ impl Storage for SqliteDb {
             )
             .await?
             .is_some()),
-            _ => {
-                panic!("ipv6 not yet implemented");
-            }
+            IpAddr::V6(ip) => Ok(util_v6::update_expired(
+                &self.inner,
+                &util_v6::to_bytes(ip),
+                id,
+                util::systime_epoch(expires_at),
+                util::systime_epoch(SystemTime::now()),
+                lease,
+                probation,
+            )
+            .await?
+            .is_some()),
         }
     }
 
@@ -195,8 +242,18 @@ impl Storage for SqliteDb {
                 )
                 .await
             }
-            _ => {
-                panic!("ipv6 not yet implemented");
+            IpAddr::V6(ip) => {
+                util_v6::update_unexpired(
+                    &self.inner,
+                    &util_v6::to_bytes(ip),
+                    id,
+                    util::systime_epoch(expires_at),
+                    util::systime_epoch(SystemTime::now()),
+                    lease,
+                    probation,
+                    new_id,
+                )
+                .await
             }
         }
     }
@@ -221,8 +278,16 @@ impl Storage for SqliteDb {
                 )
                 .await
             }
-            _ => {
-                panic!("ipv6 not yet implemented");
+            IpAddr::V6(ip) => {
+                util_v6::update_ip(
+                    &self.inner,
+                    &util_v6::to_bytes(ip),
+                    id,
+                    util::systime_epoch(expires_at),
+                    lease,
+                    probation,
+                )
+                .await
             }
         }
     }
@@ -243,9 +308,18 @@ impl Storage for SqliteDb {
                 let state = state.map(|s| s.into());
                 util::insert(&self.inner, ip, network, id, expires_at, state).await
             }
-            _ => {
-                panic!("ipv6 not yet implemented");
+            (IpAddr::V6(ip), IpAddr::V6(network)) => {
+                util_v6::insert(
+                    &self.inner,
+                    &util_v6::to_bytes(ip),
+                    &util_v6::to_bytes(network),
+                    id,
+                    util::systime_epoch(expires_at),
+                    state.map(|s| s.into()),
+                )
+                .await
             }
+            _ => panic!("mixed v4/v6 address families in insert"),
         }
     }
 
@@ -255,14 +329,18 @@ impl Storage for SqliteDb {
                 let ip = u32::from(ip) as i64;
                 util::find(&self.inner, ip).await
             }
-            IpAddr::V6(_ip) => {
-                panic!("ipv6 not yet implemented");
-            }
+            IpAddr::V6(ip) => util_v6::find(&self.inner, &util_v6::to_bytes(ip)).await,
         }
     }
 
     async fn get_id(&self, id: &[u8]) -> Result<Option<IpAddr>, Self::Error> {
-        util::find_by_id(&self.inner, id, util::systime_epoch(SystemTime::now())).await
+        // client identities are namespaced per family (v4 chaddr/opt-61 vs v6
+        // DUID+IAID); search the v4 table first, then the v6 table.
+        let now = util::systime_epoch(SystemTime::now());
+        if let Some(ip) = util::find_by_id(&self.inner, id, now).await? {
+            return Ok(Some(ip));
+        }
+        util_v6::find_by_id(&self.inner, id, now).await
     }
 
     async fn release_ip(&self, ip: IpAddr, id: &[u8]) -> Result<Option<ClientInfo>, Self::Error> {
@@ -271,9 +349,7 @@ impl Storage for SqliteDb {
                 let ip = u32::from(ip) as i64;
                 util::release_ip(&self.inner, ip, id).await
             }
-            IpAddr::V6(_ip) => {
-                panic!("ipv6 not yet implemented");
-            }
+            IpAddr::V6(ip) => util_v6::release_ip(&self.inner, &util_v6::to_bytes(ip), id).await,
         }
     }
 
@@ -286,8 +362,11 @@ impl Storage for SqliteDb {
                 conn.commit().await?;
                 Ok(())
             }
-            IpAddr::V6(_ip) => {
-                panic!("ipv6 not yet implemented");
+            IpAddr::V6(ip) => {
+                let mut conn = self.inner.begin().await?;
+                util_v6::delete(&mut conn, &util_v6::to_bytes(ip)).await?;
+                conn.commit().await?;
+                Ok(())
             }
         }
     }
@@ -309,8 +388,6 @@ impl Storage for SqliteDb {
 
 mod util {
     use std::net::Ipv4Addr;
-
-    use config::v4::NetRangeIter;
 
     use crate::State;
 
@@ -652,18 +729,19 @@ mod util {
         }))
     }
 
-    /// get the next IP between start and end, skipping any exclusions
-    pub fn inc_ip(start: IpAddr, end: IpAddr, exclusions: &HashSet<Ipv4Addr>) -> Option<IpAddr> {
+    /// get the next IP between start and end, skipping any exclusions.
+    /// `start` is the current max allocated address, so `nth(1)` returns the
+    /// next address after it (both v4 and v6).
+    pub fn inc_ip(start: IpAddr, end: IpAddr, exclusions: &HashSet<IpAddr>) -> Option<IpAddr> {
         match (start, end) {
-            (IpAddr::V4(ip), IpAddr::V4(end)) => {
-                NetRangeIter::new(ipnet::Ipv4AddrRange::new(ip, end), exclusions)
-                    .nth(1)
-                    .map(|ip| ip.into())
-            }
-            (IpAddr::V6(ip), IpAddr::V6(end)) => {
-                // TODO: handle exclusions v6
-                ipnet::IpAddrRange::from(ipnet::Ipv6AddrRange::new(ip, end)).nth(1)
-            }
+            (IpAddr::V4(ip), IpAddr::V4(end)) => ipnet::Ipv4AddrRange::new(ip, end)
+                .map(IpAddr::V4)
+                .filter(|ip| !exclusions.contains(ip))
+                .nth(1),
+            (IpAddr::V6(ip), IpAddr::V6(end)) => ipnet::Ipv6AddrRange::new(ip, end)
+                .map(IpAddr::V6)
+                .filter(|ip| !exclusions.contains(ip))
+                .nth(1),
             _ => None,
         }
     }
@@ -714,5 +792,470 @@ mod util {
             };
             into_clientinfo(info, cur.leased, cur.probation)
         }))
+    }
+}
+
+/// DHCPv6 storage helpers. Mirror the v4 `util` queries but operate on the
+/// `leases_v6` table where the address is a 16-byte BLOB. IA_NA addresses use
+/// `prefix_len = 128`; IA_PD prefixes (a later phase) will use other lengths.
+/// Because IPv6 octets are big-endian, SQLite's bytewise BLOB comparison
+/// matches numeric address ordering, so range queries and ORDER BY work directly.
+mod util_v6 {
+    use super::util::to_systime;
+    use super::*;
+    use crate::{ClientInfo, State};
+
+    /// IA_NA addresses are always a full /128
+    const PREFIX_LEN_NA: i64 = 128;
+
+    /// encode an IPv6 address to its 16-byte big-endian BLOB form
+    pub fn to_bytes(ip: Ipv6Addr) -> Vec<u8> {
+        ip.octets().to_vec()
+    }
+
+    /// decode a 16-byte BLOB back into an `IpAddr::V6`
+    pub fn from_bytes(b: &[u8]) -> IpAddr {
+        let mut octets = [0u8; 16];
+        let n = b.len().min(16);
+        octets[..n].copy_from_slice(&b[..n]);
+        IpAddr::V6(Ipv6Addr::from(octets))
+    }
+
+    // step to the next address is family-neutral; reuse the shared helper
+    pub use super::util::inc_ip;
+
+    fn into_clientinfo(info: ClientInfo, leased: bool, probation: bool) -> State {
+        if leased {
+            State::Leased(info)
+        } else if probation {
+            State::Probated(info)
+        } else {
+            State::Reserved(info)
+        }
+    }
+
+    fn to_state(
+        addr: &[u8],
+        client_id: Option<Vec<u8>>,
+        network: &[u8],
+        expires_at: i64,
+        leased: bool,
+        probation: bool,
+    ) -> State {
+        let info = ClientInfo {
+            ip: from_bytes(addr),
+            id: client_id,
+            network: from_bytes(network),
+            expires_at: to_systime(expires_at),
+        };
+        into_clientinfo(info, leased, probation)
+    }
+
+    pub async fn insert<'a, E>(
+        conn: E,
+        addr: &[u8],
+        network: &[u8],
+        client_id: &[u8],
+        expires_at: i64,
+        state: Option<(bool, bool)>,
+    ) -> Result<(), sqlx::Error>
+    where
+        E: sqlx::Executor<'a, Database = Sqlite>,
+    {
+        let (leased, probation) = state.unwrap_or((false, false));
+        sqlx::query!(
+            r#"INSERT INTO leases_v6
+                (addr, prefix_len, client_id, expires_at, network, leased, probation)
+               VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)"#,
+            addr,
+            PREFIX_LEN_NA,
+            client_id,
+            expires_at,
+            network,
+            leased,
+            probation
+        )
+        .execute(conn)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn find(pool: &SqlitePool, addr: &[u8]) -> Result<Option<State>, sqlx::Error> {
+        Ok(sqlx::query!(
+            "SELECT * FROM leases_v6 WHERE addr = ?1 AND prefix_len = 128",
+            addr
+        )
+        .fetch_optional(pool)
+        .await?
+        .map(|cur| {
+            to_state(
+                &cur.addr,
+                cur.client_id,
+                &cur.network,
+                cur.expires_at,
+                cur.leased,
+                cur.probation,
+            )
+        }))
+    }
+
+    pub async fn find_by_id(
+        pool: &SqlitePool,
+        id: &[u8],
+        now: i64,
+    ) -> Result<Option<IpAddr>, sqlx::Error> {
+        Ok(sqlx::query!(
+            "SELECT addr FROM leases_v6
+             WHERE client_id = ?1 AND expires_at > ?2 AND prefix_len = 128
+             LIMIT 1",
+            id,
+            now
+        )
+        .fetch_optional(pool)
+        .await?
+        .map(|cur| from_bytes(&cur.addr)))
+    }
+
+    pub async fn delete<'a, E>(conn: E, addr: &[u8]) -> Result<(), sqlx::Error>
+    where
+        E: sqlx::Executor<'a, Database = Sqlite>,
+    {
+        sqlx::query!(
+            "DELETE FROM leases_v6 WHERE addr = ?1 AND prefix_len = 128",
+            addr
+        )
+        .execute(conn)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn release_ip(
+        pool: &SqlitePool,
+        addr: &[u8],
+        id: &[u8],
+    ) -> Result<Option<ClientInfo>, sqlx::Error> {
+        let mut trans = pool.begin().await?;
+        let cur = sqlx::query!(
+            "SELECT * FROM leases_v6 WHERE addr = ?1 AND client_id = ?2 AND prefix_len = 128",
+            addr,
+            id
+        )
+        .fetch_optional(&mut trans)
+        .await?
+        .map(|cur| ClientInfo {
+            ip: from_bytes(&cur.addr),
+            id: cur.client_id,
+            network: from_bytes(&cur.network),
+            expires_at: to_systime(cur.expires_at),
+        });
+        delete(&mut trans, addr).await?;
+        trans.commit().await?;
+        Ok(cur)
+    }
+
+    pub async fn max_in_range<'a, E>(
+        conn: E,
+        start: &[u8],
+        end: &[u8],
+    ) -> Result<Option<State>, sqlx::Error>
+    where
+        E: sqlx::Executor<'a, Database = Sqlite>,
+    {
+        Ok(sqlx::query!(
+            r#"SELECT * FROM leases_v6
+               WHERE prefix_len = 128 AND addr >= ?1 AND addr <= ?2
+               ORDER BY addr DESC LIMIT 1"#,
+            start,
+            end
+        )
+        .fetch_optional(conn)
+        .await?
+        .map(|cur| {
+            to_state(
+                &cur.addr,
+                cur.client_id,
+                &cur.network,
+                cur.expires_at,
+                cur.leased,
+                cur.probation,
+            )
+        }))
+    }
+
+    /// returns the first expired address in a range, or where the id matches
+    pub async fn update_next_expired<'a, E>(
+        conn: E,
+        now: i64,
+        id: &[u8],
+        start: &[u8],
+        end: &[u8],
+        expires_at: i64,
+        leased: bool,
+    ) -> Result<Option<IpAddr>, sqlx::Error>
+    where
+        E: sqlx::Executor<'a, Database = Sqlite>,
+    {
+        Ok(sqlx::query!(
+            r#"
+            UPDATE leases_v6
+            SET client_id = ?4, leased = ?5, expires_at = ?6, probation = FALSE
+            WHERE prefix_len = 128 AND addr IN
+               (
+                   SELECT addr FROM leases_v6
+                   WHERE prefix_len = 128
+                     AND (((expires_at < ?1) AND (addr >= ?2 AND addr <= ?3)) OR (client_id = ?4))
+                   ORDER BY addr LIMIT 1
+               )
+            RETURNING addr
+            "#,
+            now,
+            start,
+            end,
+            id,
+            leased,
+            expires_at,
+        )
+        .fetch_optional(conn)
+        .await?
+        .map(|cur| from_bytes(&cur.addr)))
+    }
+
+    /// updates an entry if the addr & id match and not expired
+    #[allow(clippy::too_many_arguments)]
+    pub async fn update_unexpired<'a, E>(
+        conn: E,
+        addr: &[u8],
+        client_id: &[u8],
+        expires_at: i64,
+        now: i64,
+        leased: bool,
+        probation: bool,
+        new_id: Option<&[u8]>,
+    ) -> Result<Option<IpAddr>, sqlx::Error>
+    where
+        E: sqlx::Executor<'a, Database = Sqlite>,
+    {
+        Ok(sqlx::query!(
+            r#"
+            UPDATE leases_v6
+            SET leased = ?4, expires_at = ?5, probation = ?6, client_id = ?7
+            WHERE prefix_len = 128 AND addr IN
+               (
+                    SELECT addr FROM leases_v6
+                    WHERE prefix_len = 128
+                      AND ((expires_at > ?1) AND (client_id = ?2) AND (addr = ?3))
+                    ORDER BY addr LIMIT 1
+               )
+            RETURNING addr
+            "#,
+            now,
+            client_id,
+            addr,
+            leased,
+            expires_at,
+            probation,
+            new_id
+        )
+        .fetch_optional(conn)
+        .await?
+        .map(|cur| from_bytes(&cur.addr)))
+    }
+
+    /// updates an entry if the addr & id match, or if expired and addr matches
+    pub async fn update_expired<'a, E>(
+        conn: E,
+        addr: &[u8],
+        client_id: &[u8],
+        expires_at: i64,
+        now: i64,
+        leased: bool,
+        probation: bool,
+    ) -> Result<Option<IpAddr>, sqlx::Error>
+    where
+        E: sqlx::Executor<'a, Database = Sqlite>,
+    {
+        Ok(sqlx::query!(
+            r#"
+            UPDATE leases_v6
+            SET client_id = ?2, leased = ?4, expires_at = ?5, probation = ?6
+            WHERE prefix_len = 128 AND addr IN
+               (
+                    SELECT addr FROM leases_v6
+                    WHERE prefix_len = 128
+                      AND ((client_id = ?2 AND addr = ?3) OR (expires_at < ?1 AND addr = ?3))
+                    ORDER BY addr LIMIT 1
+               )
+            RETURNING addr
+            "#,
+            now,
+            client_id,
+            addr,
+            leased,
+            expires_at,
+            probation
+        )
+        .fetch_optional(conn)
+        .await?
+        .map(|cur| from_bytes(&cur.addr)))
+    }
+
+    pub async fn update_ip<'a, E>(
+        conn: E,
+        addr: &[u8],
+        client_id: Option<&[u8]>,
+        expires_at: i64,
+        leased: bool,
+        probation: bool,
+    ) -> Result<Option<State>, sqlx::Error>
+    where
+        E: sqlx::Executor<'a, Database = Sqlite>,
+    {
+        Ok(sqlx::query!(
+            r#"
+            UPDATE leases_v6
+            SET client_id = ?2, expires_at = ?3, leased = ?4, probation = ?5
+            WHERE addr = ?1 AND prefix_len = 128
+            RETURNING *
+            "#,
+            addr,
+            client_id,
+            expires_at,
+            leased,
+            probation
+        )
+        .fetch_optional(conn)
+        .await?
+        .map(|cur| {
+            to_state(
+                &cur.addr,
+                cur.client_id,
+                &cur.network,
+                cur.expires_at,
+                cur.leased,
+                cur.probation,
+            )
+        }))
+    }
+}
+
+#[cfg(test)]
+mod v6_tests {
+    use std::collections::HashSet;
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+    use std::time::{Duration, SystemTime};
+
+    use super::SqliteDb;
+    use crate::{IpState, State, Storage};
+
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    fn v6(s: &str) -> IpAddr {
+        IpAddr::V6(s.parse::<Ipv6Addr>().unwrap())
+    }
+
+    /// mimics IpManager::reserve_first's two-step: try next_expired (or id
+    /// match), else insert the next available address in the range.
+    async fn alloc(
+        db: &SqliteDb,
+        range: &std::ops::RangeInclusive<IpAddr>,
+        excl: &HashSet<IpAddr>,
+        network: IpAddr,
+        id: &[u8],
+        expires_at: SystemTime,
+    ) -> Result<IpAddr, sqlx::Error> {
+        if let Some(ip) = db
+            .next_expired(range.clone(), network, id, expires_at, Some(IpState::Reserve))
+            .await?
+        {
+            return Ok(ip);
+        }
+        Ok(db
+            .insert_max_in_range(range.clone(), excl, network, id, expires_at, Some(IpState::Reserve))
+            .await?
+            .expect("range should have an available address"))
+    }
+
+    #[tokio::test]
+    async fn v6_insert_get_id_release() -> TestResult {
+        let db = SqliteDb::new("sqlite::memory:").await?;
+        let addr = v6("2001:db8:1::100");
+        let net = v6("2001:db8:1::");
+        let id: &[u8] = &[0xaa, 0xbb, 0xcc];
+        let exp = SystemTime::now() + Duration::from_secs(60);
+
+        db.insert(addr, net, id, exp, Some(IpState::Lease)).await?;
+
+        match db.get(addr).await? {
+            Some(State::Leased(info)) => {
+                assert_eq!(info.ip(), addr);
+                assert_eq!(info.id(), Some(id));
+                assert_eq!(info.network(), net);
+            }
+            other => panic!("expected Leased, got {other:?}"),
+        }
+        assert_eq!(db.get_id(id).await?, Some(addr));
+
+        let released = db.release_ip(addr, id).await?;
+        assert!(released.is_some(), "release should return prior info");
+        assert!(db.get(addr).await?.is_none(), "entry should be gone");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn v6_next_available_sequential_honors_exclusions() -> TestResult {
+        let db = SqliteDb::new("sqlite::memory:").await?;
+        let net = v6("2001:db8:1::");
+        let range = v6("2001:db8:1::100")..=v6("2001:db8:1::110");
+        let exp = SystemTime::now() + Duration::from_secs(60);
+        let mut excl = HashSet::new();
+        excl.insert(v6("2001:db8:1::101"));
+
+        // empty range -> start of range
+        assert_eq!(alloc(&db, &range, &excl, net, &[1], exp).await?, v6("2001:db8:1::100"));
+        // ::101 excluded -> ::102
+        assert_eq!(alloc(&db, &range, &excl, net, &[2], exp).await?, v6("2001:db8:1::102"));
+        // then ::103
+        assert_eq!(alloc(&db, &range, &excl, net, &[3], exp).await?, v6("2001:db8:1::103"));
+
+        // same id returns its existing address (idempotent via next_expired id-match)
+        assert_eq!(alloc(&db, &range, &excl, net, &[2], exp).await?, v6("2001:db8:1::102"));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn v6_reserve_then_lease_via_update_unexpired() -> TestResult {
+        let db = SqliteDb::new("sqlite::memory:").await?;
+        let addr = v6("2001:db8:1::100");
+        let net = v6("2001:db8:1::");
+        let id: &[u8] = &[9, 9, 9];
+        let exp = SystemTime::now() + Duration::from_secs(60);
+
+        // reserve (offer), then transition to lease (request/reply)
+        db.insert(addr, net, id, exp, Some(IpState::Reserve)).await?;
+        let leased = db
+            .update_unexpired(addr, IpState::Lease, id, exp, Some(id))
+            .await?;
+        assert_eq!(leased, Some(addr));
+        assert!(matches!(db.get(addr).await?, Some(State::Leased(_))));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn v4_and_v6_coexist_in_separate_tables() -> TestResult {
+        let db = SqliteDb::new("sqlite::memory:").await?;
+        let v4 = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 50));
+        let v4net = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 0));
+        let a6 = v6("2001:db8:1::100");
+        let n6 = v6("2001:db8:1::");
+        let exp = SystemTime::now() + Duration::from_secs(60);
+
+        db.insert(v4, v4net, &[1, 2, 3], exp, Some(IpState::Lease)).await?;
+        db.insert(a6, n6, &[4, 5, 6], exp, Some(IpState::Lease)).await?;
+
+        assert!(matches!(db.get(v4).await?, Some(State::Leased(i)) if i.ip() == v4));
+        assert!(matches!(db.get(a6).await?, Some(State::Leased(i)) if i.ip() == a6));
+        assert_eq!(db.get_id(&[4, 5, 6]).await?, Some(a6));
+        assert_eq!(db.get_id(&[1, 2, 3]).await?, Some(v4));
+        Ok(())
     }
 }

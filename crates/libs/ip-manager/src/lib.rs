@@ -26,7 +26,7 @@ pub mod sqlite;
 use core::fmt;
 use std::{
     collections::HashSet,
-    net::{IpAddr, Ipv4Addr},
+    net::IpAddr,
     ops::RangeInclusive,
     sync::{
         Arc,
@@ -119,8 +119,8 @@ pub trait Storage: Send + Sync + 'static {
     async fn insert_max_in_range(
         &self,
         range: RangeInclusive<IpAddr>,
-        // TODO not ipv4
-        exclusions: &HashSet<Ipv4Addr>,
+        // family-neutral: v4 or v6 addresses to skip
+        exclusions: &HashSet<IpAddr>,
         network: IpAddr,
         id: &[u8],
         expires_at: SystemTime,
@@ -289,6 +289,9 @@ where
     ) -> Result<IpAddr, IpError<T::Error>> {
         const MAX_ATTEMPTS: usize = 2;
         let subnet = network.subnet().into();
+        // family-neutral exclusion set for the storage layer
+        let exclusions: HashSet<IpAddr> =
+            range.exclusions().iter().map(|ip| IpAddr::V4(*ip)).collect();
         // unfortunately the sqlite connection is sometimes unreliable under high contention, meaning
         // we need to make a few attempts to get an address.
         let mut attempts = 0;
@@ -312,7 +315,7 @@ where
                     .store
                     .insert_max_in_range(
                         ip_range.clone(),
-                        range.exclusions(),
+                        &exclusions,
                         subnet,
                         id,
                         expires_at,
@@ -582,7 +585,7 @@ pub enum IpError<E> {
 
 #[cfg(test)]
 mod tests {
-    use std::net::{SocketAddr, SocketAddrV4};
+    use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 
     use super::*;
     use crate::sqlite::SqliteDb;
