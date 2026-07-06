@@ -19,7 +19,7 @@ tracing = { workspace = true, features = [
 chrono = "0.4.45"
 moka = { version = "0.12.15", features = ["future"] }
 # TODO: hopefully the rustls feature can go away, the lib requires it
-sqlx = { version = "0.5.13", features = [
+sqlx = { version = "0.6.3", features = [
     "sqlite",
     "runtime-tokio-rustls",
     "chrono",
