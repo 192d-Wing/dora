@@ -245,10 +245,7 @@ pub enum TsigError {
     #[error("failed to create TSigner {0:?}")]
     TSignerFailed(#[from] DnsSecError),
     #[error("invalid tsig key name {key_name:?}: {source:?}")]
-    InvalidKeyName {
-        key_name: String,
-        source: NameError,
-    },
+    InvalidKeyName { key_name: String, source: NameError },
 }
 
 pub fn tsigner(key_name: &str, config: &Ddns) -> Result<TSigner, TsigError> {

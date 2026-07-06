@@ -14,8 +14,6 @@ members = [
 resolver = "2"
 # default-members = ["bin"]
 
-edition = "2024"
-
 [workspace.dependencies]
 hickory-proto = { version = "0.25.2", default-features = false, features = [
     "dnssec-ring",

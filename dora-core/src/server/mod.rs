@@ -245,7 +245,10 @@ impl RunInner<v4::Message> {
         // bookkeeping stays consistent.
         let hlen = self.ctx.msg().hlen();
         if hlen as usize > 16 {
-            warn!(hlen, "dropping v4 message: hlen exceeds 16-byte chaddr field");
+            warn!(
+                hlen,
+                "dropping v4 message: hlen exceeds 16-byte chaddr field"
+            );
             self.service.run_post_response_handler(self.ctx).await;
             return Ok(());
         }
