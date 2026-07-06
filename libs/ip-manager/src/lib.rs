@@ -588,7 +588,6 @@ mod tests {
     use crate::sqlite::SqliteDb;
     use config::LeaseTime;
     use icmp_ping::{DEFAULT_TOKEN_SIZE, EchoReply};
-    use rand::Rng;
     use tracing_test::traced_test;
 
     type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
@@ -988,7 +987,7 @@ mod tests {
         // fill up range with new clients
         for range_ip in range.iter() {
             let client_id = (1..6)
-                .map(|_| rand::thread_rng().r#gen())
+                .map(|_| rand::random())
                 .collect::<Vec<u8>>();
             let expires_at = SystemTime::now() + Duration::from_secs(60);
             let ip = mgr
@@ -1028,7 +1027,7 @@ mod tests {
 
         // lease an IP
         let client_id = (1..6)
-            .map(|_| rand::thread_rng().r#gen())
+            .map(|_| rand::random())
             .collect::<Vec<u8>>();
         let expires_at = SystemTime::now() + Duration::from_secs(60);
         let ip = mgr
@@ -1051,7 +1050,7 @@ mod tests {
 
         // try a new client, should get the same IP
         let client_id = (1..6)
-            .map(|_| rand::thread_rng().r#gen())
+            .map(|_| rand::random())
             .collect::<Vec<u8>>();
         let expires_at = SystemTime::now() + Duration::from_secs(60);
         let _ip = mgr
@@ -1090,7 +1089,7 @@ mod tests {
 
         // lease an IP
         let client_id = (1..6)
-            .map(|_| rand::thread_rng().r#gen())
+            .map(|_| rand::random())
             .collect::<Vec<u8>>();
         let expires_at = SystemTime::now() + Duration::from_secs(60);
         let ip = mgr
@@ -1111,7 +1110,7 @@ mod tests {
 
         // try a new client, should skip probated IP
         let client_id = (1..6)
-            .map(|_| rand::thread_rng().r#gen())
+            .map(|_| rand::random())
             .collect::<Vec<u8>>();
         let expires_at = SystemTime::now() + Duration::from_secs(60);
         let _ip = mgr
@@ -1165,7 +1164,7 @@ mod tests {
         .await;
         // lease an IP
         let client_id = (1..6)
-            .map(|_| rand::thread_rng().r#gen())
+            .map(|_| rand::random())
             .collect::<Vec<u8>>();
         let expires_at = SystemTime::now() + Duration::from_secs(60);
         let _ip = mgr
@@ -1205,7 +1204,7 @@ mod tests {
 
         // lease an IP
         let client_id = (1..6)
-            .map(|_| rand::thread_rng().r#gen())
+            .map(|_| rand::random())
             .collect::<Vec<u8>>();
 
         assert!(mgr.lookup_id(&client_id).await.is_err());
