@@ -1,9 +1,9 @@
 # syntax=docker/dockerfile:1
 #
 # Multi-arch (linux/amd64, linux/arm64) build for dora.
-# Build with buildx/podman, e.g.:
-#   podman build -t dora .
-#   docker buildx build --platform linux/amd64,linux/arm64 -f Containerfile -t dora .
+# Build from the REPO ROOT (the build context needs the whole workspace), e.g.:
+#   podman build -f infra-build/Containerfile -t dora .
+#   docker buildx build --platform linux/amd64,linux/arm64 -f infra-build/Containerfile -t dora .
 #
 # The runtime base is the Iron Bank hardened UBI 10 image, which requires
 # authenticating to registry1.dso.mil first (see the CI `docker` job).
@@ -45,5 +45,5 @@ COPY --from=builder /usr/src/dora/target/${BUILD_MODE}/dora /usr/local/bin/dora
 
 RUN mkdir -p /var/lib/dora/
 
-COPY util/entrypoint.sh /entrypoint.sh
+COPY infra-build/entrypoint.sh /entrypoint.sh
 ENTRYPOINT ["/entrypoint.sh"]

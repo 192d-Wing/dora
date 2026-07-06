@@ -1,25 +1,25 @@
 # Creating a dora container image
 
-The build is defined in a [`Containerfile`](../Containerfile) (multi-arch:
-`linux/amd64` and `linux/arm64`). The runtime base is the Iron Bank hardened
-UBI 10 image, so you must first authenticate to `registry1.dso.mil`:
+The build is defined in [`infra-build/Containerfile`](../infra-build/Containerfile)
+(multi-arch: `linux/amd64` and `linux/arm64`). The runtime base is the Iron Bank
+hardened UBI 10 image, so you must first authenticate to `registry1.dso.mil`:
 
 ```sh
 podman login registry1.dso.mil   # or: docker login registry1.dso.mil
 ```
 
-After checking out the source, build the image. Podman finds the `Containerfile`
-automatically:
+After checking out the source, build the image **from the repo root** (the build
+context needs the whole workspace), pointing at the Containerfile:
 
 ```sh
-podman build -t dora .
+podman build -f infra-build/Containerfile -t dora .
 ```
 
-With Docker, point at the file explicitly (and use buildx for multi-arch):
+With Docker (use buildx for multi-arch):
 
 ```sh
-docker build -f Containerfile -t dora .
-docker buildx build --platform linux/amd64,linux/arm64 -f Containerfile -t dora .
+docker build -f infra-build/Containerfile -t dora .
+docker buildx build --platform linux/amd64,linux/arm64 -f infra-build/Containerfile -t dora .
 ```
 
 Next, create a `data` directory if it does not exist, and put `config.yaml` in it. This directory will be used to read the config and to store your leases database file.
