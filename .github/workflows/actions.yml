@@ -28,26 +28,22 @@ env:
   SQLX_OFFLINE: "true"
 
 jobs:
+  # `clippy` already compiles the whole workspace on stable and fails on any
+  # error, so a separate stable `cargo check` would be pure duplication. Keep a
+  # beta-only build as an early warning for upcoming-compiler breakage.
+  # (Add `continue-on-error: true` if you'd rather beta not gate merges.)
   check:
-    name: Check
+    name: Check (beta)
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        rust: [stable, beta]
     steps:
       - name: Checkout sources
         uses: actions/checkout@v7
 
       - name: Install toolchain
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: ${{ matrix.rust }}
+        uses: dtolnay/rust-toolchain@beta
 
       - name: Cache build
         uses: Swatinem/rust-cache@v2
-        with:
-          # keep stable/beta caches separate
-          key: ${{ matrix.rust }}
 
       - name: Run cargo check
         run: cargo check --all-features
@@ -65,11 +61,18 @@ jobs:
       - name: Cache build
         uses: Swatinem/rust-cache@v2
 
+      - name: Install nextest
+        uses: taiki-e/install-action@nextest
+
       - name: Allow ICMP socket creation
         run: sudo sysctl -w net.ipv4.ping_group_range="0 2147483647"
 
-      - name: Run cargo test
-        run: cargo test --all-features --exclude register_derive_impl --workspace
+      - name: Run tests
+        run: cargo nextest run --all-features --workspace --exclude register_derive_impl
+
+      # nextest does not run doctests, so run them separately to keep them covered
+      - name: Run doctests
+        run: cargo test --all-features --workspace --exclude register_derive_impl --doc
 
   fmt:
     name: Rustfmt
