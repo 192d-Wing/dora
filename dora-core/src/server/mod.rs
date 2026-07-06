@@ -237,6 +237,19 @@ impl RunInner<v4::Message> {
             .with_context(|| format!("can't find interface {ifindex}"))?;
         trace!(meta = ?self.ctx.meta(), ?interface, "received datagram");
 
+        // RFC 2131: `hlen` is the client hardware address length. `dhcproto`
+        // stores it verbatim and `chaddr()` returns `chaddr[..hlen]`, so an hlen
+        // greater than the 16-byte chaddr field would panic as soon as any
+        // handler reads the hardware address. No conforming client sends this --
+        // drop the message. Still run the post-response handler so the live-msg
+        // bookkeeping stays consistent.
+        let hlen = self.ctx.msg().hlen();
+        if hlen as usize > 16 {
+            warn!(hlen, "dropping v4 message: hlen exceeds 16-byte chaddr field");
+            self.service.run_post_response_handler(self.ctx).await;
+            return Ok(());
+        }
+
         let resp = match time::timeout(timeout, self.service.run_handlers(&mut self.ctx)).await {
             // WARNING: any use of `?` inside this block will return early and stop post_response from running
             Ok(Some(())) => {

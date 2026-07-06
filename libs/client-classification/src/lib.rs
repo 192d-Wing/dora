@@ -312,11 +312,16 @@ fn split(a: String, del: &str, n: usize) -> Val {
 }
 
 fn substring(s: &str, start: isize, j: Option<isize>) -> String {
+    // `get_pos` works in byte offsets, which may not fall on UTF-8 char
+    // boundaries for client-supplied option values. Indexing a `str` directly
+    // (`s[r]`) would panic in that case, so slice the underlying bytes (always
+    // in bounds per `get_pos`) and lossily rebuild the string instead.
+    let bytes = s.as_bytes();
     match get_pos(s.len(), start, j) {
         None => String::default(),
-        Some(SliceSubstr::To(r)) => s[r].to_owned(),
-        Some(SliceSubstr::From(r)) => s[r].to_owned(),
-        Some(SliceSubstr::Slice(r)) => s[r].to_owned(),
+        Some(SliceSubstr::To(r)) => String::from_utf8_lossy(&bytes[r]).into_owned(),
+        Some(SliceSubstr::From(r)) => String::from_utf8_lossy(&bytes[r]).into_owned(),
+        Some(SliceSubstr::Slice(r)) => String::from_utf8_lossy(&bytes[r]).into_owned(),
     }
 }
 

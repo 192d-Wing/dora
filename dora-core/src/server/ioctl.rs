@@ -18,6 +18,16 @@ pub fn arp_set(
     htype: v4::HType,
     chaddr: &[u8],
 ) -> io::Result<()> {
+    // `sa_data` in `sockaddr` is 14 bytes. A client-supplied hardware address
+    // longer than that cannot be represented in an ARP request, and copying it
+    // in would overflow the buffer. Reject instead of panicking; the caller
+    // falls back to broadcasting the response.
+    if chaddr.len() > 14 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "hardware address too long for ARP request",
+        ));
+    }
     let addr_in = libc::sockaddr_in {
         sin_family: libc::AF_INET as _,
         sin_port: v4::CLIENT_PORT.to_be(),
@@ -57,17 +67,17 @@ pub fn arp_set(
 }
 
 /// # Returns
-/// A zeroed out array of size `N` with all the `bytes` copied in.
+/// A zeroed out array of size `N` with up to the first `N` `bytes` copied in.
+/// If `bytes.len() > N` the extra bytes are ignored (truncated) rather than
+/// causing a panic.
 ///
 /// # Safety
 /// will create a new slice of `&[libc::c_char]` from the bytes.
-///
-/// # Panics
-/// if `bytes.len() > N`
 pub unsafe fn cpy_bytes<const N: usize>(bytes: &[u8]) -> [libc::c_char; N] {
     unsafe {
         let mut sa_data = [0; N];
-        let len = bytes.len();
+        // clamp so an oversized hardware address can never overflow `sa_data`
+        let len = bytes.len().min(N);
 
         sa_data[..len].copy_from_slice(std::slice::from_raw_parts(
             bytes.as_ptr() as *const libc::c_char,
