@@ -32,7 +32,7 @@ dhcproto = "0.14.0"
 futures = { version = "0.3", default-features = false, features = ["std"] }
 ipnet = { features = ["serde"], version = "2.12.0" }
 pnet = { features = ["serde", "std"], version = "0.34.0" }
-prometheus = "0.13.4"
+prometheus = "0.14.0"
 prometheus-static-metric = "0.5"
 tokio = { version = "1.52.3", features = ["full"] }
 tokio-util = { version = "0.7.18", features = ["codec", "net"] }
@@ -40,7 +40,7 @@ tracing = "0.1.44"
 tracing-futures = "0.2.5"
 tracing-subscriber = { features = ["env-filter", "json"], version = "0.3" }
 tracing-test = "0.2.6"
-thiserror = "1.0"
+thiserror = "2.0"
 rand = "0.8.6"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

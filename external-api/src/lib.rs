@@ -118,7 +118,10 @@ impl<S: Storage> ExternalApi<S> {
             .route("/v1/leases", routing::get(handlers::leases::<S>))
             .route("/config", routing::get(handlers::config))
             .layer(TraceLayer::new_for_http())
-            .layer(TimeoutLayer::new(Duration::from_secs(TIMEOUT)))
+            .layer(TimeoutLayer::with_status_code(
+                axum::http::StatusCode::REQUEST_TIMEOUT,
+                Duration::from_secs(TIMEOUT),
+            ))
             .layer(Extension(state))
             .layer(Extension(ip_mgr))
             .layer(Extension(cfg));
