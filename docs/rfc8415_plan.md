@@ -28,13 +28,17 @@ Bring the DHCPv6 side from **stateless-only** (Information-Request / Reply, RFC
 
 ## Current state (starting point)
 
+> **Note (codebase moved):** crates now live under `crates/` and the DHCP
+> library is the `usg-dhcproto` fork (0.17.1), package-renamed to `dhcproto` so
+> code still uses `dhcproto::`. Paths below reflect the `crates/` layout.
+
 | Component | Today | File |
 | --- | --- | --- |
-| v6 server + plugin chain | Boots; registers only `MsgType` | [bin/src/main.rs:95-105](../bin/src/main.rs#L95-L105) |
-| v6 message handling | `InformationRequest` only; stateful → `NoResponse` | [plugins/message-type/src/lib.rs:445-467](../plugins/message-type/src/lib.rs#L445-L467) |
-| v6 config | Interfaces, DUID/server-id, per-network options, valid/preferred times | [libs/config/src/v6.rs](../libs/config/src/v6.rs) |
-| v6 pools | **Missing** — `wire::v6::IpRange` defined but never wired into `Network` | [libs/config/src/wire/v6.rs:112-121](../libs/config/src/wire/v6.rs#L112-L121) |
-| IP storage | `IpAddr` interface, but v4-bound: `NetRange`, `HashSet<Ipv4Addr>`, `Icmpv4`, `ip INTEGER` | [libs/ip-manager/src/lib.rs](../libs/ip-manager/src/lib.rs) |
+| v6 server + plugin chain | Boots; registers only `MsgType` | [crates/bin/src/main.rs:95-105](../crates/bin/src/main.rs#L95-L105) |
+| v6 message handling | `InformationRequest` only; stateful → `NoResponse` | [crates/plugins/message-type/src/lib.rs:445-467](../crates/plugins/message-type/src/lib.rs#L445-L467) |
+| v6 config | Interfaces, DUID/server-id, per-network options, valid/preferred times | [crates/libs/config/src/v6.rs](../crates/libs/config/src/v6.rs) |
+| v6 pools | **Missing** — `wire::v6::IpRange` defined but never wired into `Network` | [crates/libs/config/src/wire/v6.rs:112-121](../crates/libs/config/src/wire/v6.rs#L112-L121) |
+| IP storage | `IpAddr` interface, but v4-bound: `NetRange`, `HashSet<Ipv4Addr>`, `Icmpv4`, `ip INTEGER` | [crates/libs/ip-manager/src/lib.rs](../crates/libs/ip-manager/src/lib.rs) |
 | Lease schema | One row per IP, `ip INTEGER`, keyed by `ip` — **128-bit v6 addr does not fit** | [migrations/20210824204854_initial.sql](../migrations/20210824204854_initial.sql) |
 
 ## Key design decisions
@@ -82,7 +86,7 @@ DUID+IAID and by pool range). Keep the existing v4 methods unchanged.
 ### 3. Unify the allocation layer up front (decided)
 
 `IpManager::reserve_first` is generic in name but concrete in v4 types
-([libs/ip-manager/src/lib.rs:282-289](../libs/ip-manager/src/lib.rs#L282-L289)):
+([crates/libs/ip-manager/src/lib.rs:282-289](../crates/libs/ip-manager/src/lib.rs#L282-L289)):
 `config::v4::NetRange`, `HashSet<Ipv4Addr>` exclusions, `Icmpv4`.
 
 **Decision: generalize the `IpManager` / `Storage` allocation layer to handle
@@ -153,10 +157,10 @@ Each phase is independently reviewable and leaves the tree building & green.
 
 ### Phase 6 — Integration, metrics, docs
 
-- v6 integration-test harness mirroring [bin/tests](../bin/tests) (Solicit→Reply,
-  Renew, Release, Rapid Commit, IA_PD).
+- v6 integration-test harness mirroring [crates/bin/tests](../crates/bin/tests)
+  (Solicit→Reply, Renew, Release, Rapid Commit, IA_PD).
 - Wire the already-defined v6 metrics counters
-  ([dora-core/src/server/context.rs:773-846](../dora-core/src/server/context.rs#L773-L846)).
+  ([crates/dora-core/src/server/context.rs:773-846](../crates/dora-core/src/server/context.rs#L773-L846)).
 - `example.yaml` v6 pool/pd examples; update
   [rfc_compliance.md](./rfc_compliance.md) status rows.
 
@@ -182,8 +186,12 @@ Each phase is independently reviewable and leaves the tree building & green.
   behaviorally unchanged; guard with regression tests before/after.
 - **v6 DAD** (decided in scope) — Neighbor Solicitation differs from v4 ICMP
   echo; adds an `Icmpv6`/NS path and generalizes the DAD hook over family.
-- **`dhcproto` 0.14** v6 IA/IAPrefix/StatusCode API surface to be confirmed
-  against the crate before Phase 3.
+- **`usg-dhcproto` 0.17.1** v6 API surface **confirmed**: `IANA{id,t1,t2,opts}`
+  and `IAPD{id,t1,t2,opts}` carry nested `IAAddr{addr,preferred_life,valid_life,opts}`
+  / `IAPrefix{prefix_len,prefix_ip,preferred_lifetime,valid_lifetime,opts}` inside
+  `opts`; `StatusCode{status,msg}` with `Status` consts (`NoAddrsAvail`,
+  `NoBinding`, `NotOnLink`, `NoPrefixAvail`, `UseMulticast`, …); `RapidCommit`
+  is a unit variant.
 - **Rebind server scope** — confirm desired behavior when multiple `dora`
   instances serve the same link (HA is a separate roadmap item).
 
