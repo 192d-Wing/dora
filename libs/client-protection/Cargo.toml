@@ -7,6 +7,6 @@ edition = "2024"
 
 [dependencies]
 config = { path = "../config" }
-governor = "0.5.1"
+governor = "0.10.4"
 tracing = { workspace = true }
-dashmap = "5.4.0"
+dashmap = "6.2.1"

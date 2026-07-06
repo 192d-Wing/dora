@@ -12,8 +12,10 @@ config = { path = "../../libs/config" }
 
 register_derive = { path = "../../libs/register_derive" }
 message-type = { path = "../message-type" }
+# needed directly because `#[instrument]` expands to absolute `::tracing::` paths
+tracing = { workspace = true }
 
 [dev-dependencies]
-serde_yaml = { workspace = true }
+yaml_serde = { workspace = true }
 tracing-test = { workspace = true }
 hex = "0.4"

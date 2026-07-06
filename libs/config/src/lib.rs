@@ -5,7 +5,6 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
-use rand::{self, RngCore};
 use serde::{Deserialize, Serialize};
 use tracing::debug;
 use wire::v6::ServerDuidInfo;
@@ -210,9 +209,9 @@ pub fn rebind(t: Duration) -> Duration {
 }
 
 pub fn generate_random_bytes(len: usize) -> Vec<u8> {
-    let mut ident = Vec::with_capacity(len);
-    rand::thread_rng().fill_bytes(&mut ident);
-    ident
+    // note: the previous impl called fill_bytes on a zero-length Vec and always
+    // returned an empty vec; produce `len` random bytes as intended.
+    (0..len).map(|_| rand::random::<u8>()).collect()
 }
 
 #[derive(Serialize, Deserialize, Debug, PartialEq, Eq, Clone)]

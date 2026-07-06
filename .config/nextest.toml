@@ -1,0 +1,24 @@
+# nextest runs every test in its own process, in parallel. A handful of the v6
+# config tests share a single on-disk server-id persistence file
+# (see libs/config/src/v6.rs), so running them concurrently races on that file
+# and corrupts it. Put them in a single-threaded group so they run one at a time
+# (they still run in parallel with the rest of the suite).
+#
+# The deeper fix is to give each of those tests its own persistence path; until
+# then this keeps the suite deterministic under nextest.
+# The dora-bin integration tests (bin/tests/basic.rs) all share the same network
+# namespace (`dora_test`), veth pair (`dhcpcli`/`dhcpsrv`), UDP port (9900) and
+# sqlite db (`basic.db`). They are written for serial execution (the harness
+# cleans up "leftover resources from previous failed tests"), so running them in
+# parallel processes under nextest races on that global OS state. Serialize them.
+[test-groups]
+v6-server-id = { max-threads = 1 }
+serial-integration = { max-threads = 1 }
+
+[[profile.default.overrides]]
+filter = 'package(config) & test(v6::tests::)'
+test-group = 'v6-server-id'
+
+[[profile.default.overrides]]
+filter = 'package(dora-bin)'
+test-group = 'serial-integration'

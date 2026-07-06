@@ -17,10 +17,10 @@ async-trait = { workspace = true }
 anyhow = { workspace = true }
 bytes = { workspace = true }
 chrono = "0.4"
-chrono-tz = "0.6"
+chrono-tz = "0.10"
 dhcproto = { workspace = true }
 futures = { workspace = true }
-lazy_static = "1.4"
+lazy_static = "1.5"
 tokio = { workspace = true }
 tokio-stream = "0.1"
 tokio-util = { workspace = true }
@@ -28,15 +28,15 @@ tracing = { workspace = true }
 tracing-futures = { workspace = true }
 tracing-subscriber = { workspace = true }
 hickory-proto = { workspace = true }
-pin-project = "1.0"
+pin-project = "1.1"
 prometheus = { workspace = true }
 prometheus-static-metric = { workspace = true }
 rand = { workspace = true }
 clap = { workspace = true }
 socket2 = { workspace = true }
-libc = "0.2.126"
+libc = "0.2.186"
 unix-udp-sock = "0.8.0"
 pnet = { workspace = true }
 
 [dev-dependencies]
-tokio-test = "0.4.1"
+tokio-test = "0.4.5"

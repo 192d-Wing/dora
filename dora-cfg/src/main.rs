@@ -80,12 +80,12 @@ fn parse_wire<T: DeserializeOwned>(args: &Args) -> Result<T> {
 
     Ok(match args.path.extension() {
         Some(ext) if ext == "json" => serde_json::from_str(&input)?,
-        Some(ext) if ext == "yaml" => serde_yaml::from_str(&input)?,
+        Some(ext) if ext == "yaml" => yaml_serde::from_str(&input)?,
         _ => match serde_json::from_str(&input) {
             Ok(r) => r,
             Err(_err) => {
                 println!("failed parsing from json, trying yaml");
-                serde_yaml::from_str(&input)?
+                yaml_serde::from_str(&input)?
             }
         },
     })

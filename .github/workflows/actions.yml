@@ -1,137 +1,130 @@
-# Based on https://github.com/actions-rs/meta/blob/master/recipes/msrv.md
-
-on: [push, pull_request]
+# CI for the dora workspace.
+#
+# The old `actions-rs/*` actions (toolchain@v1, cargo@v1) are archived and run
+# on the deprecated Node 12 runtime, so they emit warnings and will eventually
+# stop working. This workflow uses the maintained `dtolnay/rust-toolchain`,
+# runs cargo directly, and caches builds with `Swatinem/rust-cache`.
 
 name: Actions
 
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+# A branch push that also has an open PR would otherwise trigger two identical
+# runs. Scoping `push` to master (above) avoids that, and this cancels any
+# superseded in-progress run for the same ref to save CI minutes.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Least-privilege default token.
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  SQLX_OFFLINE: "true"
+
 jobs:
+  # `clippy` already compiles the whole workspace on stable and fails on any
+  # error, so a separate stable `cargo check` would be pure duplication. Keep a
+  # beta-only build as an early warning for upcoming-compiler breakage.
+  # (Add `continue-on-error: true` if you'd rather beta not gate merges.)
   check:
-    name: Check
+    name: Check (beta)
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        rust:
-          - stable
-          - beta
     steps:
       - name: Checkout sources
-        uses: actions/checkout@v2
+        uses: actions/checkout@v7
 
       - name: Install toolchain
-        uses: actions-rs/toolchain@v1
-        with:
-          toolchain: ${{ matrix.rust }}
-          override: true
+        uses: dtolnay/rust-toolchain@beta
+
+      - name: Cache build
+        uses: Swatinem/rust-cache@v2
 
       - name: Run cargo check
-        uses: actions-rs/cargo@v1
-        with:
-          command: check
-          args: --all-features
-        env:
-          SQLX_OFFLINE: true
+        run: cargo check --all-features
 
   test:
     name: Test Suite
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        rust:
-          - stable
     steps:
       - name: Checkout sources
-        uses: actions/checkout@v2
+        uses: actions/checkout@v7
 
       - name: Install toolchain
-        uses: actions-rs/toolchain@v1
-        with:
-          toolchain: ${{ matrix.rust }}
-          override: true
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install nextest
+        uses: taiki-e/install-action@nextest
 
       - name: Allow ICMP socket creation
         run: sudo sysctl -w net.ipv4.ping_group_range="0 2147483647"
 
-      - name: Run cargo test
-        id: test
-        run: cargo test --all-features --exclude register_derive_impl --workspace
-        env:
-          SQLX_OFFLINE: true
+      - name: Run tests
+        run: cargo nextest run --all-features --workspace --exclude register_derive_impl
+
+      # nextest does not run doctests, so run them separately to keep them covered
+      - name: Run doctests
+        run: cargo test --all-features --workspace --exclude register_derive_impl --doc
 
   fmt:
     name: Rustfmt
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        rust:
-          - stable
     steps:
       - name: Checkout sources
-        uses: actions/checkout@v2
+        uses: actions/checkout@v7
 
+      # rustfmt does not compile the crate, so no build cache is needed here.
       - name: Install toolchain
-        uses: actions-rs/toolchain@v1
+        uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: ${{ matrix.rust }}
-          override: true
-
-      - name: Install rustfmt
-        run: rustup component add rustfmt
+          components: rustfmt
 
       - name: Run cargo fmt
-        uses: actions-rs/cargo@v1
-        with:
-          command: fmt
-          args: --all -- --check
+        run: cargo fmt --all -- --check
 
   clippy:
     name: Clippy
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        rust:
-          - stable
     steps:
       - name: Checkout sources
-        uses: actions/checkout@v2
+        uses: actions/checkout@v7
 
       - name: Install toolchain
-        uses: actions-rs/toolchain@v1
+        uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: ${{ matrix.rust }}
-          override: true
+          components: clippy
 
-      - name: Install clippy
-        run: rustup component add clippy
+      - name: Cache build
+        uses: Swatinem/rust-cache@v2
 
       - name: Run cargo clippy
-        uses: actions-rs/cargo@v1
-        with:
-          command: clippy
-          args: -- -D warnings
-        env:
-          SQLX_OFFLINE: true
+        run: cargo clippy -- -D warnings
 
   coverage:
     name: Run coverage
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        rust:
-          - stable
     env:
       CARGO_INCREMENTAL: "0"
-      RUSTFLAGS: "-Ccodegen-units=1 -Copt-level=0 -Clink-dead-code -Coverflow-checks=off"
-      SQLX_OFFLINE: true
     steps:
       - name: Checkout sources
-        uses: actions/checkout@v2
+        uses: actions/checkout@v7
 
       - name: Install toolchain
-        uses: actions-rs/toolchain@v1
+        uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: ${{ matrix.rust }}
-          override: true
           components: llvm-tools-preview
+
+      - name: Cache build
+        uses: Swatinem/rust-cache@v2
+
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
 
@@ -139,19 +132,10 @@ jobs:
         run: sudo sysctl -w net.ipv4.ping_group_range="0 2147483647"
 
       - name: Generate code coverage
-        id: coverage
         run: cargo llvm-cov --all-features --exclude register_derive_impl --workspace --no-fail-fast --lcov --output-path lcov.info
-        env:
-          NODE_COVERALLS_DEBUG: true
-      # - name: Upload coverage to Codecov
-      #   uses: codecov/codecov-action@v3
-      #   with:
-      #     # token: ${{ secrets.CODECOV_TOKEN }} # not required for public repos
-      #     files: lcov.info
-      #     fail_ci_if_error: true
+
       - name: Coveralls upload
-        uses: coverallsapp/github-action@master
+        uses: coverallsapp/github-action@v2
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           path-to-lcov: lcov.info
-          debug: true

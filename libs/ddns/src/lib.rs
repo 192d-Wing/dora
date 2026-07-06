@@ -244,6 +244,8 @@ pub enum TsigError {
     KeyNotBase64(#[from] base64::DecodeError),
     #[error("failed to create TSigner {0:?}")]
     TSignerFailed(#[from] DnsSecError),
+    #[error("invalid tsig key name {key_name:?}: {source:?}")]
+    InvalidKeyName { key_name: String, source: NameError },
 }
 
 pub fn tsigner(key_name: &str, config: &Ddns) -> Result<TSigner, TsigError> {
@@ -257,11 +259,18 @@ pub fn tsigner(key_name: &str, config: &Ddns) -> Result<TSigner, TsigError> {
         .decode(key.data.as_bytes())
         .map_err(TsigError::KeyNotBase64)?;
 
+    // the key name must be a valid DNS name; surface a proper error rather than
+    // panicking on a misconfigured key name
+    let signer_name = Name::from_ascii(key_name).map_err(|source| TsigError::InvalidKeyName {
+        key_name: key_name.to_owned(),
+        source,
+    })?;
+
     // create new tsigner
     let signer = TSigner::new(
         key_bin,
         key.algorithm.clone(),
-        Name::from_ascii(key_name).unwrap(), // TODO: remove unwrap
+        signer_name,
         // ??
         300,
     )

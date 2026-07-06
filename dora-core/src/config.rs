@@ -12,8 +12,14 @@ pub mod cli {
     pub static DEFAULT_V4_ADDR: &str = "0.0.0.0:67"; // default dhcpv4 port is 67
     /// Default dhcpv6 addr
     pub static DEFAULT_V6_ADDR: &str = "[::]:547"; // default dhcpv6 port is 547
-    /// Default external api
-    pub static DEFAULT_EXTERNAL_API: &str = "[::]:3333";
+    /// Default external api.
+    ///
+    /// Binds to loopback only. The external API serves diagnostics endpoints
+    /// (including `/config` and `/v1/leases`) with no authentication, so it must
+    /// not be exposed on a routable interface by default. Operators who need
+    /// remote access can override `--external-api`/`EXTERNAL_API` and put an
+    /// authenticating proxy in front of it.
+    pub static DEFAULT_EXTERNAL_API: &str = "127.0.0.1:3333";
     /// Default channel size for mpsc chans
     pub const DEFAULT_CHANNEL_SIZE: usize = 10_000;
     /// Max live messages -- Changing this value will effect memory

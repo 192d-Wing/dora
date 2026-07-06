@@ -19,7 +19,9 @@ ip-manager = { path = "../../libs/ip-manager" }
 ddns = { path = "../../libs/ddns" }
 
 ipnet = { workspace = true }
+# needed directly because `#[instrument]` expands to absolute `::tracing::` paths
+tracing = { workspace = true }
 
 [dev-dependencies]
-serde_yaml = { workspace = true }
+yaml_serde = { workspace = true }
 tracing-test = { workspace = true }

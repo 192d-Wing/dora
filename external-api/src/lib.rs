@@ -118,7 +118,10 @@ impl<S: Storage> ExternalApi<S> {
             .route("/v1/leases", routing::get(handlers::leases::<S>))
             .route("/config", routing::get(handlers::config))
             .layer(TraceLayer::new_for_http())
-            .layer(TimeoutLayer::new(Duration::from_secs(TIMEOUT)))
+            .layer(TimeoutLayer::with_status_code(
+                axum::http::StatusCode::REQUEST_TIMEOUT,
+                Duration::from_secs(TIMEOUT),
+            ))
             .layer(Extension(state))
             .layer(Extension(ip_mgr))
             .layer(Extension(cfg));
@@ -281,10 +284,38 @@ mod handlers {
         // TODO: if serializing worked we could get DhcpConfig back into JSON/YAML but there's
         // a lot of logic left to make that particular transform. So just read from disk
         let path = cfg.path().context("no path specified for config")?;
-        let cfg = tokio::fs::read_to_string(path)
+        let raw = tokio::fs::read_to_string(path)
             .await
             .with_context(|| format!("failed to find config at {}", path.display()))?;
-        Ok(axum::Json(cfg))
+        // SECURITY: the config file contains DDNS TSIG key material. This endpoint
+        // is unauthenticated, so the raw file must never be returned. Parse it into
+        // the typed wire config, blank out every secret, and re-serialize. If it
+        // cannot be parsed we return an error rather than risk leaking secrets.
+        let redacted = redact_config(&raw).context("failed to render config for display")?;
+        Ok(axum::Json(redacted))
+    }
+
+    /// Value substituted for any secret we strip out of the config before display.
+    const REDACTED: &str = "**REDACTED**";
+
+    /// Parse `raw` (YAML or JSON) into the typed wire config, replace all TSIG key
+    /// material with [`REDACTED`], and re-serialize to YAML. Returns `Err` if the
+    /// config cannot be parsed/serialized so a failure can never fall back to
+    /// echoing the raw (secret-bearing) file.
+    pub(crate) fn redact_config(raw: &str) -> anyhow::Result<String> {
+        // Mirror the server's own loader (config::DhcpConfig::new), which tries
+        // JSON first and then YAML. yaml_serde alone is not enough: it rejects
+        // some inputs serde_json accepts (e.g. tab-indented JSON), which would
+        // make /config return 500 for a JSON config that otherwise boots fine.
+        let mut cfg: config::wire::Config = serde_json::from_str(raw)
+            .or_else(|_| yaml_serde::from_str(raw))
+            .context("could not parse config")?;
+        if let Some(ddns) = cfg.ddns.as_mut() {
+            for key in ddns.tsig_keys.values_mut() {
+                key.data = REDACTED.to_string();
+            }
+        }
+        yaml_serde::to_string(&cfg).context("could not serialize redacted config")
     }
 
     pub(crate) async fn metrics() -> ServerResult<impl IntoResponse> {
@@ -460,6 +491,70 @@ mod tests {
     use ip_manager::sqlite::SqliteDb;
 
     use super::*;
+
+    // The /config endpoint is unauthenticated, so it must never leak the DDNS
+    // TSIG secret. Verify the key material is stripped and the reservation
+    // `match:` map form (which yaml_serde would otherwise reject) round-trips.
+    #[test]
+    fn test_redact_config_strips_tsig_secret() {
+        let raw = r#"
+ddns:
+  enable_updates: true
+  forward: []
+  reverse: []
+  tsig_keys:
+    key_foo:
+      algorithm: hmac-sha256
+      data: "SUPERSECRETKEYMATERIAL=="
+networks:
+  192.168.0.0/24:
+    ranges:
+      - start: 192.168.0.100
+        end: 192.168.0.200
+        options:
+          values: {}
+        config:
+          lease_time:
+            default: 3600
+    reservations:
+      - ip: 192.168.0.50
+        match:
+          chaddr: aa:bb:cc:dd:ee:ff
+        options:
+          values: {}
+"#;
+        let out = crate::handlers::redact_config(raw).expect("redact should succeed");
+        assert!(
+            !out.contains("SUPERSECRETKEYMATERIAL"),
+            "TSIG secret leaked into /config output:\n{out}"
+        );
+        assert!(out.contains("**REDACTED**"), "expected redaction marker");
+        // the redacted output must still be a valid config (reservation match
+        // map form preserved, not converted to a `!chaddr` tag)
+        yaml_serde::from_str::<config::wire::Config>(&out)
+            .expect("redacted config should re-parse");
+    }
+
+    // The server accepts JSON configs (and tries JSON before YAML at startup),
+    // so /config must redact a JSON config too. Tab indentation is valid JSON
+    // but invalid YAML, so this also guards the yaml-only-parse regression.
+    #[test]
+    fn test_redact_config_accepts_json() {
+        let raw = "{\n\t\"ddns\": {\n\t\t\"enable_updates\": true,\n\t\t\"forward\": [],\n\t\t\"reverse\": [],\n\t\t\"tsig_keys\": {\n\t\t\t\"key_foo\": { \"algorithm\": \"hmac-sha256\", \"data\": \"SUPERSECRETKEYMATERIAL==\" }\n\t\t}\n\t}\n}";
+        let out = crate::handlers::redact_config(raw).expect("json redact should succeed");
+        assert!(
+            !out.contains("SUPERSECRETKEYMATERIAL"),
+            "secret leaked:\n{out}"
+        );
+        assert!(out.contains("**REDACTED**"));
+    }
+
+    #[test]
+    fn test_redact_config_rejects_unparseable() {
+        // must error (not echo the raw file) when the config cannot be parsed
+        assert!(crate::handlers::redact_config("this: is: not: valid").is_err());
+    }
+
     #[tokio::test]
     async fn test_health() -> anyhow::Result<()> {
         let mgr = Arc::new(IpManager::new(SqliteDb::new("sqlite::memory:").await?)?);
