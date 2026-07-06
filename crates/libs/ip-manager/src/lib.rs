@@ -12,7 +12,6 @@
 //!
 //! [`Storage`]: ip_manager::Storage
 //! [`IpManager`]: ip_manager::IpManager
-use config::v4::{NetRange, Network};
 use icmp_ping::{Icmpv4, Listener, PingReply};
 
 use async_trait::async_trait;
@@ -22,6 +21,9 @@ use thiserror::Error;
 use tracing::{debug, error, info, trace, warn};
 
 pub mod sqlite;
+
+mod pool;
+pub use pool::{NetworkParams, Pool};
 
 use core::fmt;
 use std::{
@@ -239,27 +241,41 @@ where
 
     /// returns Ok(()) if ping failed or ping == false
     /// returns Err if ping succeeded
-    pub async fn ping_check(&self, ip: IpAddr, network: &Network) -> Result<(), IpError<T::Error>> {
-        if network.ping_check() {
-            let fut = async {
-                match self.addr_in_use(ip, network.ping_timeout()).await {
-                    Ok(reply) => {
-                        // ping succeeded
-                        if let Err(err) = self.store.delete(ip).await {
-                            error!(?err, "error attempting to delete ip");
+    pub async fn ping_check<N: NetworkParams>(
+        &self,
+        ip: IpAddr,
+        network: &N,
+    ) -> Result<(), IpError<T::Error>> {
+        if !network.ping_check() {
+            return Ok(());
+        }
+        match ip {
+            IpAddr::V4(_) => {
+                let fut = async {
+                    match self.addr_in_use(ip, network.ping_timeout()).await {
+                        Ok(reply) => {
+                            // ping succeeded
+                            if let Err(err) = self.store.delete(ip).await {
+                                error!(?err, "error attempting to delete ip");
+                            }
+                            Some(reply)
                         }
-                        Some(reply)
+                        // ping failed, so addr is not in use
+                        Err(_) => None,
                     }
-                    // ping failed, so addr is not in use
-                    Err(_) => None,
+                };
+                match self.ping_cache.get_with(ip, fut).await {
+                    Some(_reply) => Err(IpError::AddrInUse(ip)),
+                    None => Ok(()),
                 }
-            };
-            match self.ping_cache.get_with(ip, fut).await {
-                Some(_reply) => Err(IpError::AddrInUse(ip)),
-                None => Ok(()),
             }
-        } else {
-            Ok(())
+            IpAddr::V6(_) => {
+                // DHCPv6 DAD is Neighbor-Solicitation based, not ICMP echo; it is
+                // implemented in a later phase. Sending an ICMPv4 echo to a v6
+                // address would be meaningless, so skip the probe for now.
+                trace!(?ip, "v6 DAD not yet implemented; skipping probe");
+                Ok(())
+            }
         }
     }
 }
@@ -284,24 +300,23 @@ where
     }
 
     /// get the first available IP in a range with a given id/expiry/network
-    pub async fn reserve_first(
+    pub async fn reserve_first<P: Pool + fmt::Debug, N: NetworkParams>(
         &self,
-        range: &NetRange,
-        network: &Network,
+        range: &P,
+        network: &N,
         id: &[u8],
         expires_at: SystemTime,
         state: Option<IpState>,
     ) -> Result<IpAddr, IpError<T::Error>> {
         const MAX_ATTEMPTS: usize = 2;
-        let subnet = network.subnet().into();
+        let subnet = network.subnet();
         // family-neutral exclusion set for the storage layer
-        let exclusions: HashSet<IpAddr> =
-            range.exclusions().iter().map(|ip| IpAddr::V4(*ip)).collect();
+        let exclusions: HashSet<IpAddr> = range.exclusions();
         // unfortunately the sqlite connection is sometimes unreliable under high contention, meaning
         // we need to make a few attempts to get an address.
         let mut attempts = 0;
         loop {
-            let ip_range = range.start().into()..=range.end().into();
+            let ip_range = range.start()..=range.end();
             if attempts > MAX_ATTEMPTS {
                 return Err(IpError::MaxAttempts {
                     range: ip_range,
@@ -343,52 +358,45 @@ where
                     continue;
                 }
             };
-            match ip {
-                IpAddr::V4(ipv4) => {
-                    if range.contains(&ipv4) {
-                        // ping_check will delete the expired entry if it's in use
-                        match self.ping_check(ip, network).await {
-                            Ok(()) => return Ok(ip),
-                            // ping success so insert probated IP
-                            Err(err) => {
-                                let probation_time = SystemTime::now() + network.probation_period();
-                                info!(
-                                    ?err,
-                                    probation_time = %DateTime::<Utc>::from(probation_time).to_rfc3339_opts(SecondsFormat::Secs, true),
-                                    "ping succeeded. address is in use. marking IP on probation"
-                                );
-                                // update regardless of expiry/id because something is using the IP
-                                if let Err(err) = self
-                                    .store
-                                    .update_ip(ip, IpState::Probate, None, probation_time)
-                                    .await
-                                {
-                                    attempts += 1;
-                                    error!(?err, "failed to probate IP on ping success");
-                                    // not returning error because we must give client an IP
-                                } else {
-                                    debug!("IP put on probation, trying next");
-                                }
-                                continue;
-                            }
-                        }
-                    } else {
-                        attempts += 1;
-                        warn!(
-                            ?range,
-                            ?ipv4,
-                            "IP for client id returned from leases table is outside of network range"
+            if range.contains(ip) {
+                // ping_check will delete the expired entry if it's in use
+                match self.ping_check(ip, network).await {
+                    Ok(()) => return Ok(ip),
+                    // ping success so insert probated IP
+                    Err(err) => {
+                        let probation_time = SystemTime::now() + network.probation_period();
+                        info!(
+                            ?err,
+                            probation_time = %DateTime::<Utc>::from(probation_time).to_rfc3339_opts(SecondsFormat::Secs, true),
+                            "ping succeeded. address is in use. marking IP on probation"
                         );
-                        // entry for ip/id but the range doesn't match, remove the old entry
-                        if let Err(err) = self.store.release_ip(ip, id).await {
-                            error!(?err, "failed to delete entry");
+                        // update regardless of expiry/id because something is using the IP
+                        if let Err(err) = self
+                            .store
+                            .update_ip(ip, IpState::Probate, None, probation_time)
+                            .await
+                        {
+                            attempts += 1;
+                            error!(?err, "failed to probate IP on ping success");
+                            // not returning error because we must give client an IP
+                        } else {
+                            debug!("IP put on probation, trying next");
                         }
                         continue;
                     }
                 }
-                // we know this method is only called in ipv4 code, but the
-                // compiler doesn't
-                _ => panic!("ipv6 unsupported"),
+            } else {
+                attempts += 1;
+                warn!(
+                    ?range,
+                    ?ip,
+                    "IP for client id returned from leases table is outside of network range"
+                );
+                // entry for ip/id but the range doesn't match, remove the old entry
+                if let Err(err) = self.store.release_ip(ip, id).await {
+                    error!(?err, "failed to delete entry");
+                }
+                continue;
             }
         }
     }
@@ -398,13 +406,13 @@ where
     /// Returns
     ///     `Err` if ip/id are already present or ping succeeded
     ///     `Ok(())` allocated IP successfully
-    pub async fn try_ip(
+    pub async fn try_ip<N: NetworkParams>(
         &self,
         ip: IpAddr,
         subnet: IpAddr,
         id: &[u8],
         expires_at: SystemTime,
-        network: &Network,
+        network: &N,
         state: Option<IpState>,
     ) -> Result<(), IpError<T::Error>> {
         // TODO: there may be a way to remove this .get also
@@ -454,18 +462,35 @@ where
             }
         }
     }
+
+    /// like [`lookup_id`], but for DHCPv6 bindings (DUID+IAID identity,
+    /// `leases_v6` table).
+    ///
+    /// [`lookup_id`]: IpManager::lookup_id
+    pub async fn lookup_id_v6(&self, id: &[u8]) -> Result<IpAddr, IpError<T::Error>> {
+        match self.store.get_id_v6(id).await? {
+            Some(ip) => {
+                debug!(?ip, ?id, "we have a v6 address for this id");
+                Ok(ip)
+            }
+            None => {
+                debug!(?id, "no v6 address found for this id");
+                Err(IpError::Unreserved)
+            }
+        }
+    }
     /// Sets a reserved ip/id combo to leased state. If no un-expired ip/id pair
     /// found, then if we're authoritative we will just try to insert the IP, and
     /// if not we return.
     /// Returns
     ///     Err if ip/id don't match what's in storage or if it's expired
     ///     Ok(()) entry created successfully for lease
-    pub async fn try_lease(
+    pub async fn try_lease<N: NetworkParams>(
         &self,
         ip: IpAddr,
         id: &[u8],
         expires_at: SystemTime,
-        network: &Network,
+        network: &N,
     ) -> Result<(), IpError<T::Error>> {
         match self
             .store
@@ -490,13 +515,7 @@ where
                 // this will ACK even if there was no prior DISCOVER
                 match self
                     .store
-                    .insert(
-                        ip,
-                        network.subnet().into(),
-                        id,
-                        expires_at,
-                        Some(IpState::Lease),
-                    )
+                    .insert(ip, network.subnet(), id, expires_at, Some(IpState::Lease))
                     .await
                 {
                     Ok(()) => {
@@ -593,6 +612,7 @@ mod tests {
     use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 
     use super::*;
+    use config::v4::{NetRange, Network};
     use crate::sqlite::SqliteDb;
     use config::LeaseTime;
     use icmp_ping::{DEFAULT_TOKEN_SIZE, EchoReply};
@@ -1202,6 +1222,41 @@ mod tests {
         let client_id = (1..6).map(|_| rand::random()).collect::<Vec<u8>>();
 
         assert!(mgr.lookup_id(&client_id).await.is_err());
+        Ok(())
+    }
+
+    // the generalized allocator hands out v6 addresses from a v6 config pool
+    // through the same reserve_first path used by v4.
+    #[tokio::test]
+    #[traced_test]
+    async fn test_v6_reserve_first_generalized() -> Result<()> {
+        use config::DhcpConfig;
+        let cfg =
+            DhcpConfig::parse_str(include_str!("../../config/sample/config_v6_pools.yaml")).unwrap();
+        let (_subnet, net) = cfg.v6().get_first().expect("a v6 network");
+        let range = &net.ranges()[0];
+
+        let mgr = IpManager::new(SqliteDb::new("sqlite::memory:").await?)?;
+        let exp = SystemTime::now() + Duration::from_secs(60);
+
+        // first two clients get sequential addresses from the pool start
+        let a = mgr
+            .reserve_first(range, net, &[1, 1, 1], exp, Some(IpState::Reserve))
+            .await?;
+        assert_eq!(a, IpAddr::V6("2001:db8:1::100".parse()?));
+        let b = mgr
+            .reserve_first(range, net, &[2, 2, 2], exp, Some(IpState::Reserve))
+            .await?;
+        assert_eq!(b, IpAddr::V6("2001:db8:1::101".parse()?));
+
+        // the reserved v6 binding is found by DUID+IAID identity, and not by the
+        // v4 identity lookup
+        assert_eq!(mgr.lookup_id_v6(&[1, 1, 1]).await?, a);
+        assert!(mgr.lookup_id(&[1, 1, 1]).await.is_err());
+
+        // commit the lease (Request/Reply) and confirm it persists as Leased
+        mgr.try_lease(a, &[1, 1, 1], exp, net).await?;
+        assert!(matches!(mgr.get(a).await?, Some(State::Leased(_))));
         Ok(())
     }
 }
