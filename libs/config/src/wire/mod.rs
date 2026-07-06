@@ -215,10 +215,10 @@ mod tests {
     // test we can encode/decode example file
     #[test]
     fn test_example() {
-        let cfg: crate::wire::Config = serde_yaml::from_str(EXAMPLE).unwrap();
+        let cfg: crate::wire::Config = yaml_serde::from_str(EXAMPLE).unwrap();
         println!("{cfg:#?}");
         // back to the yaml
-        let s = serde_yaml::to_string(&cfg).unwrap();
+        let s = yaml_serde::to_string(&cfg).unwrap();
         println!("{s}");
     }
 

@@ -1030,16 +1030,16 @@ mod tests {
     // test we can encode/decode sample
     #[test]
     fn test_sample() {
-        let cfg: crate::wire::Config = serde_yaml::from_str(SAMPLE_YAML).unwrap();
+        let cfg: crate::wire::Config = yaml_serde::from_str(SAMPLE_YAML).unwrap();
         println!("{cfg:#?}");
         // back to the yaml
-        let s = serde_yaml::to_string(&cfg).unwrap();
+        let s = yaml_serde::to_string(&cfg).unwrap();
         println!("{s}");
     }
 
     #[test]
     fn test_long_opts() {
-        let cfg: crate::wire::Config = serde_yaml::from_str(LONG_OPTS).unwrap();
+        let cfg: crate::wire::Config = yaml_serde::from_str(LONG_OPTS).unwrap();
         let opts = cfg
             .networks
             .get(&Ipv4Net::new([192, 168, 1, 100].into(), 30).unwrap())

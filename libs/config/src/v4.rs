@@ -249,7 +249,7 @@ impl Config {
     /// Create a new DhcpConfig for the server. Pass in the wire
     /// config format from yaml
     pub fn yaml<S: AsRef<str>>(input: S) -> Result<Self> {
-        Self::try_from(serde_yaml::from_str::<wire::Config>(input.as_ref())?)
+        Self::try_from(yaml_serde::from_str::<wire::Config>(input.as_ref())?)
     }
     /// Create a new DhcpConfig for the server. Pass in the wire
     /// config format from json

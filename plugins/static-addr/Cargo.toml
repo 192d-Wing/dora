@@ -14,6 +14,6 @@ register_derive = { path = "../../libs/register_derive" }
 message-type = { path = "../message-type" }
 
 [dev-dependencies]
-serde_yaml = { workspace = true }
+yaml_serde = { workspace = true }
 tracing-test = { workspace = true }
 hex = "0.4"

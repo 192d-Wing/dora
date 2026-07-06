@@ -13,5 +13,5 @@ config = { path = "../../libs/config" }
 client-protection = { path = "../../libs/client-protection" }
 
 [dev-dependencies]
-serde_yaml = { workspace = true }
+yaml_serde = { workspace = true }
 tracing-test = { workspace = true }
