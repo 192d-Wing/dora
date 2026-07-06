@@ -281,10 +281,35 @@ mod handlers {
         // TODO: if serializing worked we could get DhcpConfig back into JSON/YAML but there's
         // a lot of logic left to make that particular transform. So just read from disk
         let path = cfg.path().context("no path specified for config")?;
-        let cfg = tokio::fs::read_to_string(path)
+        let raw = tokio::fs::read_to_string(path)
             .await
             .with_context(|| format!("failed to find config at {}", path.display()))?;
-        Ok(axum::Json(cfg))
+        // SECURITY: the config file contains DDNS TSIG key material. This endpoint
+        // is unauthenticated, so the raw file must never be returned. Parse it into
+        // the typed wire config, blank out every secret, and re-serialize. If it
+        // cannot be parsed we return an error rather than risk leaking secrets.
+        let redacted = redact_config(&raw).context("failed to render config for display")?;
+        Ok(axum::Json(redacted))
+    }
+
+    /// Value substituted for any secret we strip out of the config before display.
+    const REDACTED: &str = "**REDACTED**";
+
+    /// Parse `raw` (YAML or JSON) into the typed wire config, replace all TSIG key
+    /// material with [`REDACTED`], and re-serialize to YAML. Returns `Err` if the
+    /// config cannot be parsed/serialized so a failure can never fall back to
+    /// echoing the raw (secret-bearing) file.
+    fn redact_config(raw: &str) -> anyhow::Result<String> {
+        // yaml_serde parses JSON as well (JSON is a subset of YAML 1.2), so this
+        // handles both config formats.
+        let mut cfg: config::wire::Config =
+            yaml_serde::from_str(raw).context("could not parse config")?;
+        if let Some(ddns) = cfg.ddns.as_mut() {
+            for key in ddns.tsig_keys.values_mut() {
+                key.data = REDACTED.to_string();
+            }
+        }
+        yaml_serde::to_string(&cfg).context("could not serialize redacted config")
     }
 
     pub(crate) async fn metrics() -> ServerResult<impl IntoResponse> {

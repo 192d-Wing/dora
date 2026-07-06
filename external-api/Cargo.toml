@@ -25,6 +25,7 @@ tracing = { workspace = true }
 parking_lot = "0.12"
 serde = { workspace = true }
 serde_json = { workspace = true }
+yaml_serde = { workspace = true }
 prometheus = { workspace = true }
 ipnet = { workspace = true }
 
