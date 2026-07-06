@@ -37,12 +37,18 @@ pub struct Config {
     /// used to make a selection on which network or subnet to use
     networks: HashMap<Ipv6Net, Network>,
     server_id: Duid,
+    /// whether to honor the Rapid Commit option (opt 14)
+    rapid_commit: bool,
 }
 
 impl Config {
     /// return server id as a slice of bytes
     pub fn server_id(&self) -> &[u8] {
         self.server_id.as_ref()
+    }
+    /// whether the server honors the Rapid Commit option (opt 14)
+    pub fn rapid_commit(&self) -> bool {
+        self.rapid_commit
     }
     /// return the optional explicitly bound interfaces if there are any
     pub fn interfaces(&self) -> &[NetworkInterface] {
@@ -562,6 +568,7 @@ impl TryFrom<wire::v6::Config> for Config {
             networks,
             opts: global_opts.map(|o| o.get()),
             server_id,
+            rapid_commit: cfg.rapid_commit,
         })
     }
 }

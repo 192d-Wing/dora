@@ -810,6 +810,7 @@ dependencies = [
  "ip-manager",
  "jemallocator",
  "leases",
+ "leases-v6",
  "mac_address",
  "message-type",
  "rand 0.10.2",
@@ -1896,6 +1897,20 @@ dependencies = [
  "tracing",
  "tracing-test",
  "yaml_serde",
+]
+
+[[package]]
+name = "leases-v6"
+version = "0.1.0"
+dependencies = [
+ "config",
+ "dora-core",
+ "ip-manager",
+ "message-type",
+ "register_derive",
+ "tokio",
+ "tracing",
+ "tracing-test",
 ]
 
 [[package]]

@@ -17,6 +17,7 @@ use dora_core::{
 use external_api::{ExternalApi, Health};
 use ip_manager::{IpManager, sqlite::SqliteDb};
 use leases::Leases;
+use leases_v6::LeasesV6;
 use message_type::MsgType;
 use static_addr::StaticAddr;
 
@@ -99,6 +100,7 @@ async fn start(config: cli::Config) -> Result<()> {
             Server::new(config.clone(), dhcp_cfg.v6().interfaces().to_owned())?;
         info!("starting v6 plugins");
         MsgType::new(Arc::clone(&dhcp_cfg))?.register(&mut v6);
+        LeasesV6::new(Arc::clone(&dhcp_cfg), Arc::clone(&ip_mgr)).register(&mut v6);
         Some(v6)
     } else {
         None

@@ -416,6 +416,9 @@ impl Plugin<v6::Message> for MsgType {
 
         let req = ctx.msg();
         let msg_type = req.msg_type();
+        // honor Rapid Commit only if the client asked and we are configured for it
+        let rapid_commit =
+            req.opts().get(v6::OptionCode::RapidCommit).is_some() && self.cfg.v6().rapid_commit();
 
         debug!(
             ?msg_type,
@@ -466,6 +469,17 @@ impl Plugin<v6::Message> for MsgType {
                     "couldn't match any options with INFORMATION-REQUEST message"
                 );
             }
+            // Solicit: Advertise an address, unless Rapid Commit turns this into a
+            // committing Reply. The leases-v6 plugin fills the IA_NA.
+            MessageType::Solicit => {
+                if rapid_commit {
+                    resp.opts_mut().insert(v6::DhcpOption::RapidCommit);
+                } else {
+                    resp.set_msg_type(MessageType::Advertise);
+                }
+            }
+            // Request: response stays a Reply; leases-v6 commits the binding.
+            MessageType::Request => {}
             _ => {
                 debug!("currently unsupported message type");
                 return Ok(Action::NoResponse);

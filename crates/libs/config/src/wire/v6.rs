@@ -23,6 +23,10 @@ pub struct Config {
     // TODO: better defaults than blank? pull information from the system
     #[serde(default)]
     pub options: Option<Options>,
+    /// honor the Rapid Commit option (opt 14): answer a Solicit that carries it
+    /// with a committing Reply instead of Advertise. RFC 8415 §18.3.1.
+    #[serde(default = "super::default_rapid_commit")]
+    pub rapid_commit: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
