@@ -12,6 +12,8 @@ config = { path = "../../libs/config" }
 
 register_derive = { path = "../../libs/register_derive" }
 message-type = { path = "../message-type" }
+# needed directly because `#[instrument]` expands to absolute `::tracing::` paths
+tracing = { workspace = true }
 
 [dev-dependencies]
 yaml_serde = { workspace = true }

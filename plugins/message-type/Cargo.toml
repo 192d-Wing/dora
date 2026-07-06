@@ -11,6 +11,8 @@ dora-core = { path = "../../dora-core" }
 register_derive = { path = "../../libs/register_derive" }
 config = { path = "../../libs/config" }
 client-protection = { path = "../../libs/client-protection" }
+# needed directly because `#[instrument]` expands to absolute `::tracing::` paths
+tracing = { workspace = true }
 
 [dev-dependencies]
 yaml_serde = { workspace = true }
