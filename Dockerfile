@@ -19,8 +19,7 @@ RUN apt-get -qq update; \
     iputils-ping \
     iproute2 \
     ca-certificates \
-    wget \
-    sudo;
+    wget;
 
 ARG BUILD_MODE=release
 COPY --from=builder /usr/src/dora/target/${BUILD_MODE}/dora /usr/local/bin/dora
