@@ -9,11 +9,11 @@ name: Actions
 
 on:
   push:
-    branches: [master]
+    branches: [main]
   pull_request:
 
 # A branch push that also has an open PR would otherwise trigger two identical
-# runs. Scoping `push` to master (above) avoids that, and this cancels any
+# runs. Scoping `push` to main (above) avoids that, and this cancels any
 # superseded in-progress run for the same ref to save CI minutes.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
