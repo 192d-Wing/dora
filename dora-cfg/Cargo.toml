@@ -12,6 +12,6 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 yaml_serde = { workspace = true }
 clap = { workspace = true }
-jsonschema = "0.16.1"
+jsonschema = "0.46.10"
 
 config = { path = "../libs/config" }
