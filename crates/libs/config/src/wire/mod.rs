@@ -210,7 +210,7 @@ pub(crate) enum MaybeList<T> {
 mod tests {
     use super::*;
 
-    pub static EXAMPLE: &str = include_str!("../../../../example.yaml");
+    pub static EXAMPLE: &str = include_str!("../../../../../example.yaml");
 
     // test we can encode/decode example file
     #[test]
