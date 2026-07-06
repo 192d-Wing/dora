@@ -14,7 +14,7 @@ use dora_core::{
             fqdn::{ClientFQDN, FqdnFlags},
         },
     },
-    hickory_proto::{dnssec::DnsSecError, dnssec::tsig::TSigner},
+    hickory_proto::{dnssec::DnsSecError, rr::TSigner},
     prelude::MsgContext,
     tracing::{debug, error, info, trace, warn},
 };
@@ -461,14 +461,14 @@ mod tests {
                 let mut buf = [0; 512];
                 if let Ok((len, src)) = socket.recv_from(&mut buf).await {
                     let request = op::Message::from_vec(&buf[..len]).unwrap();
-                    assert_eq!(request.op_code(), hickory_proto::op::OpCode::Update);
+                    assert_eq!(request.metadata.op_code, hickory_proto::op::OpCode::Update);
 
-                    let mut response = op::Message::new();
-                    response
-                        .set_id(request.id())
-                        .set_op_code(op::OpCode::Update)
-                        .set_message_type(op::MessageType::Response)
-                        .set_response_code(op::ResponseCode::NoError);
+                    let mut response = op::Message::new(
+                        request.metadata.id,
+                        op::MessageType::Response,
+                        op::OpCode::Update,
+                    );
+                    response.metadata.response_code = op::ResponseCode::NoError;
 
                     let response_bytes = response.to_vec().unwrap();
                     socket.send_to(&response_bytes, src).await.unwrap();

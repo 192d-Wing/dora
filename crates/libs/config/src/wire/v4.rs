@@ -556,7 +556,7 @@ pub mod ddns {
 
     use super::*;
 
-    use dora_core::{dhcproto::Name, hickory_proto::dnssec::rdata::tsig::TsigAlgorithm};
+    use dora_core::{dhcproto::Name, hickory_proto::rr::rdata::tsig::TsigAlgorithm};
 
     fn default_true() -> bool {
         true

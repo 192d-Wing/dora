@@ -1,7 +1,6 @@
 use std::{
     net::{IpAddr, Ipv4Addr, SocketAddr},
     str::FromStr,
-    sync::Arc,
     time::Duration,
 };
 
@@ -9,18 +8,22 @@ use dora_core::{
     dhcproto::{Name, NameError},
     hickory_proto::{
         self,
-        dnssec::tsig::TSigner,
-        op::ResponseCode,
+        op::{DnsRequest, DnsRequestOptions, ResponseCode},
         rr::{
             DNSClass, RecordData,
             RecordType::{self, Unknown},
+            TSigner,
             rdata::{A, PTR},
         },
-        runtime::TokioRuntimeProvider,
-        udp::UdpClientStream,
-        xfer::{DnsRequest, DnsRequestOptions, DnsRequestSender, FirstAnswer},
     },
     tracing::{debug, error, trace},
+};
+// hickory-proto 0.26 moved the DNS client transport into hickory-net.
+use hickory_net::{
+    NetError,
+    runtime::TokioRuntimeProvider,
+    udp::UdpClientStream,
+    xfer::{DnsRequestSender, FirstAnswer},
 };
 
 use crate::dhcid::DhcId;
@@ -36,10 +39,12 @@ impl Updater {
             .with_timeout(Some(Duration::from_secs(5)));
         if let Some(tsig) = tsig {
             trace!(signer_name = ?tsig.signer_name(), "added signer to ddns update");
-            stream_builder = stream_builder.with_signer(Some(Arc::new(tsig)));
+            stream_builder = stream_builder.with_signer(Some(tsig));
         }
 
-        let client = stream_builder.build().await?;
+        // In hickory-net 0.26 `build()` is synchronous; the socket is bound
+        // lazily on first send.
+        let client = stream_builder.build();
 
         Ok(Self { client })
     }
@@ -63,22 +68,22 @@ impl Updater {
         )?;
         let request = DnsRequest::new(message, DnsRequestOptions::default());
         let resp = self.client.send_message(request).first_answer().await?;
-        if resp.response_code() == ResponseCode::NoError {
+        if resp.response_code == ResponseCode::NoError {
             Ok(())
-        } else if resp.response_code() == ResponseCode::YXDomain {
+        } else if resp.response_code == ResponseCode::YXDomain {
             debug!(?resp, "got back YXDOMAIN, sending update with dhcid prereq");
             let new_msg = update_present(zone.clone(), domain.clone(), duid, leased, ttl, false)?;
             let yx_request = DnsRequest::new(new_msg, DnsRequestOptions::default());
             let yx_resp = self.client.send_message(yx_request).first_answer().await?;
-            if yx_resp.response_code() == ResponseCode::NoError {
+            if yx_resp.response_code == ResponseCode::NoError {
                 debug!("got NOERROR, updated DNS");
                 Ok(())
             } else {
                 error!("failed to update dns");
-                Err(UpdateError::ResponseCode(yx_resp.response_code()))
+                Err(UpdateError::ResponseCode(yx_resp.response_code))
             }
         } else {
-            Err(UpdateError::ResponseCode(resp.response_code()))
+            Err(UpdateError::ResponseCode(resp.response_code))
         }
     }
     pub async fn reverse(
@@ -94,10 +99,10 @@ impl Updater {
         let message = delete(zone, domain.clone(), duid.clone(), leased, ttl, false)?;
         let request = DnsRequest::new(message, DnsRequestOptions::default());
         let resp = self.client.send_message(request).first_answer().await?;
-        if resp.response_code() == ResponseCode::NoError {
+        if resp.response_code == ResponseCode::NoError {
             Ok(())
         } else {
-            Err(UpdateError::ResponseCode(resp.response_code()))
+            Err(UpdateError::ResponseCode(resp.response_code))
         }
     }
 }
@@ -124,7 +129,7 @@ pub fn update(
     let mut message = update_msg(zone_origin, use_edns);
 
     let mut prerequisite = Record::update0(name.clone(), 0, RecordType::ANY);
-    prerequisite.set_dns_class(DNSClass::NONE);
+    prerequisite.dns_class = DNSClass::NONE;
     message.add_pre_requisite(prerequisite);
 
     let a_record = Record::from_rdata(name.clone(), ttl, A(leased).into_rdata());
@@ -160,7 +165,7 @@ pub fn update_present(
 
     let mut prerequisite = Record::update0(name.clone(), 0, RecordType::ANY);
     // use ANY to check only update if this name is present
-    prerequisite.set_dns_class(DNSClass::ANY);
+    prerequisite.dns_class = DNSClass::ANY;
     message.add_pre_requisite(prerequisite);
 
     // add dhcid to prereqs, will only update if dhcid is present
@@ -231,19 +236,17 @@ fn update_msg(zone_origin: Name, use_edns: bool) -> hickory_proto::op::Message {
         .set_query_class(DNSClass::IN)
         .set_query_type(RecordType::SOA);
 
-    let mut message = Message::new();
-    message
-        .set_id(rand::random())
-        .set_message_type(MessageType::Query)
-        .set_op_code(OpCode::Update)
-        .set_recursion_desired(false);
+    // Message::new sets id/type/op_code up front; recursion-desired defaults to
+    // false, which is what an UPDATE requires.
+    let mut message = Message::new(rand::random(), MessageType::Query, OpCode::Update);
 
     message.add_zone(zone);
 
     if use_edns {
-        let edns = message.extensions_mut().get_or_insert_with(Edns::new);
+        let mut edns = Edns::new();
         edns.set_max_payload(MAX_PAYLOAD_LEN);
         edns.set_version(0);
+        message.set_edns(edns);
     }
 
     message
@@ -292,6 +295,8 @@ pub enum UpdateError {
     ResponseCode(ResponseCode),
     #[error("got {0:?} instead of NoError")]
     ClientError(#[from] NameError),
+    #[error("dns transport error: {0}")]
+    Net(#[from] NetError),
 }
 
 #[cfg(test)]
@@ -347,29 +352,32 @@ mod test {
             false,
         )
         .unwrap();
-        assert_eq!(update.message_type(), Query);
-        assert_eq!(update.op_code(), OpCode::Update);
-        let queries = update.queries();
+        // hickory-proto 0.26 exposes Message/Record sections as public fields
+        // and the UpdateMessage trait accessors (zones/prerequisites/updates)
+        // rather than the old message_type()/queries()/name_servers() methods.
+        assert_eq!(update.metadata.message_type, Query);
+        assert_eq!(update.metadata.op_code, OpCode::Update);
+        let queries = update.zones();
         assert_eq!(queries.len(), 1);
         assert_eq!(queries[0].name(), &zone_origin);
         let prerequisites = update.prerequisites();
         assert_eq!(prerequisites.len(), 1);
         let answer_record = prerequisites[0].clone();
-        assert_eq!(answer_record.name(), &name);
-        let name_servers = update.name_servers();
+        assert_eq!(&answer_record.name, &name);
+        let name_servers = update.updates();
         assert_eq!(name_servers.len(), 2);
         let name_server_1 = name_servers[0].clone();
-        assert_eq!(name_server_1.name(), &name);
-        assert_eq!(name_server_1.dns_class(), IN);
-        assert_eq!(name_server_1.ttl(), 1800);
+        assert_eq!(&name_server_1.name, &name);
+        assert_eq!(name_server_1.dns_class, IN);
+        assert_eq!(name_server_1.ttl, 1800);
         let name_server_1_rdata: Record = name_server_1.into_record_of_rdata();
         let should_be: Record =
             Record::from_rdata(name.clone(), 1800, A::new(10, 10, 10, 10).into_rdata());
         assert_eq!(name_server_1_rdata, should_be);
         let name_server_2 = name_servers[1].clone();
-        assert_eq!(name_server_2.name(), &name);
-        assert_eq!(name_server_2.dns_class(), IN);
-        assert_eq!(name_server_2.ttl(), 1800);
+        assert_eq!(&name_server_2.name, &name);
+        assert_eq!(name_server_2.dns_class, IN);
+        assert_eq!(name_server_2.ttl, 1800);
         let name_server_2_rdata: Record = name_server_2.into_record_of_rdata();
         let should_be_2 = Record::from_rdata(
             name.clone(),

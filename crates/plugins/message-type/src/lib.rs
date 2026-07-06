@@ -397,8 +397,9 @@ pub mod util {
 impl Plugin<v6::Message> for MsgType {
     #[instrument(level = "debug", skip_all)]
     async fn handle(&self, ctx: &mut MsgContext<v6::Message>) -> Result<Action> {
-        // import message type variants
-        use v6::MessageType::*;
+        // message type variants (v6::MessageType is a newtype with associated
+        // consts in usg-dhcproto 0.16, so they must be referenced by path)
+        use v6::MessageType;
         // set the interface, using data from config
         // MsgType plugin must run first because future plugins use this data
         let meta = ctx.meta();
@@ -427,7 +428,7 @@ impl Plugin<v6::Message> for MsgType {
         // let network = self.cfg.v6().get_network(meta.ifindex);
 
         // create initial response with reply type
-        let mut resp = v6::Message::new_with_id(Reply, req.xid());
+        let mut resp = v6::Message::new_with_id(MessageType::Reply, req.xid());
 
         let server_id = self.cfg.v6().server_id();
         // TODO RelayForw type
@@ -445,10 +446,15 @@ impl Plugin<v6::Message> for MsgType {
         match msg_type {
             // discard if it has these types but NO server id
             // https://www.rfc-editor.org/rfc/rfc8415#section-16.6
-            Request | Renew | Decline | Release if req_sid.is_none() => {
+            MessageType::Request
+            | MessageType::Renew
+            | MessageType::Decline
+            | MessageType::Release
+                if req_sid.is_none() =>
+            {
                 return Ok(Action::NoResponse);
             }
-            InformationRequest => {
+            MessageType::InformationRequest => {
                 if let Some(opts) = self.cfg.v6().get_opts(meta.ifindex) {
                     ctx.set_resp_msg(resp);
                     ctx.populate_opts(opts);
