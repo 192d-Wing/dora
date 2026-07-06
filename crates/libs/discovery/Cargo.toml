@@ -8,4 +8,4 @@ license = "MPL-2.0"
 
 [dependencies]
 anyhow = { workspace = true }
-hickory-resolver = "0.25.2"
+hickory-resolver = "0.26.1"
