@@ -18,7 +18,7 @@ tracing = { workspace = true, features = [
     "log",
 ] } # TODO: do we need the log feature?
 chrono = "0.4.45"
-moka = { version = "0.10.4", features = ["future"] }
+moka = { version = "0.12.15", features = ["future"] }
 # TODO: hopefully the rustls feature can go away, the lib requires it
 sqlx = { version = "0.5.13", features = [
     "sqlite",
