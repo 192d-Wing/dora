@@ -102,7 +102,12 @@ pub trait Storage: Send + Sync + 'static {
     ) -> Result<(), Self::Error>;
 
     async fn get(&self, ip: IpAddr) -> Result<Option<State>, Self::Error>;
+    /// look up an unexpired v4 lease by client identity (v4 `leases` table)
     async fn get_id(&self, id: &[u8]) -> Result<Option<IpAddr>, Self::Error>;
+    /// look up an unexpired v6 binding by DUID+IAID identity (`leases_v6` table).
+    /// Separate from `get_id` so identity lookups target one table deterministically
+    /// and a v4/v6 client-id byte collision can never return the wrong family.
+    async fn get_id_v6(&self, id: &[u8]) -> Result<Option<IpAddr>, Self::Error>;
     async fn select_all(&self) -> Result<Vec<State>, Self::Error>;
     async fn release_ip(&self, ip: IpAddr, id: &[u8]) -> Result<Option<ClientInfo>, Self::Error>;
     async fn delete(&self, ip: IpAddr) -> Result<(), Self::Error>;

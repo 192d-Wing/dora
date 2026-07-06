@@ -127,8 +127,8 @@ impl Storage for SqliteDb {
                     }
                     None => {
                         debug!(start = ?range.start(), "using start of range");
-                        // no IPs in range, so it must be empty
-                        Some(*range.start())
+                        // range is empty; use the first non-excluded address
+                        util::first_available(*range.start(), *range.end(), exclusions)
                     }
                 };
                 if let Some(IpAddr::V4(v4_ip)) = ip {
@@ -161,7 +161,8 @@ impl Storage for SqliteDb {
                     Some(State::Leased(cur) | State::Reserved(cur) | State::Probated(cur)) => {
                         util_v6::inc_ip(cur.ip, IpAddr::V6(end), exclusions)
                     }
-                    None => Some(IpAddr::V6(start)),
+                    // range is empty; use the first non-excluded address
+                    None => util::first_available(*range.start(), *range.end(), exclusions),
                 };
                 if let Some(IpAddr::V6(v6_ip)) = ip {
                     util_v6::insert(
@@ -334,13 +335,11 @@ impl Storage for SqliteDb {
     }
 
     async fn get_id(&self, id: &[u8]) -> Result<Option<IpAddr>, Self::Error> {
-        // client identities are namespaced per family (v4 chaddr/opt-61 vs v6
-        // DUID+IAID); search the v4 table first, then the v6 table.
-        let now = util::systime_epoch(SystemTime::now());
-        if let Some(ip) = util::find_by_id(&self.inner, id, now).await? {
-            return Ok(Some(ip));
-        }
-        util_v6::find_by_id(&self.inner, id, now).await
+        util::find_by_id(&self.inner, id, util::systime_epoch(SystemTime::now())).await
+    }
+
+    async fn get_id_v6(&self, id: &[u8]) -> Result<Option<IpAddr>, Self::Error> {
+        util_v6::find_by_id(&self.inner, id, util::systime_epoch(SystemTime::now())).await
     }
 
     async fn release_ip(&self, ip: IpAddr, id: &[u8]) -> Result<Option<ClientInfo>, Self::Error> {
@@ -432,8 +431,11 @@ mod util {
             network: IpAddr::V4(Ipv4Addr::from(cur.network as u32)),
             expires_at: to_systime(cur.expires_at),
         });
-        util::delete(&mut trans, ip).await?;
-
+        // only remove the binding if the (ip, id) pair actually matched, so a
+        // client cannot release an address leased to someone else
+        if cur.is_some() {
+            util::delete(&mut trans, ip).await?;
+        }
         trans.commit().await?;
         // instead of deleting:
         // sqlx::query!(
@@ -729,6 +731,24 @@ mod util {
         }))
     }
 
+    /// the first address in `[start, end]` that is not excluded. Used when a
+    /// range is empty so the excluded start of a range is not handed out.
+    pub fn first_available(
+        start: IpAddr,
+        end: IpAddr,
+        exclusions: &HashSet<IpAddr>,
+    ) -> Option<IpAddr> {
+        match (start, end) {
+            (IpAddr::V4(start), IpAddr::V4(end)) => ipnet::Ipv4AddrRange::new(start, end)
+                .map(IpAddr::V4)
+                .find(|ip| !exclusions.contains(ip)),
+            (IpAddr::V6(start), IpAddr::V6(end)) => ipnet::Ipv6AddrRange::new(start, end)
+                .map(IpAddr::V6)
+                .find(|ip| !exclusions.contains(ip)),
+            _ => None,
+        }
+    }
+
     /// get the next IP between start and end, skipping any exclusions.
     /// `start` is the current max allocated address, so `nth(1)` returns the
     /// next address after it (both v4 and v6).
@@ -745,7 +765,7 @@ mod util {
             _ => None,
         }
     }
-    fn into_clientinfo(info: ClientInfo, leased: bool, probation: bool) -> State {
+    pub(super) fn into_clientinfo(info: ClientInfo, leased: bool, probation: bool) -> State {
         if leased {
             State::Leased(info)
         } else if probation {
@@ -801,38 +821,29 @@ mod util {
 /// Because IPv6 octets are big-endian, SQLite's bytewise BLOB comparison
 /// matches numeric address ordering, so range queries and ORDER BY work directly.
 mod util_v6 {
-    use super::util::to_systime;
+    use super::util::{into_clientinfo, to_systime};
     use super::*;
     use crate::{ClientInfo, State};
 
-    /// IA_NA addresses are always a full /128
-    const PREFIX_LEN_NA: i64 = 128;
-
-    /// encode an IPv6 address to its 16-byte big-endian BLOB form
-    pub fn to_bytes(ip: Ipv6Addr) -> Vec<u8> {
-        ip.octets().to_vec()
+    /// encode an IPv6 address to its 16-byte big-endian BLOB form.
+    /// Returns a fixed array (no heap allocation); `&bytes` coerces to `&[u8]`
+    /// for the sqlx bindings.
+    pub fn to_bytes(ip: Ipv6Addr) -> [u8; 16] {
+        ip.octets()
     }
 
-    /// decode a 16-byte BLOB back into an `IpAddr::V6`
+    /// decode a 16-byte BLOB back into an `IpAddr::V6`. Every writer stores
+    /// exactly 16 bytes, so a wrong width signals corruption and must fail loudly
+    /// rather than silently decode to a bogus address.
     pub fn from_bytes(b: &[u8]) -> IpAddr {
-        let mut octets = [0u8; 16];
-        let n = b.len().min(16);
-        octets[..n].copy_from_slice(&b[..n]);
+        let octets: [u8; 16] = b
+            .try_into()
+            .expect("leases_v6 address BLOB must be exactly 16 bytes");
         IpAddr::V6(Ipv6Addr::from(octets))
     }
 
-    // step to the next address is family-neutral; reuse the shared helper
+    // stepping and tri-state mapping are family-neutral; reuse the shared helpers
     pub use super::util::inc_ip;
-
-    fn into_clientinfo(info: ClientInfo, leased: bool, probation: bool) -> State {
-        if leased {
-            State::Leased(info)
-        } else if probation {
-            State::Probated(info)
-        } else {
-            State::Reserved(info)
-        }
-    }
 
     fn to_state(
         addr: &[u8],
@@ -863,12 +874,12 @@ mod util_v6 {
         E: sqlx::Executor<'a, Database = Sqlite>,
     {
         let (leased, probation) = state.unwrap_or((false, false));
+        // prefix_len 128: IA_NA is always a full /128 (IA_PD prefixes: later phase)
         sqlx::query!(
             r#"INSERT INTO leases_v6
                 (addr, prefix_len, client_id, expires_at, network, leased, probation)
-               VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)"#,
+               VALUES (?1, 128, ?2, ?3, ?4, ?5, ?6)"#,
             addr,
-            PREFIX_LEN_NA,
             client_id,
             expires_at,
             network,
@@ -948,7 +959,11 @@ mod util_v6 {
             network: from_bytes(&cur.network),
             expires_at: to_systime(cur.expires_at),
         });
-        delete(&mut trans, addr).await?;
+        // only remove the binding if the (addr, id) pair actually matched, so a
+        // client cannot release an address leased to another client
+        if cur.is_some() {
+            delete(&mut trans, addr).await?;
+        }
         trans.commit().await?;
         Ok(cur)
     }
@@ -1193,7 +1208,12 @@ mod v6_tests {
             }
             other => panic!("expected Leased, got {other:?}"),
         }
-        assert_eq!(db.get_id(id).await?, Some(addr));
+        assert_eq!(db.get_id_v6(id).await?, Some(addr));
+
+        // a release carrying the wrong id must NOT delete another client's lease
+        let wrong = db.release_ip(addr, &[0xde, 0xad]).await?;
+        assert!(wrong.is_none(), "wrong-id release returns no info");
+        assert!(db.get(addr).await?.is_some(), "lease must survive wrong-id release");
 
         let released = db.release_ip(addr, id).await?;
         assert!(released.is_some(), "release should return prior info");
@@ -1219,6 +1239,21 @@ mod v6_tests {
 
         // same id returns its existing address (idempotent via next_expired id-match)
         assert_eq!(alloc(&db, &range, &excl, net, &[2], exp).await?, v6("2001:db8:1::102"));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn v6_empty_range_skips_excluded_start() -> TestResult {
+        // regression: an empty range whose first address is excluded must not
+        // hand out that excluded address (which would then be rejected and loop).
+        let db = SqliteDb::new("sqlite::memory:").await?;
+        let net = v6("2001:db8:1::");
+        let range = v6("2001:db8:1::100")..=v6("2001:db8:1::110");
+        let exp = SystemTime::now() + Duration::from_secs(60);
+        let mut excl = HashSet::new();
+        excl.insert(v6("2001:db8:1::100")); // exclude the start
+
+        assert_eq!(alloc(&db, &range, &excl, net, &[1], exp).await?, v6("2001:db8:1::101"));
         Ok(())
     }
 
@@ -1254,8 +1289,11 @@ mod v6_tests {
 
         assert!(matches!(db.get(v4).await?, Some(State::Leased(i)) if i.ip() == v4));
         assert!(matches!(db.get(a6).await?, Some(State::Leased(i)) if i.ip() == a6));
-        assert_eq!(db.get_id(&[4, 5, 6]).await?, Some(a6));
+        assert_eq!(db.get_id_v6(&[4, 5, 6]).await?, Some(a6));
         assert_eq!(db.get_id(&[1, 2, 3]).await?, Some(v4));
+        // family lookups do not cross tables: v6 id absent from v4 table and vice versa
+        assert_eq!(db.get_id(&[4, 5, 6]).await?, None);
+        assert_eq!(db.get_id_v6(&[1, 2, 3]).await?, None);
         Ok(())
     }
 }
