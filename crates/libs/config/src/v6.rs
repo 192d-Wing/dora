@@ -1,6 +1,7 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     net::Ipv6Addr,
+    ops::RangeInclusive,
     path::Path,
     str::FromStr,
     time::{Duration, SystemTime},
@@ -13,7 +14,7 @@ use dora_core::{
     pnet::ipnetwork::{IpNetwork, Ipv6Network},
     pnet::{self, datalink::NetworkInterface},
 };
-use ipnet::Ipv6Net;
+use ipnet::{Ipv6AddrRange, Ipv6Net};
 use tracing::debug;
 
 use crate::{
@@ -130,6 +131,10 @@ pub struct Network {
     valid: LeaseTime,
     preferred: LeaseTime,
     options: DhcpOptions,
+    /// address pools available for IA_NA assignment on this network
+    ranges: Vec<NetRange>,
+    /// prefix pools available for IA_PD delegation on this network
+    pd_pools: Vec<PdPool>,
     ping_check: bool,
     /// default ping timeout in ms
     ping_timeout_ms: Duration,
@@ -143,8 +148,32 @@ impl Network {
     pub fn subnet(&self) -> Ipv6Addr {
         self.subnet.network()
     }
+    /// the full subnet (prefix + length) this network owns
+    pub fn full_subnet(&self) -> Ipv6Net {
+        self.subnet
+    }
     pub fn authoritative(&self) -> bool {
         self.authoritative
+    }
+    /// address pools available for IA_NA assignment
+    pub fn ranges(&self) -> &[NetRange] {
+        &self.ranges
+    }
+    /// prefix pools available for IA_PD delegation
+    pub fn pd_pools(&self) -> &[PdPool] {
+        &self.pd_pools
+    }
+    /// returns the range that contains `ip`, if any (not in its exclude set)
+    pub fn range(&self, ip: Ipv6Addr) -> Option<&NetRange> {
+        self.ranges.iter().find(|r| r.contains(&ip))
+    }
+    /// default valid lifetime for this network
+    pub fn valid(&self) -> LeaseTime {
+        self.valid
+    }
+    /// default preferred lifetime for this network
+    pub fn preferred(&self) -> LeaseTime {
+        self.preferred
     }
     /// is ping check enabled for this range? should we ping an IP before offering?
     pub fn ping_check(&self) -> bool {
@@ -161,6 +190,138 @@ impl Network {
     /// return options configured for this network
     pub fn opts(&self) -> &DhcpOptions {
         &self.options
+    }
+}
+
+/// An address pool used for IA_NA assignment. Mirrors the v4 `NetRange` but
+/// carries both a `valid` and a `preferred` lifetime as required by DHCPv6.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NetRange {
+    addrs: RangeInclusive<Ipv6Addr>,
+    /// valid lifetime for addresses in this range
+    valid: LeaseTime,
+    /// preferred lifetime for addresses in this range
+    preferred: LeaseTime,
+    opts: DhcpOptions,
+    exclude: HashSet<Ipv6Addr>,
+}
+
+impl NetRange {
+    /// the (inclusive) range of addresses this pool offers
+    pub fn addrs(&self) -> RangeInclusive<Ipv6Addr> {
+        self.addrs.clone()
+    }
+    pub fn start(&self) -> Ipv6Addr {
+        *self.addrs.start()
+    }
+    pub fn end(&self) -> Ipv6Addr {
+        *self.addrs.end()
+    }
+    /// options to include for addresses from this range
+    pub fn opts(&self) -> &DhcpOptions {
+        &self.opts
+    }
+    /// valid lifetime config for this range
+    pub fn valid(&self) -> LeaseTime {
+        self.valid
+    }
+    /// preferred lifetime config for this range
+    pub fn preferred(&self) -> LeaseTime {
+        self.preferred
+    }
+    /// true if `ip` is within the range and not excluded
+    pub fn contains(&self, ip: &Ipv6Addr) -> bool {
+        !self.exclude.contains(ip) && self.addrs.contains(ip)
+    }
+    /// the excluded addresses for this range
+    pub fn exclusions(&self) -> &HashSet<Ipv6Addr> {
+        &self.exclude
+    }
+    /// iterate the assignable addresses in the range, skipping exclusions
+    pub fn iter(&self) -> impl Iterator<Item = Ipv6Addr> + '_ {
+        Ipv6AddrRange::new(self.start(), self.end())
+            .filter(move |ip| !self.exclude.contains(ip))
+    }
+}
+
+impl From<wire::v6::IpRange> for NetRange {
+    fn from(r: wire::v6::IpRange) -> Self {
+        Self {
+            addrs: r.range,
+            valid: r.config.lease_time.into(),
+            preferred: r.config.preferred_time.into(),
+            opts: r.options.get(),
+            exclude: r.except.into_iter().collect(),
+        }
+    }
+}
+
+/// A prefix delegation pool used for IA_PD. RFC 8415 §6.3.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PdPool {
+    /// parent prefix delegated prefixes are carved from
+    prefix: Ipv6Net,
+    /// length of prefixes delegated to clients (> prefix length, <= 128)
+    delegated_len: u8,
+    valid: LeaseTime,
+    preferred: LeaseTime,
+    opts: DhcpOptions,
+    /// delegated prefixes that should never be handed out
+    except: Vec<Ipv6Net>,
+}
+
+impl PdPool {
+    /// the parent prefix
+    pub fn prefix(&self) -> Ipv6Net {
+        self.prefix
+    }
+    /// length of prefixes delegated to clients
+    pub fn delegated_len(&self) -> u8 {
+        self.delegated_len
+    }
+    pub fn opts(&self) -> &DhcpOptions {
+        &self.opts
+    }
+    pub fn valid(&self) -> LeaseTime {
+        self.valid
+    }
+    pub fn preferred(&self) -> LeaseTime {
+        self.preferred
+    }
+    /// prefixes excluded from delegation
+    pub fn exclusions(&self) -> &[Ipv6Net] {
+        &self.except
+    }
+    /// total number of prefixes this pool can delegate (before exclusions)
+    pub fn total_prefixes(&self) -> u128 {
+        let bits = self.delegated_len.saturating_sub(self.prefix.prefix_len());
+        if bits >= 128 { u128::MAX } else { 1u128 << bits }
+    }
+}
+
+impl TryFrom<wire::v6::PdPool> for PdPool {
+    type Error = anyhow::Error;
+
+    fn try_from(p: wire::v6::PdPool) -> Result<Self> {
+        if p.delegated_len <= p.prefix.prefix_len() {
+            bail!(
+                "pd_pool delegated_len ({}) must be greater than the parent prefix length ({}) for prefix {}",
+                p.delegated_len,
+                p.prefix.prefix_len(),
+                p.prefix
+            );
+        }
+        if p.delegated_len > 128 {
+            bail!("pd_pool delegated_len ({}) must be <= 128", p.delegated_len);
+        }
+        Ok(Self {
+            prefix: p.prefix,
+            delegated_len: p.delegated_len,
+            valid: p.config.lease_time.into(),
+            preferred: p.config.preferred_time.into(),
+            opts: p.options.get(),
+            except: p.except,
+        })
     }
 }
 
@@ -335,8 +496,17 @@ impl TryFrom<wire::v6::Config> for Config {
                     ping_timeout_ms,
                     config,
                     options,
+                    ranges,
+                    pd_pools,
                     interfaces: net_interfaces,
                 } = net;
+
+                // convert address pools (IA_NA) and prefix pools (IA_PD)
+                let ranges: Vec<NetRange> = ranges.into_iter().map(NetRange::from).collect();
+                let pd_pools: Vec<PdPool> = pd_pools
+                    .into_iter()
+                    .map(PdPool::try_from)
+                    .collect::<Result<_>>()?;
 
                 // If any interfaces are explicitly set for the network,
                 // find them. If the interface can't be found return an error.
@@ -371,6 +541,8 @@ impl TryFrom<wire::v6::Config> for Config {
                     subnet,
                     valid,
                     preferred,
+                    ranges,
+                    pd_pools,
                     ping_check,
                     probation_period: Duration::from_secs(probation_period),
                     authoritative,
@@ -406,6 +578,79 @@ mod tests {
     pub static CONFIG_V6_UUID_YAML: &str = include_str!("../sample/config_v6_UUID.yaml");
     pub static CONFIG_V6_NO_PERSIST_YAML: &str =
         include_str!("../sample/config_v6_no_persist.yaml");
+    pub static CONFIG_V6_POOLS_YAML: &str = include_str!("../sample/config_v6_pools.yaml");
+
+    /// parse a v6 config with IA_NA `ranges` and IA_PD `pd_pools` and verify
+    /// they are decoded into the parsed `Network`.
+    #[test]
+    fn test_v6_pools_parse() {
+        use std::net::Ipv6Addr;
+        use std::time::Duration;
+
+        let cfg = Config::new(CONFIG_V6_POOLS_YAML).unwrap();
+        let v6 = cfg.v6().expect("expected v6 config");
+        let (_subnet, net) = v6.get_first().expect("expected a network");
+
+        // --- IA_NA ranges ---
+        assert_eq!(net.ranges().len(), 1, "expected one address pool");
+        let range = &net.ranges()[0];
+        assert_eq!(range.start(), "2001:db8:1::100".parse::<Ipv6Addr>().unwrap());
+        assert_eq!(range.end(), "2001:db8:1::1ff".parse::<Ipv6Addr>().unwrap());
+        assert_eq!(range.valid().get_default(), Duration::from_secs(3600));
+        assert_eq!(range.preferred().get_default(), Duration::from_secs(3600));
+
+        // exclusion is honored by contains() and iter()
+        let excluded = "2001:db8:1::150".parse::<Ipv6Addr>().unwrap();
+        let in_range = "2001:db8:1::101".parse::<Ipv6Addr>().unwrap();
+        let out_of_range = "2001:db8:1::200".parse::<Ipv6Addr>().unwrap();
+        assert!(range.contains(&in_range));
+        assert!(!range.contains(&excluded), "excluded addr must not be contained");
+        assert!(!range.contains(&out_of_range));
+        assert!(!range.iter().any(|ip| ip == excluded));
+        assert_eq!(net.range(in_range).map(|r| r.start()), Some(range.start()));
+
+        // --- IA_PD pd_pools ---
+        assert_eq!(net.pd_pools().len(), 1, "expected one pd pool");
+        let pd = &net.pd_pools()[0];
+        assert_eq!(pd.prefix(), "2001:db8:100::/56".parse().unwrap());
+        assert_eq!(pd.delegated_len(), 64);
+        // /56 parent delegating /64s -> 2^(64-56) = 256 prefixes
+        assert_eq!(pd.total_prefixes(), 256);
+        assert_eq!(pd.valid().get_default(), Duration::from_secs(3600));
+    }
+
+    /// an invalid pd_pool (delegated_len <= parent prefix length) must error
+    #[test]
+    fn test_v6_pd_pool_invalid_delegated_len() {
+        let yaml = r#"
+v6:
+    server_id:
+        type: LL
+        identifier: fe80::1
+        persist: false
+        path: ./server_id_bad_pd
+    networks:
+        2001:db8:1::/64:
+            config:
+                lease_time:
+                    default: 3600
+                preferred_time:
+                    default: 3600
+            pd_pools:
+                - prefix: 2001:db8:100::/64
+                  delegated_len: 56
+                  config:
+                      lease_time:
+                          default: 3600
+                      preferred_time:
+                          default: 3600
+"#;
+        let err = Config::new(yaml).expect_err("delegated_len < prefix len must fail");
+        assert!(
+            format!("{err:#}").contains("delegated_len"),
+            "unexpected error: {err:#}"
+        );
+    }
 
     /// test if v6_config can generate a server_id; and if it can dump it to a file
     #[test]
