@@ -517,6 +517,7 @@ fn to_opt(code: &OptionCode, opt: &DhcpOption) -> Option<(u8, Opt)> {
         | O::AddressLeaseTime(num)
         | O::Renewal(num)
         | O::Rebinding(num) => Some(((*code).into(), Opt::U32(MaybeList::Val(*num)))),
+        // usg-dhcproto 0.17 changed these text options from String to raw bytes
         O::Hostname(s)
         | O::MeritDumpFile(s)
         | O::DomainName(s)
@@ -524,7 +525,10 @@ fn to_opt(code: &OptionCode, opt: &DhcpOption) -> Option<(u8, Opt)> {
         | O::NisDomain(s)
         | O::RootPath(s)
         | O::NetBiosScope(s)
-        | O::Message(s) => Some(((*code).into(), Opt::Str(MaybeList::Val(s.clone())))),
+        | O::Message(s) => Some((
+            (*code).into(),
+            Opt::Str(MaybeList::Val(String::from_utf8_lossy(s).into_owned())),
+        )),
         O::BootFileSize(num)
         | O::MaxDatagramSize(num)
         | O::InterfaceMtu(num)

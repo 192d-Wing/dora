@@ -152,8 +152,13 @@ impl DdnsUpdate {
                     );
                     return Err(DdnsError::NoUpdate);
                 };
-                // got hostname & domain name config from server, combining with opt 15 to create FQDN
-                let hostname = hostname.to_string() + "." + domain;
+                // got hostname & domain name config from server, combining with opt 15 to create FQDN.
+                // usg-dhcproto 0.17 returns these text options as raw bytes.
+                let hostname = format!(
+                    "{}.{}",
+                    String::from_utf8_lossy(hostname),
+                    String::from_utf8_lossy(domain)
+                );
                 let resp_hostname = Name::from_str(&hostname)?;
                 Ok(Action::UpdateHostname((resp_hostname, true, true, cfg)))
             }

@@ -3969,9 +3969,9 @@ dependencies = [
 
 [[package]]
 name = "usg-dhcproto"
-version = "0.16.0"
+version = "0.17.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "916f008257708fb191066253df5bb9ae48d72e11aa743e4b8e43d9f7be0b5e24"
+checksum = "09ae0ffa125c075a55fba898665a4f6f4ce56b341a420e4cbe8cf13d8e7f8e94"
 dependencies = [
  "hickory-proto",
  "ipnet",
@@ -4191,7 +4191,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]
