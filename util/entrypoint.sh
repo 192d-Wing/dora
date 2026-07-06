@@ -3,10 +3,11 @@
 set -e
 
 
-# Support docker run --init parameter which obsoletes the use of dumb-init,
-# but support dumb-init for those that still use it without --init
-if [ $$ -eq 1 ]; then
-    run="exec /usr/bin/dumb-init --"
+# Prefer `docker run --init` / `podman --init`, which obsoletes dumb-init. Only
+# fall back to dumb-init if it is actually installed -- the hardened UBI base
+# image does not ship it.
+if [ $$ -eq 1 ] && command -v dumb-init >/dev/null 2>&1; then
+    run="exec dumb-init --"
 else
     run="exec"
 fi
@@ -14,7 +15,8 @@ fi
 # Single argument to command line is interface name
 if [ $# -eq 1 -a -n "$1" ]; then
     # skip wait-for-interface behavior if found in path
-    if ! which "$1" >/dev/null; then
+    # (`command -v` is portable; the minimal UBI base has no `which`)
+    if ! command -v "$1" >/dev/null 2>&1; then
         # loop until interface is found, or we give up
         NEXT_WAIT_TIME=1
         until [ -e "/sys/class/net/$1" ] || [ $NEXT_WAIT_TIME -eq 4 ]; do
@@ -59,9 +61,17 @@ if [ -n "$IFACE" ]; then
         chown dhcpd:dhcpd "$data_dir/em.db~"
     fi
 
-    container_id=$(grep docker /proc/self/cgroup | sort -n | head -n 1 | cut -d: -f3 | cut -d/ -f3)
-    if perl -e '($id,$name)=@ARGV;$short=substr $id,0,length $name;exit 1 if $name ne $short;exit 0' $container_id $HOSTNAME; then
-        echo "You must add the 'docker run' option '--net=host' if you want to provide DHCP service to the host network."
+    # Warn when we are not on the host network: outside --net=host the
+    # container's $HOSTNAME defaults to a prefix of its container id. Done in
+    # pure shell so the hardened base needs no perl. cgroup lookup is best-effort
+    # (empty under cgroup v2) and must not abort the script under `set -e`.
+    container_id=$(grep -m1 docker /proc/self/cgroup 2>/dev/null | sed -n 's#.*/##p') || true
+    if [ -n "$container_id" ] && [ -n "$HOSTNAME" ]; then
+        case "$container_id" in
+            "$HOSTNAME"*)
+                echo "You must add the 'docker run' option '--net=host' if you want to provide DHCP service to the host network."
+                ;;
+        esac
     fi
 
     $run /usr/local/bin/dora
