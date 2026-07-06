@@ -1,0 +1,6 @@
+# This project targets Linux. Files that are interpreted inside Linux container
+# images (or by /bin/sh) must use LF line endings regardless of the checkout
+# platform, otherwise a CRLF `#!/bin/bash\r` shebang breaks the entrypoint.
+*.sh text eol=lf
+Containerfile text eol=lf
+entrypoint.sh text eol=lf

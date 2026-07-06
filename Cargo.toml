@@ -1,15 +1,15 @@
 [workspace]
 members = [
-    "bin",
+    "crates/bin",
     # main server code
-    "dora-core",
-    "dora-cfg",
+    "crates/dora-core",
+    "crates/dora-cfg",
     # healthcheck/diagnostics,etc
-    "external-api",
+    "crates/external-api",
     # libs
-    "libs/*",
+    "crates/libs/*",
     # plugins
-    "plugins/*",
+    "crates/plugins/*",
 ]
 resolver = "2"
 # default-members = ["bin"]

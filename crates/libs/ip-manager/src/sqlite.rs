@@ -37,7 +37,7 @@ impl SqliteDb {
         opts.log_statements(tracing::log::LevelFilter::Trace);
 
         let inner = SqlitePool::connect_with(opts).await?;
-        sqlx::migrate!("../../migrations").run(&inner).await?;
+        sqlx::migrate!("../../../migrations").run(&inner).await?;
         Ok(Self { inner })
     }
 }
