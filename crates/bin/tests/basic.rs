@@ -446,7 +446,7 @@ fn test_requested_opts() -> Result<()> {
     assert_eq!(resp.opts().msg_type().unwrap(), v4::MessageType::Offer);
     assert_eq!(
         resp.opts().get(v4::OptionCode::NisDomain).unwrap(),
-        &v4::DhcpOption::NisDomain("testdomain.com".to_string())
+        &v4::DhcpOption::NisDomain(b"testdomain.com".to_vec())
     );
     Ok(())
 }

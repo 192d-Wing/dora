@@ -2,7 +2,7 @@ use std::fmt;
 
 use base64::{Engine, prelude::BASE64_STANDARD};
 use dora_core::dhcproto::{Name, NameError, v4::HType};
-use dora_core::hickory_proto::serialize::binary::BinEncoder;
+use dora_core::hickory_proto::serialize::binary::{BinEncodable, BinEncoder, NameEncoding};
 use ring::digest::{Context, SHA256};
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -70,7 +70,9 @@ impl DhcId {
         // create new encoder
         let mut name_buf = Vec::new();
         let mut enc = BinEncoder::new(&mut name_buf);
-        fqdn.emit_as_canonical(&mut enc, true)?;
+        // canonical wire form: uncompressed, lowercased labels (RFC 4701 §3.5)
+        enc.set_name_encoding(NameEncoding::UncompressedLowercase);
+        fqdn.emit(&mut enc)?;
         // create digest
         let mut data = self.id();
 

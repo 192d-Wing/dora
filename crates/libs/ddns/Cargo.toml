@@ -8,6 +8,11 @@ edition = "2024"
 [dependencies]
 dora-core = { path = "../../dora-core" }
 config = { path = "../config" }
+# hickory-proto 0.26 removed the DNS client transport; it now lives in
+# hickory-net (which pins hickory-proto ^0.26.0, matching the workspace's
+# 0.26.1). hickory-client 0.26.0-alpha.1 still requires hickory-proto's
+# removed `tokio`/`text-parsing` features, so it cannot be used here.
+hickory-net = { version = "0.26.1", features = ["dnssec-ring"] }
 base64 = { workspace = true }
 thiserror = { workspace = true }
 # `#[tracing::instrument]` in this crate expands to absolute `::tracing::` paths,

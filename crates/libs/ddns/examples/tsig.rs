@@ -8,7 +8,7 @@ use dora_core::{
     anyhow::{self, Result},
     config::trace,
     dhcproto::Name,
-    hickory_proto::dnssec::{rdata::tsig::TsigAlgorithm, tsig::TSigner},
+    hickory_proto::rr::{TSigner, rdata::tsig::TsigAlgorithm},
     tokio::{self},
     tracing::{debug, error},
 };

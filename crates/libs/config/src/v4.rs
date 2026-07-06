@@ -826,7 +826,7 @@ mod tests {
 
         // a_class matches on 'hostname'
         msg.opts_mut()
-            .insert(DhcpOption::Hostname("hostname".to_owned()));
+            .insert(DhcpOption::Hostname(b"hostname".to_vec()));
 
         let matched = cfg
             .eval_client_classes(&msg, PacketDetails::default())
@@ -943,10 +943,7 @@ mod tests {
         );
         reserved_opts.insert(
             OptionCode::NisDomain,
-            (
-                DhcpOption::NisDomain("testdomain.com.".to_string()),
-                another,
-            ),
+            (DhcpOption::NisDomain(b"testdomain.com.".to_vec()), another),
         );
         let net = Network {
             subnet: "192.168.0.0/24".parse().unwrap(),
