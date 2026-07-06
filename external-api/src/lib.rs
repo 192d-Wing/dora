@@ -303,10 +303,13 @@ mod handlers {
     /// config cannot be parsed/serialized so a failure can never fall back to
     /// echoing the raw (secret-bearing) file.
     pub(crate) fn redact_config(raw: &str) -> anyhow::Result<String> {
-        // yaml_serde parses JSON as well (JSON is a subset of YAML 1.2), so this
-        // handles both config formats.
-        let mut cfg: config::wire::Config =
-            yaml_serde::from_str(raw).context("could not parse config")?;
+        // Mirror the server's own loader (config::DhcpConfig::new), which tries
+        // JSON first and then YAML. yaml_serde alone is not enough: it rejects
+        // some inputs serde_json accepts (e.g. tab-indented JSON), which would
+        // make /config return 500 for a JSON config that otherwise boots fine.
+        let mut cfg: config::wire::Config = serde_json::from_str(raw)
+            .or_else(|_| yaml_serde::from_str(raw))
+            .context("could not parse config")?;
         if let Some(ddns) = cfg.ddns.as_mut() {
             for key in ddns.tsig_keys.values_mut() {
                 key.data = REDACTED.to_string();
@@ -530,6 +533,17 @@ networks:
         // map form preserved, not converted to a `!chaddr` tag)
         yaml_serde::from_str::<config::wire::Config>(&out)
             .expect("redacted config should re-parse");
+    }
+
+    // The server accepts JSON configs (and tries JSON before YAML at startup),
+    // so /config must redact a JSON config too. Tab indentation is valid JSON
+    // but invalid YAML, so this also guards the yaml-only-parse regression.
+    #[test]
+    fn test_redact_config_accepts_json() {
+        let raw = "{\n\t\"ddns\": {\n\t\t\"enable_updates\": true,\n\t\t\"forward\": [],\n\t\t\"reverse\": [],\n\t\t\"tsig_keys\": {\n\t\t\t\"key_foo\": { \"algorithm\": \"hmac-sha256\", \"data\": \"SUPERSECRETKEYMATERIAL==\" }\n\t\t}\n\t}\n}";
+        let out = crate::handlers::redact_config(raw).expect("json redact should succeed");
+        assert!(!out.contains("SUPERSECRETKEYMATERIAL"), "secret leaked:\n{out}");
+        assert!(out.contains("**REDACTED**"));
     }
 
     #[test]
