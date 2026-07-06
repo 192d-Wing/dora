@@ -777,6 +777,7 @@ dependencies = [
  "rand 0.8.6",
  "ring 0.16.20",
  "thiserror 1.0.69",
+ "tracing",
  "tracing-test",
 ]
 
@@ -1958,6 +1959,7 @@ dependencies = [
  "message-type",
  "register_derive",
  "static-addr",
+ "tracing",
  "tracing-test",
  "yaml_serde",
 ]
@@ -2090,6 +2092,7 @@ dependencies = [
  "config",
  "dora-core",
  "register_derive",
+ "tracing",
  "tracing-test",
  "yaml_serde",
 ]
@@ -3594,6 +3597,7 @@ dependencies = [
  "hex",
  "message-type",
  "register_derive",
+ "tracing",
  "tracing-test",
  "yaml_serde",
 ]
