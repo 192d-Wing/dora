@@ -299,7 +299,7 @@ mod handlers {
     /// material with [`REDACTED`], and re-serialize to YAML. Returns `Err` if the
     /// config cannot be parsed/serialized so a failure can never fall back to
     /// echoing the raw (secret-bearing) file.
-    fn redact_config(raw: &str) -> anyhow::Result<String> {
+    pub(crate) fn redact_config(raw: &str) -> anyhow::Result<String> {
         // yaml_serde parses JSON as well (JSON is a subset of YAML 1.2), so this
         // handles both config formats.
         let mut cfg: config::wire::Config =
@@ -485,6 +485,56 @@ mod tests {
     use ip_manager::sqlite::SqliteDb;
 
     use super::*;
+
+    // The /config endpoint is unauthenticated, so it must never leak the DDNS
+    // TSIG secret. Verify the key material is stripped and the reservation
+    // `match:` map form (which yaml_serde would otherwise reject) round-trips.
+    #[test]
+    fn test_redact_config_strips_tsig_secret() {
+        let raw = r#"
+ddns:
+  enable_updates: true
+  forward: []
+  reverse: []
+  tsig_keys:
+    key_foo:
+      algorithm: hmac-sha256
+      data: "SUPERSECRETKEYMATERIAL=="
+networks:
+  192.168.0.0/24:
+    ranges:
+      - start: 192.168.0.100
+        end: 192.168.0.200
+        options:
+          values: {}
+        config:
+          lease_time:
+            default: 3600
+    reservations:
+      - ip: 192.168.0.50
+        match:
+          chaddr: aa:bb:cc:dd:ee:ff
+        options:
+          values: {}
+"#;
+        let out = crate::handlers::redact_config(raw).expect("redact should succeed");
+        assert!(
+            !out.contains("SUPERSECRETKEYMATERIAL"),
+            "TSIG secret leaked into /config output:\n{out}"
+        );
+        assert!(out.contains("**REDACTED**"), "expected redaction marker");
+        // the redacted output must still be a valid config (reservation match
+        // map form preserved, not converted to a `!chaddr` tag)
+        yaml_serde::from_str::<config::wire::Config>(&out)
+            .expect("redacted config should re-parse");
+    }
+
+    #[test]
+    fn test_redact_config_rejects_unparseable() {
+        // must error (not echo the raw file) when the config cannot be parsed
+        assert!(crate::handlers::redact_config("this: is: not: valid").is_err());
+    }
+
     #[tokio::test]
     async fn test_health() -> anyhow::Result<()> {
         let mgr = Arc::new(IpManager::new(SqliteDb::new("sqlite::memory:").await?)?);
