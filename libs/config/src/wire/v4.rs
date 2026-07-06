@@ -137,12 +137,67 @@ pub struct ReservedIp {
     pub class: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Condition {
-    #[serde(rename = "chaddr")]
     Mac(MacAddr),
     Options(Options),
+}
+
+// The `match` wire form is a single-key map: `chaddr: <mac>` or
+// `options: <opts>`. We (de)serialize it by hand rather than relying on serde's
+// externally-tagged enum representation. serde_yaml 0.8 encoded that as a map,
+// but yaml_serde / serde_yaml 0.9+ switched to YAML `!tag` syntax, which would
+// break every existing config that uses the map form (and fails the round-trip
+// tests). A manual map-based impl keeps the format stable across YAML backends
+// and matches the JSON form too.
+impl Serialize for Condition {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeMap;
+        let mut map = serializer.serialize_map(Some(1))?;
+        match self {
+            Condition::Mac(mac) => map.serialize_entry("chaddr", mac)?,
+            Condition::Options(opts) => map.serialize_entry("options", opts)?,
+        }
+        map.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for Condition {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct ConditionVisitor;
+        impl<'de> de::Visitor<'de> for ConditionVisitor {
+            type Value = Condition;
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("a map with a single key `chaddr` or `options`")
+            }
+            fn visit_map<A>(self, mut map: A) -> std::result::Result<Condition, A::Error>
+            where
+                A: de::MapAccess<'de>,
+            {
+                let key: String = map
+                    .next_key()?
+                    .ok_or_else(|| de::Error::custom("`match` requires `chaddr` or `options`"))?;
+                let cond = match key.as_str() {
+                    "chaddr" => Condition::Mac(map.next_value()?),
+                    "options" => Condition::Options(map.next_value()?),
+                    other => {
+                        return Err(de::Error::unknown_variant(other, &["chaddr", "options"]));
+                    }
+                };
+                if map.next_key::<String>()?.is_some() {
+                    return Err(de::Error::custom("`match` must have exactly one key"));
+                }
+                Ok(cond)
+            }
+        }
+        deserializer.deserialize_map(ConditionVisitor)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
