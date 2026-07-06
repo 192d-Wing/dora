@@ -1,2 +1,7 @@
 [toolchain]
 channel = "1.95.0"
+# Listed here so rustup installs them for the pinned toolchain automatically.
+# CI installs a toolchain via dtolnay/rust-toolchain, but this file overrides it
+# to 1.95.0 for every cargo invocation, so clippy/rustfmt/llvm-tools must exist
+# on 1.95.0 or those jobs fail with "component is not installed".
+components = ["rustfmt", "clippy", "llvm-tools-preview"]
