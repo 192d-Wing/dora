@@ -542,7 +542,10 @@ networks:
     fn test_redact_config_accepts_json() {
         let raw = "{\n\t\"ddns\": {\n\t\t\"enable_updates\": true,\n\t\t\"forward\": [],\n\t\t\"reverse\": [],\n\t\t\"tsig_keys\": {\n\t\t\t\"key_foo\": { \"algorithm\": \"hmac-sha256\", \"data\": \"SUPERSECRETKEYMATERIAL==\" }\n\t\t}\n\t}\n}";
         let out = crate::handlers::redact_config(raw).expect("json redact should succeed");
-        assert!(!out.contains("SUPERSECRETKEYMATERIAL"), "secret leaked:\n{out}");
+        assert!(
+            !out.contains("SUPERSECRETKEYMATERIAL"),
+            "secret leaked:\n{out}"
+        );
         assert!(out.contains("**REDACTED**"));
     }
 

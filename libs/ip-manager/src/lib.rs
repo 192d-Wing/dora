@@ -986,9 +986,7 @@ mod tests {
 
         // fill up range with new clients
         for range_ip in range.iter() {
-            let client_id = (1..6)
-                .map(|_| rand::random())
-                .collect::<Vec<u8>>();
+            let client_id = (1..6).map(|_| rand::random()).collect::<Vec<u8>>();
             let expires_at = SystemTime::now() + Duration::from_secs(60);
             let ip = mgr
                 .reserve_first(&range, &network, &client_id, expires_at, None)
@@ -1026,9 +1024,7 @@ mod tests {
             .set_ranges(vec![range.clone()]);
 
         // lease an IP
-        let client_id = (1..6)
-            .map(|_| rand::random())
-            .collect::<Vec<u8>>();
+        let client_id = (1..6).map(|_| rand::random()).collect::<Vec<u8>>();
         let expires_at = SystemTime::now() + Duration::from_secs(60);
         let ip = mgr
             .reserve_first(
@@ -1049,9 +1045,7 @@ mod tests {
         );
 
         // try a new client, should get the same IP
-        let client_id = (1..6)
-            .map(|_| rand::random())
-            .collect::<Vec<u8>>();
+        let client_id = (1..6).map(|_| rand::random()).collect::<Vec<u8>>();
         let expires_at = SystemTime::now() + Duration::from_secs(60);
         let _ip = mgr
             .reserve_first(
@@ -1088,9 +1082,7 @@ mod tests {
             .set_ranges(vec![range.clone()]);
 
         // lease an IP
-        let client_id = (1..6)
-            .map(|_| rand::random())
-            .collect::<Vec<u8>>();
+        let client_id = (1..6).map(|_| rand::random()).collect::<Vec<u8>>();
         let expires_at = SystemTime::now() + Duration::from_secs(60);
         let ip = mgr
             .reserve_first(
@@ -1109,9 +1101,7 @@ mod tests {
         assert!(mgr.lookup_id(&client_id).await.is_err());
 
         // try a new client, should skip probated IP
-        let client_id = (1..6)
-            .map(|_| rand::random())
-            .collect::<Vec<u8>>();
+        let client_id = (1..6).map(|_| rand::random()).collect::<Vec<u8>>();
         let expires_at = SystemTime::now() + Duration::from_secs(60);
         let _ip = mgr
             .reserve_first(
@@ -1163,9 +1153,7 @@ mod tests {
         )
         .await;
         // lease an IP
-        let client_id = (1..6)
-            .map(|_| rand::random())
-            .collect::<Vec<u8>>();
+        let client_id = (1..6).map(|_| rand::random()).collect::<Vec<u8>>();
         let expires_at = SystemTime::now() + Duration::from_secs(60);
         let _ip = mgr
             .reserve_first(
@@ -1203,9 +1191,7 @@ mod tests {
             .set_ping_check(true);
 
         // lease an IP
-        let client_id = (1..6)
-            .map(|_| rand::random())
-            .collect::<Vec<u8>>();
+        let client_id = (1..6).map(|_| rand::random()).collect::<Vec<u8>>();
 
         assert!(mgr.lookup_id(&client_id).await.is_err());
         Ok(())
