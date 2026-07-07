@@ -217,6 +217,12 @@ where
             let id = binding_id(duid, iana.id);
             let mut extended = None;
             for addr in iana_addrs(iana) {
+                // Only extend an address that belongs to the client's current
+                // link; renewing an off-link address would keep the client using
+                // an unroutable address (RFC 8415 §18.3.4/§18.3.5).
+                if network.range(addr).is_none() {
+                    continue;
+                }
                 let (preferred, valid) = na_lifetimes(network, addr);
                 let expires_at = SystemTime::now() + valid;
                 if let Ok(Some(IpAddr::V6(ip))) =
@@ -249,6 +255,10 @@ where
             let id = binding_id(duid, iapd.id);
             let mut extended = None;
             for (prefix, plen) in iapd_prefixes(iapd) {
+                // only extend a prefix delegated from one of this network's pools
+                if !pd_on_link(network, prefix, plen) {
+                    continue;
+                }
                 let (preferred, valid) = pd_lifetimes(network, prefix);
                 let expires_at = SystemTime::now() + valid;
                 if let Ok(Some(IpAddr::V6(ip))) =
@@ -647,6 +657,15 @@ fn pd_lifetimes(network: &Network, prefix: Ipv6Addr) -> (Duration, Duration) {
         }
     }
     lifetimes(network)
+}
+
+/// whether `prefix` (of length `plen`) is delegated from one of the network's
+/// pd_pools — i.e. is appropriate for the client's current link.
+fn pd_on_link(network: &Network, prefix: Ipv6Addr, plen: u8) -> bool {
+    network
+        .pd_pools()
+        .iter()
+        .any(|p| p.delegated_len() == plen && p.prefix().contains(&prefix))
 }
 
 /// the addresses a client listed inside an IA_NA (its IAADDR sub-options).
