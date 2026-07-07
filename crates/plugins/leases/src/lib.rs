@@ -146,6 +146,10 @@ where
                 self.discover(ctx, &client_id, net, classes, rapid_commit)
                     .await
             }
+            // a previous plugin (e.g. static-addr) already assigned an address;
+            // leave that ACK alone rather than run it through the lease state
+            // machine (static addresses live outside the dynamic ranges).
+            (Some(MessageType::Request), _) if resp_has_yiaddr => Ok(Action::Continue),
             (Some(MessageType::Request), Some(net)) => {
                 self.request(ctx, &client_id, net, classes).await
             }
@@ -874,6 +878,41 @@ mod tests {
         assert_eq!(
             ctx.resp_msg().unwrap().yiaddr(),
             Ipv4Addr::new(192, 168, 0, 100)
+        );
+        Ok(())
+    }
+
+    /// A REQUEST whose response already carries a yiaddr (assigned by an earlier
+    /// plugin such as static-addr) is left untouched: static addresses live
+    /// outside the dynamic ranges and must not run through the lease state
+    /// machine, even though they look like SELECTING for an out-of-range IP.
+    #[tokio::test]
+    #[traced_test]
+    async fn test_request_preassigned_yiaddr_is_kept() -> Result<()> {
+        let leases = new_leases().await?;
+        let mut ctx = request_ctx()?;
+        // simulate static-addr having already assigned the address
+        ctx.resp_msg_mut()
+            .unwrap()
+            .set_yiaddr(Ipv4Addr::new(192, 168, 2, 170));
+        ctx.msg_mut()
+            .opts_mut()
+            .insert(v4::DhcpOption::RequestedIpAddress("192.168.2.170".parse()?));
+        ctx.msg_mut()
+            .opts_mut()
+            .insert(v4::DhcpOption::ServerIdentifier("192.168.0.1".parse()?));
+
+        let action = leases.handle(&mut ctx).await?;
+        assert!(matches!(action, Action::Continue));
+        assert!(
+            ctx.resp_msg()
+                .unwrap()
+                .opts()
+                .has_msg_type(v4::MessageType::Ack)
+        );
+        assert_eq!(
+            ctx.resp_msg().unwrap().yiaddr(),
+            Ipv4Addr::new(192, 168, 2, 170)
         );
         Ok(())
     }
