@@ -163,6 +163,14 @@ impl Plugin<Message> for MsgType {
             // come from the range containing the client's address if there is
             // one, otherwise from class / interface-derived local config.
             Some(MessageType::Inform) if matches!(network, Some(net) if net.authoritative()) => {
+                // a DROP class silences the client entirely -- INFORM included.
+                // (The shared tail below runs this check for other message types,
+                // but INFORM returns early, so it must be repeated here.)
+                if matches!(&matched, Some(classes) if classes.iter().any(|c| c == client_classes::client_classification::DROP_CLASS))
+                {
+                    debug!("DROP class matched");
+                    return Ok(Action::NoResponse);
+                }
                 resp.opts_mut()
                     .insert(DhcpOption::MessageType(MessageType::Ack));
                 ctx.set_resp_msg(resp);
@@ -685,6 +693,42 @@ networks:
         assert!(
             matches!(action, Action::NoResponse),
             "non-authoritative network must ignore INFORM"
+        );
+        Ok(())
+    }
+
+    /// A client matched to the DROP class is silenced, INFORM included -- the
+    /// relaxed INFORM path must still honor DROP.
+    #[tokio::test]
+    #[traced_test]
+    async fn test_inform_drop_class_ignored() -> Result<()> {
+        // blank_ctx uses chaddr 01:02:03:04:05:06, so this DROP assert matches
+        static DROP_YAML: &str = r#"
+networks:
+    192.168.0.0/24:
+        ranges:
+            - start: 192.168.0.100
+              end: 192.168.0.150
+              config:
+                  lease_time:
+                      default: 3600
+              options:
+                  values: {}
+client_classes:
+    v4:
+        - name: DROP
+          assert: "pkt4.mac == 0x010203040506"
+          options:
+              values: {}
+"#;
+        let cfg = DhcpConfig::parse_str(DROP_YAML).unwrap();
+        let plugin = MsgType::new(Arc::new(cfg))?;
+        let mut ctx = inform_ctx("192.168.0.100")?;
+
+        let action = plugin.handle(&mut ctx).await?;
+        assert!(
+            matches!(action, Action::NoResponse),
+            "DROP-classed client must not get an INFORM ACK"
         );
         Ok(())
     }
