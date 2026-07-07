@@ -12,7 +12,7 @@
 //!
 //! [`Storage`]: ip_manager::Storage
 //! [`IpManager`]: ip_manager::IpManager
-use icmp_ping::{Icmpv4, Icmpv6, Listener, PingReply};
+use icmp_ping::{Icmpv4, Icmpv6, Listener, NeighborSolicitor, PingReply};
 
 use async_trait::async_trait;
 use chrono::DateTime;
@@ -214,10 +214,14 @@ impl State {
 pub struct IpManager<T> {
     store: T,
     icmpv4: Arc<IcmpInner<Icmpv4>>,
-    /// best-effort: `None` if the ICMPv6 socket could not be created (some CI /
-    /// container environments), in which case v6 DAD is skipped
+    /// best-effort: `None` if the ICMPv6 echo socket could not be created (some
+    /// CI / container environments), in which case echo-based v6 DAD is skipped
     icmpv6: Option<Arc<IcmpInner<Icmpv6>>>,
-    ping_cache: moka::future::Cache<IpAddr, Option<PingReply>>,
+    /// preferred v6 DAD: Neighbor Solicitation. best-effort — `None` if a raw
+    /// ICMPv6 socket could not be created (needs `CAP_NET_RAW`)
+    nd: Option<Arc<NeighborSolicitor>>,
+    /// memoized DAD results: `true` == address is in use
+    ping_cache: moka::future::Cache<IpAddr, bool>,
 }
 
 impl<T> fmt::Debug for IpManager<T> {
@@ -236,6 +240,7 @@ impl<T: Clone> Clone for IpManager<T> {
             store: self.store.clone(),
             icmpv4: self.icmpv4.clone(),
             icmpv6: self.icmpv6.clone(),
+            nd: self.nd.clone(),
             ping_cache: self.ping_cache.clone(),
         }
     }
@@ -286,14 +291,14 @@ where
             .await
     }
 
-    /// used for tests to insert into ping cache
+    /// used for tests to insert into the DAD result cache (`true` == in use)
     #[cfg(test)]
-    pub(crate) async fn ping_insert(&self, ip: IpAddr, reply: Option<PingReply>) {
-        self.ping_cache.insert(ip, reply).await
+    pub(crate) async fn ping_insert(&self, ip: IpAddr, in_use: bool) {
+        self.ping_cache.insert(ip, in_use).await
     }
 
-    /// returns Ok(()) if ping failed or ping == false
-    /// returns Err if ping succeeded
+    /// returns `Ok(())` if the address is free (or DAD is disabled for the
+    /// network); returns `Err(AddrInUse)` if it is already in use on-link.
     pub async fn ping_check<N: NetworkParams>(
         &self,
         ip: IpAddr,
@@ -302,53 +307,47 @@ where
         if !network.ping_check() {
             return Ok(());
         }
-        match ip {
-            IpAddr::V4(_) => {
-                let fut = async {
-                    match self.addr_in_use(ip, network.ping_timeout()).await {
-                        Ok(reply) => {
-                            // ping succeeded
-                            if let Err(err) = self.store.delete(ip).await {
-                                error!(?err, "error attempting to delete ip");
-                            }
-                            Some(reply)
-                        }
-                        // ping failed, so addr is not in use
-                        Err(_) => None,
-                    }
-                };
-                match self.ping_cache.get_with(ip, fut).await {
-                    Some(_reply) => Err(IpError::AddrInUse(ip)),
-                    None => Ok(()),
+        let timeout = network.ping_timeout();
+        let iface = network.iface_index();
+        let fut = async {
+            let in_use = match ip {
+                IpAddr::V4(_) => self.addr_in_use(ip, timeout).await.is_ok(),
+                IpAddr::V6(v6) => self.dad_v6(v6, iface, timeout).await,
+            };
+            if in_use {
+                // stop handing this address out
+                if let Err(err) = self.store.delete(ip).await {
+                    error!(?err, "error attempting to delete in-use ip");
                 }
             }
-            IpAddr::V6(_) => {
-                // v6 DAD via ICMPv6 echo. If no ICMPv6 socket is available, skip.
-                let Some(icmpv6) = self.icmpv6.clone() else {
-                    trace!(?ip, "no ICMPv6 socket; skipping v6 DAD");
-                    return Ok(());
-                };
-                let fut = async {
-                    match self
-                        .addr_in_use_v6(&icmpv6, ip, network.ping_timeout())
-                        .await
-                    {
-                        Ok(reply) => {
-                            // reply => address is in use; drop our entry for it
-                            if let Err(err) = self.store.delete(ip).await {
-                                error!(?err, "error attempting to delete ip");
-                            }
-                            Some(reply)
-                        }
-                        Err(_) => None,
-                    }
-                };
-                match self.ping_cache.get_with(ip, fut).await {
-                    Some(_reply) => Err(IpError::AddrInUse(ip)),
-                    None => Ok(()),
-                }
+            in_use
+        };
+        if self.ping_cache.get_with(ip, fut).await {
+            Err(IpError::AddrInUse(ip))
+        } else {
+            Ok(())
+        }
+    }
+
+    /// v6 duplicate-address detection. Prefer Neighbor Solicitation (RFC 4861 —
+    /// hosts reliably answer NS, unlike echo which can be filtered) when a raw
+    /// socket and the network's interface index are both available; otherwise
+    /// fall back to an ICMPv6 echo probe; if neither is available, skip DAD.
+    async fn dad_v6(&self, ip: Ipv6Addr, iface: Option<u32>, timeout: Duration) -> bool {
+        if let (Some(nd), Some(scope)) = (&self.nd, iface) {
+            match nd.probe(ip, scope, timeout).await {
+                Ok(in_use) => return in_use,
+                Err(err) => debug!(?err, "NS probe failed; falling back to echo"),
             }
         }
+        if let Some(icmpv6) = &self.icmpv6 {
+            return self
+                .addr_in_use_v6(icmpv6, IpAddr::V6(ip), timeout)
+                .await
+                .is_ok();
+        }
+        trace!(?ip, "no v6 DAD mechanism available; treating as free");
+        false
     }
 }
 
@@ -369,13 +368,29 @@ where
                 listener,
             })),
             Err(err) => {
-                warn!(?err, "could not create ICMPv6 socket; v6 DAD disabled");
+                warn!(
+                    ?err,
+                    "could not create ICMPv6 echo socket; echo v6 DAD disabled"
+                );
+                None
+            }
+        };
+        // preferred v6 DAD mechanism: Neighbor Solicitation (needs a raw socket).
+        // Also best-effort; falls back to echo above when unavailable.
+        let nd = match NeighborSolicitor::new() {
+            Ok(nd) => Some(Arc::new(nd)),
+            Err(err) => {
+                warn!(
+                    ?err,
+                    "could not create ICMPv6 raw socket; NS-based v6 DAD disabled"
+                );
                 None
             }
         };
         Ok(Self {
             icmpv4,
             icmpv6,
+            nd,
             store,
             ping_cache: moka::future::CacheBuilder::new(1_000)
                 // time_to_idle?
@@ -796,13 +811,12 @@ pub enum IpError<E> {
 
 #[cfg(test)]
 mod tests {
-    use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
+    use std::net::Ipv4Addr;
 
     use super::*;
     use crate::sqlite::SqliteDb;
     use config::LeaseTime;
     use config::v4::{NetRange, Network};
-    use icmp_ping::{DEFAULT_TOKEN_SIZE, EchoReply};
     use tracing_test::traced_test;
 
     type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
@@ -1352,21 +1366,9 @@ mod tests {
             .set_subnet("192.168.1.0/24".parse()?)
             .set_ranges(vec![range.clone()])
             .set_ping_check(true);
-        // insert dummy entry into ping cache
+        // mark this IP as in-use in the DAD cache
         let ip = Ipv4Addr::new(192, 168, 1, 100);
-        mgr.ping_insert(
-            ip.into(),
-            Some(PingReply {
-                reply: EchoReply {
-                    ident: 1,
-                    seq_cnt: 1,
-                    payload: [0; DEFAULT_TOKEN_SIZE],
-                },
-                addr: SocketAddr::V4(SocketAddrV4::new(ip, 100)),
-                time: Duration::from_secs(60),
-            }),
-        )
-        .await;
+        mgr.ping_insert(ip.into(), true).await;
         // lease an IP
         let client_id = (1..6).map(|_| rand::random()).collect::<Vec<u8>>();
         let expires_at = SystemTime::now() + Duration::from_secs(60);
