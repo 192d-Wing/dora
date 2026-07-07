@@ -303,6 +303,24 @@ impl PdPool {
         let bits = self.delegated_len.saturating_sub(self.prefix.prefix_len());
         if bits >= 128 { u128::MAX } else { 1u128 << bits }
     }
+    /// lazily iterate the delegated prefix base addresses (skipping any in the
+    /// `except` list). The iterator can be very long for wide pools, so callers
+    /// should bound how many candidates they scan.
+    pub fn iter_prefixes(&self) -> impl Iterator<Item = Ipv6Addr> + '_ {
+        let dlen = self.delegated_len;
+        let base = u128::from(self.prefix.network());
+        // number of delegated blocks = 2^(dlen - plen); step between block bases
+        // = 2^(128 - dlen)
+        let count = self.total_prefixes();
+        let step: u128 = if dlen >= 128 {
+            1
+        } else {
+            1u128 << (128 - dlen)
+        };
+        (0..count)
+            .map(move |i| Ipv6Addr::from(base.wrapping_add(i.wrapping_mul(step))))
+            .filter(move |ip| !self.except.iter().any(|ex| ex.contains(ip)))
+    }
 }
 
 impl TryFrom<wire::v6::PdPool> for PdPool {

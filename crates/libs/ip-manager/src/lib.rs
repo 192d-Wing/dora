@@ -28,7 +28,7 @@ pub use pool::{NetworkParams, Pool};
 use core::fmt;
 use std::{
     collections::HashSet,
-    net::IpAddr,
+    net::{IpAddr, Ipv6Addr},
     ops::RangeInclusive,
     sync::{
         Arc,
@@ -110,6 +110,42 @@ pub trait Storage: Send + Sync + 'static {
     /// Separate from `get_id` so identity lookups target one table deterministically
     /// and a v4/v6 client-id byte collision can never return the wrong family.
     async fn get_id_v6(&self, id: &[u8]) -> Result<Option<IpAddr>, Self::Error>;
+
+    // ---- IA_PD (prefix delegation) ------------------------------------------
+    /// get a delegated-prefix binding by its base address and delegated length
+    async fn get_pd(
+        &self,
+        prefix: IpAddr,
+        prefix_len: u8,
+    ) -> Result<Option<State>, Self::Error>;
+    /// insert or replace a delegated-prefix binding (caller has verified it is
+    /// free / expired / owned by this client)
+    async fn upsert_pd(
+        &self,
+        prefix: IpAddr,
+        prefix_len: u8,
+        network: IpAddr,
+        id: &[u8],
+        expires_at: SystemTime,
+        state: Option<IpState>,
+    ) -> Result<(), Self::Error>;
+    /// look up a client's delegated prefix (base + length) by DUID+IAID identity
+    async fn get_id_pd(&self, id: &[u8]) -> Result<Option<(IpAddr, u8)>, Self::Error>;
+    /// extend an unexpired delegated prefix if the id matches
+    async fn renew_pd(
+        &self,
+        prefix: IpAddr,
+        prefix_len: u8,
+        id: &[u8],
+        expires_at: SystemTime,
+    ) -> Result<Option<IpAddr>, Self::Error>;
+    /// release a delegated prefix if the (prefix, len, id) match
+    async fn release_pd(
+        &self,
+        prefix: IpAddr,
+        prefix_len: u8,
+        id: &[u8],
+    ) -> Result<Option<ClientInfo>, Self::Error>;
     async fn select_all(&self) -> Result<Vec<State>, Self::Error>;
     async fn release_ip(&self, ip: IpAddr, id: &[u8]) -> Result<Option<ClientInfo>, Self::Error>;
     async fn delete(&self, ip: IpAddr) -> Result<(), Self::Error>;
@@ -543,6 +579,75 @@ where
             .store
             .update_unexpired(ip, IpState::Lease, id, expires_at, Some(id))
             .await?)
+    }
+
+    /// Delegate a prefix from `pool` for this binding id (IA_PD). Reuses the
+    /// client's existing delegation if it has one, otherwise scans the pool for
+    /// the first prefix that is free, expired, or already ours. `network` is the
+    /// subnet recorded against the binding.
+    ///
+    /// The scan is bounded (`MAX_PD_SCAN`); a pool wider than that will only
+    /// allocate from its first `MAX_PD_SCAN` prefixes.
+    pub async fn allocate_pd(
+        &self,
+        pool: &config::v6::PdPool,
+        network: IpAddr,
+        id: &[u8],
+        expires_at: SystemTime,
+        state: IpState,
+    ) -> Result<Option<(Ipv6Addr, u8)>, IpError<T::Error>> {
+        const MAX_PD_SCAN: usize = 65_536;
+        let dlen = pool.delegated_len();
+
+        // reuse an existing delegation for this client
+        if let Some((IpAddr::V6(base), len)) = self.store.get_id_pd(id).await? {
+            self.store
+                .upsert_pd(IpAddr::V6(base), len, network, id, expires_at, Some(state))
+                .await?;
+            return Ok(Some((base, len)));
+        }
+
+        let now = SystemTime::now();
+        for base in pool.iter_prefixes().take(MAX_PD_SCAN) {
+            let claimable = match self.store.get_pd(IpAddr::V6(base), dlen).await? {
+                None => true,
+                // reuse if the existing binding is expired or already this client's
+                Some(existing) => {
+                    let info = existing.as_ref();
+                    info.expires_at() < now || info.id() == Some(id)
+                }
+            };
+            if claimable {
+                self.store
+                    .upsert_pd(IpAddr::V6(base), dlen, network, id, expires_at, Some(state))
+                    .await?;
+                return Ok(Some((base, dlen)));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Extend an existing delegated prefix (IA_PD Renew/Rebind). Never creates a
+    /// binding: `Ok(Some(prefix))` only if `(prefix, prefix_len, id)` exists and
+    /// is unexpired.
+    pub async fn renew_pd(
+        &self,
+        prefix: IpAddr,
+        prefix_len: u8,
+        id: &[u8],
+        expires_at: SystemTime,
+    ) -> Result<Option<IpAddr>, IpError<T::Error>> {
+        Ok(self.store.renew_pd(prefix, prefix_len, id, expires_at).await?)
+    }
+
+    /// Release a delegated prefix (IA_PD Release).
+    pub async fn release_pd(
+        &self,
+        prefix: IpAddr,
+        prefix_len: u8,
+        id: &[u8],
+    ) -> Result<Option<ClientInfo>, IpError<T::Error>> {
+        Ok(self.store.release_pd(prefix, prefix_len, id).await?)
     }
     /// Sets a reserved ip/id combo to leased state. If no un-expired ip/id pair
     /// found, then if we're authoritative we will just try to insert the IP, and
@@ -1350,6 +1455,43 @@ mod tests {
         let other = IpAddr::V6("2001:db8:1::105".parse()?);
         assert_eq!(mgr.renew(other, &[7, 7, 7], later).await?, None);
         assert!(mgr.get(other).await?.is_none(), "renew must not create a binding");
+        Ok(())
+    }
+
+    // IA_PD: delegate /64s from a /56 pool, reuse per client, renew, release
+    #[tokio::test]
+    #[traced_test]
+    async fn test_allocate_pd() -> Result<()> {
+        use config::DhcpConfig;
+        let cfg =
+            DhcpConfig::parse_str(include_str!("../../config/sample/config_v6_pools.yaml")).unwrap();
+        let (_subnet, net) = cfg.v6().get_first().expect("a v6 network");
+        let pool = &net.pd_pools()[0]; // 2001:db8:100::/56 delegating /64
+        let subnet = IpAddr::V6(net.full_subnet().network());
+
+        let mgr = IpManager::new(SqliteDb::new("sqlite::memory:").await?)?;
+        let exp = SystemTime::now() + Duration::from_secs(60);
+
+        // sequential clients get consecutive /64s from the pool start
+        let (p1, len) = mgr.allocate_pd(pool, subnet, &[1, 1, 1], exp, IpState::Lease).await?.unwrap();
+        assert_eq!(len, 64);
+        assert_eq!(p1, "2001:db8:100::".parse::<Ipv6Addr>()?);
+        let (p2, _) = mgr.allocate_pd(pool, subnet, &[2, 2, 2], exp, IpState::Lease).await?.unwrap();
+        assert_eq!(p2, "2001:db8:100:1::".parse::<Ipv6Addr>()?);
+
+        // same client reuses its delegation
+        let (p1b, _) = mgr.allocate_pd(pool, subnet, &[1, 1, 1], exp, IpState::Lease).await?.unwrap();
+        assert_eq!(p1b, p1);
+
+        // renew extends, release frees
+        let later = exp + Duration::from_secs(60);
+        assert_eq!(
+            mgr.renew_pd(IpAddr::V6(p1), 64, &[1, 1, 1], later).await?,
+            Some(IpAddr::V6(p1))
+        );
+        assert!(mgr.release_pd(IpAddr::V6(p1), 64, &[1, 1, 1]).await?.is_some());
+        // renewing a released prefix returns None (no binding)
+        assert_eq!(mgr.renew_pd(IpAddr::V6(p1), 64, &[1, 1, 1], later).await?, None);
         Ok(())
     }
 }

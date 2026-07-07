@@ -22,7 +22,8 @@ use std::{
 
 use dora_core::{
     dhcproto::v6::{
-        self, DhcpOption, DhcpOptions, IAAddr, IANA, MessageType, OptionCode, Status, StatusCode,
+        self, DhcpOption, DhcpOptions, IAAddr, IANA, IAPD, IAPrefix, MessageType, OptionCode,
+        Status, StatusCode,
     },
     prelude::*,
     tracing::warn,
@@ -81,8 +82,8 @@ where
             return Ok(Action::Continue);
         }
 
-        // client DUID (opt 1, mandatory) + the requested IA_NAs (opt 3)
-        let (duid, ianas) = match extract_client(ctx.msg()) {
+        // client DUID (opt 1, mandatory), requested IA_NAs (opt 3) and IA_PDs (opt 25)
+        let (duid, ianas, iapds) = match extract_client(ctx.msg()) {
             Some(v) => v,
             None => {
                 debug!("v6 message has no Client Identifier; not responding");
@@ -100,13 +101,14 @@ where
 
         match msg_type {
             MessageType::Solicit | MessageType::Request => {
-                self.assign(ctx, msg_type, &duid, &ianas, network).await
+                self.assign(ctx, msg_type, &duid, &ianas, &iapds, network).await
             }
             MessageType::Renew | MessageType::Rebind => {
-                self.renew(ctx, msg_type, &duid, &ianas, network).await
+                self.renew(ctx, msg_type, &duid, &ianas, &iapds, network).await
             }
+            // Confirm/Decline apply to addresses, not delegated prefixes
             MessageType::Confirm => self.confirm(ctx, &ianas, network).await,
-            MessageType::Release => self.release(ctx, &duid, &ianas, network).await,
+            MessageType::Release => self.release(ctx, &duid, &ianas, &iapds, network).await,
             MessageType::Decline => self.decline(ctx, &duid, &ianas, network).await,
             _ => Ok(Action::Continue),
         }
@@ -125,6 +127,7 @@ where
         msg_type: MessageType,
         duid: &[u8],
         ianas: &[IANA],
+        iapds: &[IAPD],
         network: &Network,
     ) -> Result<Action> {
         // MsgType already set the response type: a Reply means commit (Request,
@@ -143,7 +146,8 @@ where
         };
         let expires_at = SystemTime::now() + valid;
 
-        let mut ia_opts = Vec::with_capacity(ianas.len());
+        let mut ia_opts = Vec::with_capacity(ianas.len() + iapds.len());
+        // IA_NA: assign an address per IA
         for iana in ianas {
             let id = binding_id(duid, iana.id);
             match self.allocate(network, &id, expires_at, state).await {
@@ -154,6 +158,20 @@ where
                 None => {
                     warn!(iaid = iana.id, "no v6 address available for IA_NA");
                     ia_opts.push(iana_no_addrs(iana.id));
+                }
+            }
+        }
+        // IA_PD: delegate a prefix per IA
+        for iapd in iapds {
+            let id = binding_id(duid, iapd.id);
+            match self.allocate_prefix(network, &id, expires_at, state).await {
+                Some((prefix, plen)) => {
+                    debug!(?prefix, plen, iaid = iapd.id, commit, "delegated v6 prefix");
+                    ia_opts.push(iapd_with_prefix(iapd.id, prefix, plen, preferred, valid));
+                }
+                None => {
+                    warn!(iaid = iapd.id, "no v6 prefix available for IA_PD");
+                    ia_opts.push(iapd_no_prefix(iapd.id));
                 }
             }
         }
@@ -169,16 +187,18 @@ where
         msg_type: MessageType,
         duid: &[u8],
         ianas: &[IANA],
+        iapds: &[IAPD],
         network: &Network,
     ) -> Result<Action> {
         let (preferred, valid) = lifetimes(network);
         let expires_at = SystemTime::now() + valid;
 
-        let mut ia_opts = Vec::with_capacity(ianas.len());
+        let mut ia_opts = Vec::with_capacity(ianas.len() + iapds.len());
         let mut any_extended = false;
+
+        // IA_NA: extend addresses
         for iana in ianas {
             let id = binding_id(duid, iana.id);
-            // extend the first of the client's listed addresses that we hold
             let mut extended = None;
             for addr in iana_addrs(iana) {
                 if let Ok(Some(IpAddr::V6(ip))) =
@@ -198,6 +218,32 @@ where
                     iana.id,
                     Status::NoBinding,
                     "no binding for this IA",
+                )),
+            }
+        }
+
+        // IA_PD: extend delegated prefixes
+        for iapd in iapds {
+            let id = binding_id(duid, iapd.id);
+            let mut extended = None;
+            for (prefix, plen) in iapd_prefixes(iapd) {
+                if let Ok(Some(IpAddr::V6(ip))) =
+                    self.ip_mgr.renew_pd(IpAddr::V6(prefix), plen, &id, expires_at).await
+                {
+                    extended = Some((ip, plen));
+                    break;
+                }
+            }
+            match extended {
+                Some((prefix, plen)) => {
+                    any_extended = true;
+                    debug!(?prefix, plen, iaid = iapd.id, "extended v6 prefix");
+                    ia_opts.push(iapd_with_prefix(iapd.id, prefix, plen, preferred, valid));
+                }
+                None => ia_opts.push(iapd_status(
+                    iapd.id,
+                    Status::NoBinding,
+                    "no binding for this IA_PD",
                 )),
             }
         }
@@ -240,13 +286,24 @@ where
         ctx: &mut MsgContext<v6::Message>,
         duid: &[u8],
         ianas: &[IANA],
+        iapds: &[IAPD],
         network: &Network,
     ) -> Result<Action> {
+        // free addresses
         for iana in ianas {
             let id = binding_id(duid, iana.id);
             for addr in iana_addrs(iana) {
                 if let Err(err) = self.ip_mgr.release_ip(IpAddr::V6(addr), &id).await {
                     debug!(?err, ?addr, "error releasing v6 address");
+                }
+            }
+        }
+        // free delegated prefixes
+        for iapd in iapds {
+            let id = binding_id(duid, iapd.id);
+            for (prefix, plen) in iapd_prefixes(iapd) {
+                if let Err(err) = self.ip_mgr.release_pd(IpAddr::V6(prefix), plen, &id).await {
+                    debug!(?err, ?prefix, "error releasing v6 prefix");
                 }
             }
         }
@@ -294,6 +351,32 @@ where
                 Ok(IpAddr::V4(_)) => continue, // never for a v6 range
                 Err(err) => {
                     debug!(?err, "v6 range could not allocate an address, trying next");
+                    continue;
+                }
+            }
+        }
+        None
+    }
+
+    /// delegate a prefix from the network's pd_pools for this binding id.
+    async fn allocate_prefix(
+        &self,
+        network: &Network,
+        id: &[u8],
+        expires_at: SystemTime,
+        state: IpState,
+    ) -> Option<(Ipv6Addr, u8)> {
+        let subnet = IpAddr::V6(network.subnet());
+        for pool in network.pd_pools() {
+            match self
+                .ip_mgr
+                .allocate_pd(pool, subnet, id, expires_at, state)
+                .await
+            {
+                Ok(Some(pd)) => return Some(pd),
+                Ok(None) => continue,
+                Err(err) => {
+                    debug!(?err, "pd pool could not delegate a prefix, trying next");
                     continue;
                 }
             }
@@ -371,9 +454,10 @@ fn status_code(status: Status, msg: &str) -> DhcpOption {
     })
 }
 
-/// pull the mandatory client DUID (opt 1) and the requested IA_NAs (opt 3) from
-/// a request. Returns `None` if there is no Client Identifier.
-fn extract_client(msg: &v6::Message) -> Option<(Vec<u8>, Vec<IANA>)> {
+/// pull the mandatory client DUID (opt 1), the requested IA_NAs (opt 3) and
+/// IA_PDs (opt 25) from a request. Returns `None` if there is no Client
+/// Identifier.
+fn extract_client(msg: &v6::Message) -> Option<(Vec<u8>, Vec<IANA>, Vec<IAPD>)> {
     let opts = msg.opts();
     let duid = match opts.get(OptionCode::ClientId) {
         Some(DhcpOption::ClientId(d)) => d.clone(),
@@ -390,7 +474,18 @@ fn extract_client(msg: &v6::Message) -> Option<(Vec<u8>, Vec<IANA>)> {
                 .collect()
         })
         .unwrap_or_default();
-    Some((duid, ianas))
+    let iapds = opts
+        .get_all(OptionCode::IAPD)
+        .map(|os| {
+            os.iter()
+                .filter_map(|o| match o {
+                    DhcpOption::IAPD(iapd) => Some(iapd.clone()),
+                    _ => None,
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    Some((duid, ianas, iapds))
 }
 
 /// the (preferred, valid) lifetimes configured for a network.
@@ -409,6 +504,62 @@ fn iana_addrs(iana: &IANA) -> Vec<Ipv6Addr> {
             os.iter()
                 .filter_map(|o| match o {
                     DhcpOption::IAAddr(a) => Some(a.addr),
+                    _ => None,
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// build an IA_PD (opt 25) carrying a single delegated prefix (IAPREFIX, opt 26).
+fn iapd_with_prefix(
+    iaid: u32,
+    prefix: Ipv6Addr,
+    prefix_len: u8,
+    preferred: Duration,
+    valid: Duration,
+) -> DhcpOption {
+    let mut opts = DhcpOptions::new();
+    opts.insert(DhcpOption::IAPrefix(IAPrefix {
+        prefix_ip: prefix,
+        prefix_len,
+        preferred_lifetime: preferred.as_secs() as u32,
+        valid_lifetime: valid.as_secs() as u32,
+        opts: DhcpOptions::new(),
+    }));
+    DhcpOption::IAPD(IAPD {
+        id: iaid,
+        t1: config::renew(valid).as_secs() as u32,
+        t2: config::rebind(valid).as_secs() as u32,
+        opts,
+    })
+}
+
+/// build an IA_PD (opt 25) carrying only a status code (NoPrefixAvail, NoBinding).
+fn iapd_status(iaid: u32, status: Status, msg: &str) -> DhcpOption {
+    let mut opts = DhcpOptions::new();
+    opts.insert(status_code(status, msg));
+    DhcpOption::IAPD(IAPD {
+        id: iaid,
+        t1: 0,
+        t2: 0,
+        opts,
+    })
+}
+
+/// build an IA_PD (opt 25) carrying a NoPrefixAvail status (RFC 8415 §18.3.1).
+fn iapd_no_prefix(iaid: u32) -> DhcpOption {
+    iapd_status(iaid, Status::NoPrefixAvail, "no prefixes available")
+}
+
+/// the prefixes a client listed inside an IA_PD (its IAPREFIX sub-options).
+fn iapd_prefixes(iapd: &IAPD) -> Vec<(Ipv6Addr, u8)> {
+    iapd.opts
+        .get_all(OptionCode::IAPrefix)
+        .map(|os| {
+            os.iter()
+                .filter_map(|o| match o {
+                    DhcpOption::IAPrefix(p) => Some((p.prefix_ip, p.prefix_len)),
                     _ => None,
                 })
                 .collect()
@@ -492,5 +643,41 @@ mod tests {
             panic!("expected StatusCode");
         };
         assert_eq!(sc.status, Status::Success);
+    }
+
+    #[test]
+    fn test_iapd_with_prefix_round_trips() {
+        let prefix: Ipv6Addr = "2001:db8:100::".parse().unwrap();
+        let DhcpOption::IAPD(iapd) = iapd_with_prefix(
+            5,
+            prefix,
+            64,
+            Duration::from_secs(1800),
+            Duration::from_secs(3600),
+        ) else {
+            panic!("expected IA_PD");
+        };
+        assert_eq!(iapd.id, 5);
+        assert_eq!(iapd.t1, 1800);
+        assert_eq!(iapd.t2, 3150);
+        let Some(DhcpOption::IAPrefix(p)) = iapd.opts.get(OptionCode::IAPrefix) else {
+            panic!("IA_PD must contain an IAPREFIX");
+        };
+        assert_eq!(p.prefix_ip, prefix);
+        assert_eq!(p.prefix_len, 64);
+        assert_eq!(p.valid_lifetime, 3600);
+        // and iapd_prefixes reads it back
+        assert_eq!(iapd_prefixes(&iapd), vec![(prefix, 64)]);
+    }
+
+    #[test]
+    fn test_iapd_no_prefix_has_status() {
+        let DhcpOption::IAPD(iapd) = iapd_no_prefix(9) else {
+            panic!("expected IA_PD");
+        };
+        let Some(DhcpOption::StatusCode(sc)) = iapd.opts.get(OptionCode::StatusCode) else {
+            panic!("empty IA_PD must carry a StatusCode");
+        };
+        assert_eq!(sc.status, Status::NoPrefixAvail);
     }
 }

@@ -342,6 +342,82 @@ impl Storage for SqliteDb {
         util_v6::find_by_id(&self.inner, id, util::systime_epoch(SystemTime::now())).await
     }
 
+    async fn get_pd(&self, prefix: IpAddr, prefix_len: u8) -> Result<Option<State>, Self::Error> {
+        match prefix {
+            IpAddr::V6(ip) => {
+                util_v6::find_pd(&self.inner, &util_v6::to_bytes(ip), prefix_len as i64).await
+            }
+            IpAddr::V4(_) => Ok(None),
+        }
+    }
+
+    async fn upsert_pd(
+        &self,
+        prefix: IpAddr,
+        prefix_len: u8,
+        network: IpAddr,
+        id: &[u8],
+        expires_at: SystemTime,
+        state: Option<IpState>,
+    ) -> Result<(), Self::Error> {
+        match (prefix, network) {
+            (IpAddr::V6(ip), IpAddr::V6(net)) => {
+                util_v6::upsert_pd(
+                    &self.inner,
+                    &util_v6::to_bytes(ip),
+                    prefix_len as i64,
+                    &util_v6::to_bytes(net),
+                    id,
+                    util::systime_epoch(expires_at),
+                    state.map(|s| s.into()),
+                )
+                .await
+            }
+            _ => panic!("IA_PD requires v6 prefix and network"),
+        }
+    }
+
+    async fn get_id_pd(&self, id: &[u8]) -> Result<Option<(IpAddr, u8)>, Self::Error> {
+        util_v6::find_by_id_pd(&self.inner, id, util::systime_epoch(SystemTime::now())).await
+    }
+
+    async fn renew_pd(
+        &self,
+        prefix: IpAddr,
+        prefix_len: u8,
+        id: &[u8],
+        expires_at: SystemTime,
+    ) -> Result<Option<IpAddr>, Self::Error> {
+        match prefix {
+            IpAddr::V6(ip) => {
+                util_v6::renew_pd(
+                    &self.inner,
+                    &util_v6::to_bytes(ip),
+                    prefix_len as i64,
+                    id,
+                    util::systime_epoch(expires_at),
+                    util::systime_epoch(SystemTime::now()),
+                )
+                .await
+            }
+            IpAddr::V4(_) => Ok(None),
+        }
+    }
+
+    async fn release_pd(
+        &self,
+        prefix: IpAddr,
+        prefix_len: u8,
+        id: &[u8],
+    ) -> Result<Option<ClientInfo>, Self::Error> {
+        match prefix {
+            IpAddr::V6(ip) => {
+                util_v6::release_pd(&self.inner, &util_v6::to_bytes(ip), prefix_len as i64, id).await
+            }
+            IpAddr::V4(_) => Ok(None),
+        }
+    }
+
     async fn release_ip(&self, ip: IpAddr, id: &[u8]) -> Result<Option<ClientInfo>, Self::Error> {
         match ip {
             IpAddr::V4(ip) => {
@@ -1150,6 +1226,143 @@ mod util_v6 {
                 cur.probation,
             )
         }))
+    }
+
+    // ---- IA_PD (prefix delegation) ------------------------------------------
+    // Delegated prefixes live in the same table, keyed by (addr = prefix base,
+    // prefix_len = delegated length != 128). These mirror the IA_NA helpers but
+    // take the prefix length as a parameter.
+
+    /// find a delegated-prefix binding by its base and length.
+    pub async fn find_pd(
+        pool: &SqlitePool,
+        addr: &[u8],
+        prefix_len: i64,
+    ) -> Result<Option<State>, sqlx::Error> {
+        Ok(sqlx::query!(
+            "SELECT * FROM leases_v6 WHERE addr = ?1 AND prefix_len = ?2",
+            addr,
+            prefix_len
+        )
+        .fetch_optional(pool)
+        .await?
+        .map(|cur| {
+            to_state(
+                &cur.addr,
+                cur.client_id,
+                &cur.network,
+                cur.expires_at,
+                cur.leased,
+                cur.probation,
+            )
+        }))
+    }
+
+    /// insert or replace a delegated-prefix binding. The caller must have already
+    /// checked the prefix is free / expired / owned by this client.
+    pub async fn upsert_pd(
+        pool: &SqlitePool,
+        addr: &[u8],
+        prefix_len: i64,
+        network: &[u8],
+        client_id: &[u8],
+        expires_at: i64,
+        state: Option<(bool, bool)>,
+    ) -> Result<(), sqlx::Error> {
+        let (leased, probation) = state.unwrap_or((false, false));
+        sqlx::query!(
+            r#"INSERT OR REPLACE INTO leases_v6
+                (addr, prefix_len, client_id, expires_at, network, leased, probation)
+               VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)"#,
+            addr,
+            prefix_len,
+            client_id,
+            expires_at,
+            network,
+            leased,
+            probation
+        )
+        .execute(pool)
+        .await?;
+        Ok(())
+    }
+
+    /// look up a client's delegated prefix (base + length) by identity. Never
+    /// returns IA_NA rows (prefix_len 128).
+    pub async fn find_by_id_pd(
+        pool: &SqlitePool,
+        id: &[u8],
+        now: i64,
+    ) -> Result<Option<(IpAddr, u8)>, sqlx::Error> {
+        Ok(sqlx::query!(
+            "SELECT addr, prefix_len FROM leases_v6
+             WHERE client_id = ?1 AND expires_at > ?2 AND prefix_len != 128
+             LIMIT 1",
+            id,
+            now
+        )
+        .fetch_optional(pool)
+        .await?
+        .map(|cur| (from_bytes(&cur.addr), cur.prefix_len as u8)))
+    }
+
+    /// extend an existing, unexpired delegated prefix if the id matches.
+    pub async fn renew_pd(
+        pool: &SqlitePool,
+        addr: &[u8],
+        prefix_len: i64,
+        client_id: &[u8],
+        expires_at: i64,
+        now: i64,
+    ) -> Result<Option<IpAddr>, sqlx::Error> {
+        Ok(sqlx::query!(
+            r#"UPDATE leases_v6 SET leased = 1, expires_at = ?4, probation = 0
+               WHERE addr = ?1 AND prefix_len = ?2 AND client_id = ?3 AND expires_at > ?5
+               RETURNING addr"#,
+            addr,
+            prefix_len,
+            client_id,
+            expires_at,
+            now
+        )
+        .fetch_optional(pool)
+        .await?
+        .map(|cur| from_bytes(&cur.addr)))
+    }
+
+    /// release a delegated prefix if the (addr, len, id) all match.
+    pub async fn release_pd(
+        pool: &SqlitePool,
+        addr: &[u8],
+        prefix_len: i64,
+        id: &[u8],
+    ) -> Result<Option<ClientInfo>, sqlx::Error> {
+        let mut trans = pool.begin().await?;
+        let cur = sqlx::query!(
+            "SELECT * FROM leases_v6 WHERE addr = ?1 AND prefix_len = ?2 AND client_id = ?3",
+            addr,
+            prefix_len,
+            id
+        )
+        .fetch_optional(&mut trans)
+        .await?
+        .map(|cur| ClientInfo {
+            ip: from_bytes(&cur.addr),
+            id: cur.client_id,
+            network: from_bytes(&cur.network),
+            expires_at: to_systime(cur.expires_at),
+        });
+        if cur.is_some() {
+            sqlx::query!(
+                "DELETE FROM leases_v6 WHERE addr = ?1 AND prefix_len = ?2",
+                addr,
+                prefix_len
+            )
+            .execute(&mut trans)
+            .await?;
+        }
+        trans.commit().await?;
+        Ok(cur)
     }
 }
 
