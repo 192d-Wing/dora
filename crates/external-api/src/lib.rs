@@ -310,7 +310,7 @@ mod handlers {
         let mut cfg: config::wire::Config = serde_json::from_str(raw)
             .or_else(|_| yaml_serde::from_str(raw))
             .context("could not parse config")?;
-        if let Some(ddns) = cfg.ddns.as_mut() {
+        if let Some(ddns) = cfg.v4.ddns.as_mut() {
             for key in ddns.tsig_keys.values_mut() {
                 key.data = REDACTED.to_string();
             }
@@ -498,30 +498,31 @@ mod tests {
     #[test]
     fn test_redact_config_strips_tsig_secret() {
         let raw = r#"
-ddns:
-  enable_updates: true
-  forward: []
-  reverse: []
-  tsig_keys:
-    key_foo:
-      algorithm: hmac-sha256
-      data: "SUPERSECRETKEYMATERIAL=="
-networks:
-  192.168.0.0/24:
-    ranges:
-      - start: 192.168.0.100
-        end: 192.168.0.200
-        options:
-          values: {}
-        config:
-          lease_time:
-            default: 3600
-    reservations:
-      - ip: 192.168.0.50
-        match:
-          chaddr: aa:bb:cc:dd:ee:ff
-        options:
-          values: {}
+v4:
+  ddns:
+    enable_updates: true
+    forward: []
+    reverse: []
+    tsig_keys:
+      key_foo:
+        algorithm: hmac-sha256
+        data: "SUPERSECRETKEYMATERIAL=="
+  networks:
+    192.168.0.0/24:
+      ranges:
+        - start: 192.168.0.100
+          end: 192.168.0.200
+          options:
+            values: {}
+          config:
+            lease_time:
+              default: 3600
+      reservations:
+        - ip: 192.168.0.50
+          match:
+            chaddr: aa:bb:cc:dd:ee:ff
+          options:
+            values: {}
 "#;
         let out = crate::handlers::redact_config(raw).expect("redact should succeed");
         assert!(
@@ -540,7 +541,7 @@ networks:
     // but invalid YAML, so this also guards the yaml-only-parse regression.
     #[test]
     fn test_redact_config_accepts_json() {
-        let raw = "{\n\t\"ddns\": {\n\t\t\"enable_updates\": true,\n\t\t\"forward\": [],\n\t\t\"reverse\": [],\n\t\t\"tsig_keys\": {\n\t\t\t\"key_foo\": { \"algorithm\": \"hmac-sha256\", \"data\": \"SUPERSECRETKEYMATERIAL==\" }\n\t\t}\n\t}\n}";
+        let raw = "{\n\t\"v4\": {\n\t\t\"ddns\": {\n\t\t\t\"enable_updates\": true,\n\t\t\t\"forward\": [],\n\t\t\t\"reverse\": [],\n\t\t\t\"tsig_keys\": {\n\t\t\t\t\"key_foo\": { \"algorithm\": \"hmac-sha256\", \"data\": \"SUPERSECRETKEYMATERIAL==\" }\n\t\t\t}\n\t\t}\n\t}\n}";
         let out = crate::handlers::redact_config(raw).expect("json redact should succeed");
         assert!(
             !out.contains("SUPERSECRETKEYMATERIAL"),

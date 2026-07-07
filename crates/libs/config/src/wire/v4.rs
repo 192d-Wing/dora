@@ -55,10 +55,49 @@ use dora_core::{
     },
     pnet::util::MacAddr,
 };
+use ipnet::Ipv4Net;
 use serde::{Deserialize, Deserializer, Serialize, de};
 use tracing::warn;
 
-use crate::wire::{MaybeList, MinMax};
+use crate::wire::{
+    FloodThreshold, Interface, MaybeList, MinMax, client_classes::ClientClasses,
+    default_bootp_enable, default_cache_threshold, default_chaddr_only, default_rapid_commit,
+};
+
+/// top-level DHCPv4 configuration (the `v4` section of the config).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub struct Config {
+    pub interfaces: Option<Vec<Interface>>,
+    #[serde(default = "default_chaddr_only")]
+    pub chaddr_only: bool,
+    pub flood_protection_threshold: Option<FloodThreshold>,
+    #[serde(default = "default_cache_threshold")]
+    pub cache_threshold: u32,
+    #[serde(default = "default_bootp_enable")]
+    pub bootp_enable: bool,
+    #[serde(default = "default_rapid_commit")]
+    pub rapid_commit: bool,
+    #[serde(default)]
+    pub networks: HashMap<Ipv4Net, Net>,
+    pub client_classes: Option<ClientClasses>,
+    pub ddns: Option<ddns::Ddns>,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            interfaces: None,
+            chaddr_only: default_chaddr_only(),
+            flood_protection_threshold: None,
+            cache_threshold: default_cache_threshold(),
+            bootp_enable: default_bootp_enable(),
+            rapid_commit: default_rapid_commit(),
+            networks: HashMap::new(),
+            client_classes: None,
+            ddns: None,
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct Net {
@@ -1100,6 +1139,7 @@ mod tests {
     fn test_long_opts() {
         let cfg: crate::wire::Config = yaml_serde::from_str(LONG_OPTS).unwrap();
         let opts = cfg
+            .v4
             .networks
             .get(&Ipv4Net::new([192, 168, 1, 100].into(), 30).unwrap())
             .unwrap()

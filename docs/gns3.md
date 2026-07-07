@@ -52,36 +52,37 @@ up echo nameserver 192.168.5.1 > /etc/resolv.conf
 with config.yaml:
 
 ```
-networks:
-    192.168.5.0/24:
-        authoritative: true
-        probation_period: 86400
-        ranges:
-            -
-                start: 192.168.5.2
-                end: 192.168.5.250
-                config:
-                    lease_time:
-                        default: 3600
-                        min: 1200
-                        max: 4800
-                options:
-                    values:
-                        subnet_mask:
-                            type: ip
-                            value: 255.255.255.0
-                        routers:
-                            type: ip
-                            value:
-                                - 192.168.5.1
-                        domain_name_servers:
-                            type: ip
-                            value:
-                                - 8.8.8.8
-                        broadcast_addr:
-                           type: ip
-                           value: 192.168.5.255
-
+v4:
+    networks:
+        192.168.5.0/24:
+            authoritative: true
+            probation_period: 86400
+            ranges:
+                -
+                    start: 192.168.5.2
+                    end: 192.168.5.250
+                    config:
+                        lease_time:
+                            default: 3600
+                            min: 1200
+                            max: 4800
+                    options:
+                        values:
+                            subnet_mask:
+                                type: ip
+                                value: 255.255.255.0
+                            routers:
+                                type: ip
+                                value:
+                                    - 192.168.5.1
+                            domain_name_servers:
+                                type: ip
+                                value:
+                                    - 8.8.8.8
+                            broadcast_addr:
+                               type: ip
+                               value: 192.168.5.255
+    
 ```
 
 Now create your network configuration, and start all the nodes. You can then open a console in the dora docker container and run dora if you don’t have it set to run manually, then in the console of the VPCS nodes run `ip dhcp` to get an IP address. You can edit the VPCS nodes to automatically use DHCP on boot also.

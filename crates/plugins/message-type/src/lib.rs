@@ -673,17 +673,18 @@ mod tests {
     #[traced_test]
     async fn test_inform_non_authoritative_ignored() -> Result<()> {
         static NONAUTH_YAML: &str = r#"
-networks:
-    192.168.0.0/24:
-        authoritative: false
-        ranges:
-            - start: 192.168.0.100
-              end: 192.168.0.150
-              config:
-                  lease_time:
-                      default: 3600
-              options:
-                  values: {}
+v4:
+    networks:
+        192.168.0.0/24:
+            authoritative: false
+            ranges:
+                - start: 192.168.0.100
+                  end: 192.168.0.150
+                  config:
+                      lease_time:
+                          default: 3600
+                  options:
+                      values: {}
 "#;
         let cfg = DhcpConfig::parse_str(NONAUTH_YAML).unwrap();
         let plugin = MsgType::new(Arc::new(cfg))?;
@@ -704,22 +705,23 @@ networks:
     async fn test_inform_drop_class_ignored() -> Result<()> {
         // blank_ctx uses chaddr 01:02:03:04:05:06, so this DROP assert matches
         static DROP_YAML: &str = r#"
-networks:
-    192.168.0.0/24:
-        ranges:
-            - start: 192.168.0.100
-              end: 192.168.0.150
-              config:
-                  lease_time:
-                      default: 3600
+v4:
+    networks:
+        192.168.0.0/24:
+            ranges:
+                - start: 192.168.0.100
+                  end: 192.168.0.150
+                  config:
+                      lease_time:
+                          default: 3600
+                  options:
+                      values: {}
+    client_classes:
+        v4:
+            - name: DROP
+              assert: "pkt4.mac == 0x010203040506"
               options:
                   values: {}
-client_classes:
-    v4:
-        - name: DROP
-          assert: "pkt4.mac == 0x010203040506"
-          options:
-              values: {}
 "#;
         let cfg = DhcpConfig::parse_str(DROP_YAML).unwrap();
         let plugin = MsgType::new(Arc::new(cfg))?;

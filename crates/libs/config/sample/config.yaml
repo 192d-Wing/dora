@@ -1,196 +1,197 @@
-chaddr_only: false
-flood_protection_threshold:
-    packets: 3
-    secs: 5
-cache_threshold: 25
-# interfaces:
-#     - wlan0
-networks:
-    192.168.1.100/30:
-        probation_period: 86400
-        server_id: 192.168.1.1
-        ranges:
-            -
-                start: 192.168.1.100
-                end: 192.168.1.103
-                config:
-                    lease_time:
-                        default: 3600
-                        min: 1200
-                        max: 4800
-                options:
-                    values:
-                        1:
-                            type: ip
-                            value: 192.168.1.1
-                        3:
-                            type: ip
-                            value:
-                                - 192.168.1.1
-                        43:
-                            type: sub_option
-                            value:
-                                1:
-                                    type: str
-                                    value: "foobar"
-                                2:
-                                    type: ip
-                                    value: 1.2.3.4
-
-    192.168.0.0/24:
-        probation_period: 86400
-        ranges:
-            -
-                start: 192.168.0.100
-                end: 192.168.0.150
-                config:
-                    lease_time:
-                        default: 3600
-                        min: 1200
-                        max: 4800
-                options:
-                    values:
-                        1:
-                            type: ip
-                            value: 192.168.0.1
-                        3:
-                            type: ip
-                            value:
-                                - 192.168.0.1
-                        40:
-                            type: str
-                            value: testdomain.com
-                        253:
-                            type: hex
-                            value: 123ABC
-                except:
-                    - 192.168.0.123
-                    - 192.168.0.124
-
-        reservations:
-            -
-                ip: 192.168.0.160
-                config:
-                    lease_time:
-                        default: 3600
-                        min: 1200
-                        max: 4800
-                options:
-                    values:
-                        subnet_mask:
-                            type: ip
-                            value: 192.168.0.1
-                        routers:
-                            type: ip_list # for backwards compat testing
-                            value:
-                                - 192.168.0.1
-                        vendor_extensions:
-                            type: sub_option
-                            value:
-                                1:
-                                    type: str
-                                    value: "foobar"
-                                2:
-                                    type: ip
-                                    value: 1.2.3.4
-                match:
+v4:
+    chaddr_only: false
+    flood_protection_threshold:
+        packets: 3
+        secs: 5
+    cache_threshold: 25
+    # interfaces:
+    #     - wlan0
+    networks:
+        192.168.1.100/30:
+            probation_period: 86400
+            server_id: 192.168.1.1
+            ranges:
+                -
+                    start: 192.168.1.100
+                    end: 192.168.1.103
+                    config:
+                        lease_time:
+                            default: 3600
+                            min: 1200
+                            max: 4800
                     options:
                         values:
-                            61:
+                            1:
+                                type: ip
+                                value: 192.168.1.1
+                            3:
+                                type: ip
+                                value:
+                                    - 192.168.1.1
+                            43:
+                                type: sub_option
+                                value:
+                                    1:
+                                        type: str
+                                        value: "foobar"
+                                    2:
+                                        type: ip
+                                        value: 1.2.3.4
+    
+        192.168.0.0/24:
+            probation_period: 86400
+            ranges:
+                -
+                    start: 192.168.0.100
+                    end: 192.168.0.150
+                    config:
+                        lease_time:
+                            default: 3600
+                            min: 1200
+                            max: 4800
+                    options:
+                        values:
+                            1:
+                                type: ip
+                                value: 192.168.0.1
+                            3:
+                                type: ip
+                                value:
+                                    - 192.168.0.1
+                            40:
+                                type: str
+                                value: testdomain.com
+                            253:
                                 type: hex
-                                value: 001122334455
+                                value: 123ABC
+                    except:
+                        - 192.168.0.123
+                        - 192.168.0.124
+    
+            reservations:
+                -
+                    ip: 192.168.0.160
+                    config:
+                        lease_time:
+                            default: 3600
+                            min: 1200
+                            max: 4800
+                    options:
+                        values:
+                            subnet_mask:
+                                type: ip
+                                value: 192.168.0.1
+                            routers:
+                                type: ip_list # for backwards compat testing
+                                value:
+                                    - 192.168.0.1
+                            vendor_extensions:
+                                type: sub_option
+                                value:
+                                    1:
+                                        type: str
+                                        value: "foobar"
+                                    2:
+                                        type: ip
+                                        value: 1.2.3.4
+                    match:
+                        options:
+                            values:
+                                61:
+                                    type: hex
+                                    value: 001122334455
+                -
+                    ip: 192.168.0.170
+                    config:
+                        lease_time:
+                            default: 3600
+                            min: 1200
+                            max: 4800
+                    options:
+                        values:
+                            1:
+                                type: ip
+                                value: 10.10.0.1
+                            3:
+                                type: ip
+                                value:
+                                    - 10.10.0.1
+                    match:
+                        chaddr: aa:bb:cc:dd:ee:ff
+        10.0.0.0/16:
+            ranges:
+                -
+                    start: 10.0.0.10
+                    end: 10.0.0.254
+                    class: my_class
+                    config:
+                        lease_time:
+                            default: 3600
+                    options:
+                        values:
+                            1:
+                                type: ip
+                                value: 10.0.0.1
+                            3:
+                                type: ip
+                                value:
+                                    - 10.0.0.1
+                -
+                    start: 10.0.1.10
+                    end: 10.0.1.254
+                    # class: my_class
+                    config:
+                        lease_time:
+                            default: 3600
+                    options:
+                        values:
+                            1:
+                                type: ip
+                                value: 10.0.1.1
+                            3:
+                                type: ip
+                                value:
+                                    - 10.0.1.1
+    client_classes:
+        v4:
             -
-                ip: 192.168.0.170
-                config:
-                    lease_time:
-                        default: 3600
-                        min: 1200
-                        max: 4800
+                name: c_class
+                assert: "member('a_class') and member('b_class')"
                 options:
                     values:
-                        1:
+                        6:
                             type: ip
-                            value: 10.10.0.1
-                        3:
-                            type: ip
-                            value:
-                                - 10.10.0.1
-                match:
-                    chaddr: aa:bb:cc:dd:ee:ff
-    10.0.0.0/16:
-        ranges:
+                            value: [ 1.1.1.1 ]
             -
-                start: 10.0.0.10
-                end: 10.0.0.254
-                class: my_class
-                config:
-                    lease_time:
-                        default: 3600
+                name: d_class
+                assert: "member('b_class') and member('c_class')"
                 options:
                     values:
-                        1:
+                        6:
                             type: ip
-                            value: 10.0.0.1
-                        3:
-                            type: ip
-                            value:
-                                - 10.0.0.1
+                            value: [ 1.1.1.1 ]
             -
-                start: 10.0.1.10
-                end: 10.0.1.254
-                # class: my_class
-                config:
-                    lease_time:
-                        default: 3600
+              name: my_class
+              assert: "pkt4.mac == 0xDEADBEEF"
+              options:
+                    values:
+                        6:
+                            type: ip
+                            value: [ 1.1.1.1 ]
+            -
+                name: a_class
+                assert: "option[12].hex == 'hostname'"
                 options:
                     values:
-                        1:
+                        6:
                             type: ip
-                            value: 10.0.1.1
-                        3:
+                            value: [ 1.1.1.1 ]
+            -
+                name: b_class
+                assert: "member('a_class') and pkt4.mac == 0xDEADBEEF"
+                options:
+                    values:
+                        6:
                             type: ip
-                            value:
-                                - 10.0.1.1
-client_classes:
-    v4:
-        -
-            name: c_class
-            assert: "member('a_class') and member('b_class')"
-            options:
-                values:
-                    6:
-                        type: ip
-                        value: [ 1.1.1.1 ]
-        -
-            name: d_class
-            assert: "member('b_class') and member('c_class')"
-            options:
-                values:
-                    6:
-                        type: ip
-                        value: [ 1.1.1.1 ]
-        -
-          name: my_class
-          assert: "pkt4.mac == 0xDEADBEEF"
-          options:
-                values:
-                    6:
-                        type: ip
-                        value: [ 1.1.1.1 ]
-        -
-            name: a_class
-            assert: "option[12].hex == 'hostname'"
-            options:
-                values:
-                    6:
-                        type: ip
-                        value: [ 1.1.1.1 ]
-        -
-            name: b_class
-            assert: "member('a_class') and pkt4.mac == 0xDEADBEEF"
-            options:
-                values:
-                    6:
-                        type: ip
-                        value: [ 1.1.1.1 ]
-
+                            value: [ 1.1.1.1 ]
+    

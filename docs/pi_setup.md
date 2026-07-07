@@ -101,36 +101,37 @@ sudo netfilter-persistent save
 A very simple config (IPv4 only) that matches how this guide has configured hostapd might look like:
 
 ```yaml
-interfaces:
-    - wlan0
-networks:
-    192.168.5.0/24:
-        probation_period: 86400
-        server_id: 192.168.5.1
-        ranges:
-            - start: 192.168.5.2
-              end: 192.168.5.250
-              config:
-                  lease_time:
-                      default: 3600
-                      min: 1200
-                      max: 4800
-              options:
-                  values:
-                      1: # subnet mask (if not specified, comes from `interfaces`)
-                          type: ip
-                          value: 255.255.255.0
-                      3: # router (if not specified, will come from `interfaces`)
-                          type: ip
-                          value:
-                              - 192.168.5.1
-                      6: # domain name (if running a DNS server like dnsmasq also, use its IP)
-                          type: ip
-                          value:
-                              - 8.8.8.8
-                      28: # broadcast addr (if not specified, comes from `interfaces`)
-                          type: ip
-                          value: 192.168.5.255
+v4:
+    interfaces:
+        - wlan0
+    networks:
+        192.168.5.0/24:
+            probation_period: 86400
+            server_id: 192.168.5.1
+            ranges:
+                - start: 192.168.5.2
+                  end: 192.168.5.250
+                  config:
+                      lease_time:
+                          default: 3600
+                          min: 1200
+                          max: 4800
+                  options:
+                      values:
+                          1: # subnet mask (if not specified, comes from `interfaces`)
+                              type: ip
+                              value: 255.255.255.0
+                          3: # router (if not specified, will come from `interfaces`)
+                              type: ip
+                              value:
+                                  - 192.168.5.1
+                          6: # domain name (if running a DNS server like dnsmasq also, use its IP)
+                              type: ip
+                              value:
+                                  - 8.8.8.8
+                          28: # broadcast addr (if not specified, comes from `interfaces`)
+                              type: ip
+                              value: 192.168.5.255
 ```
 
 You may wish to save this minimal config to `pi.yaml` to try it out, or see [example.yaml](../example.yaml) for the full set of options. You can also use `dora --help` to see arguments.

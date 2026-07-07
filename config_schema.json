@@ -558,49 +558,57 @@
                     "additionalProperties": { "$ref": "#/definitions/v6_net" }
                 }
             }
+        },
+        "v4": {
+            "description": "DHCPv4 configuration",
+            "type": "object",
+            "properties": {
+                "chaddr_only": {
+                    "description": "only use the `chaddr` header field for client identity, ignoring opt 61 (default false)",
+                    "type": "boolean"
+                },
+                "bootp_enable": {
+                    "description": "enable BOOTP support, RFC 1497 only (default true)",
+                    "type": "boolean"
+                },
+                "rapid_commit": {
+                    "description": "enable v4 rapid commit, RFC 4039 (default false)",
+                    "type": "boolean"
+                },
+                "cache_threshold": {
+                    "description": "percent (0-100) of lease time during which a renew returns the existing lease rather than extending it (default 0)",
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 100
+                },
+                "flood_protection_threshold": {
+                    "description": "per-MAC DHCP flood protection: at most `packets` per `secs` (off by default)",
+                    "type": "object",
+                    "required": ["packets", "secs"],
+                    "properties": {
+                        "packets": { "type": "integer", "minimum": 1 },
+                        "secs": { "type": "integer", "minimum": 1 }
+                    }
+                },
+                "interfaces": {
+                    "description": "interfaces to bind; if empty, dora binds 0.0.0.0. Entries may be \"name\" or \"name@ip\"",
+                    "type": "array",
+                    "items": { "type": "string" }
+                },
+                "networks": {
+                    "description": "v4 networks keyed by subnet, e.g. \"192.168.1.0/24\"",
+                    "type": "object",
+                    "additionalProperties": { "$ref": "#/definitions/v4_network" }
+                },
+                "client_classes": { "$ref": "#/definitions/client_classes" },
+                "ddns": { "$ref": "#/definitions/ddns" }
+            }
         }
     },
     "type": "object",
+    "additionalProperties": false,
     "properties": {
-        "chaddr_only": {
-            "description": "only use the `chaddr` header field for client identity, ignoring opt 61 (default false)",
-            "type": "boolean"
-        },
-        "bootp_enable": {
-            "description": "enable BOOTP support, RFC 1497 only (default true)",
-            "type": "boolean"
-        },
-        "rapid_commit": {
-            "description": "enable v4 rapid commit, RFC 4039 (default false)",
-            "type": "boolean"
-        },
-        "cache_threshold": {
-            "description": "percent (0-100) of lease time during which a renew returns the existing lease rather than extending it (default 0)",
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 100
-        },
-        "flood_protection_threshold": {
-            "description": "per-MAC DHCP flood protection: at most `packets` per `secs` (off by default)",
-            "type": "object",
-            "required": ["packets", "secs"],
-            "properties": {
-                "packets": { "type": "integer", "minimum": 1 },
-                "secs": { "type": "integer", "minimum": 1 }
-            }
-        },
-        "interfaces": {
-            "description": "interfaces to bind; if empty, dora binds 0.0.0.0. Entries may be \"name\" or \"name@ip\"",
-            "type": "array",
-            "items": { "type": "string" }
-        },
-        "networks": {
-            "description": "v4 networks keyed by subnet, e.g. \"192.168.1.0/24\"",
-            "type": "object",
-            "additionalProperties": { "$ref": "#/definitions/v4_network" }
-        },
-        "client_classes": { "$ref": "#/definitions/client_classes" },
-        "ddns": { "$ref": "#/definitions/ddns" },
+        "v4": { "$ref": "#/definitions/v4" },
         "v6": { "$ref": "#/definitions/v6" }
     }
 }
