@@ -106,7 +106,11 @@ fn relay_exchange(sock: &UdpSocket, inner: &v6::Message) -> v6::Message {
         sock.send(&bytes).expect("send relay-forward");
         if let Ok(n) = sock.recv(&mut buf) {
             let reply = RelayMessage::decode(&mut Decoder::new(&buf[..n])).expect("decode reply");
-            assert_eq!(reply.msg_type(), MessageType::RelayRepl, "expected Relay-reply");
+            assert_eq!(
+                reply.msg_type(),
+                MessageType::RelayRepl,
+                "expected Relay-reply"
+            );
             let inner = match reply.opts().get(OptionCode::RelayMsg) {
                 Some(DhcpOption::RelayMsg(b)) => b.clone(),
                 _ => panic!("relay-reply missing Relay-Message option"),
@@ -177,8 +181,10 @@ fn v6_relay_ia_na_lifecycle() {
     let adv = relay_exchange(&sock, &sol);
     assert_eq!(adv.msg_type(), MessageType::Advertise);
     let addr = iana_addr(&adv).expect("Advertise has an IAADDR");
-    let (lo, hi): (Ipv6Addr, Ipv6Addr) =
-        ("2001:db8:1::100".parse().unwrap(), "2001:db8:1::1ff".parse().unwrap());
+    let (lo, hi): (Ipv6Addr, Ipv6Addr) = (
+        "2001:db8:1::100".parse().unwrap(),
+        "2001:db8:1::1ff".parse().unwrap(),
+    );
     assert!(addr >= lo && addr <= hi, "advertised addr {addr} in range");
 
     // the server identifier the client must echo back on Request/Renew/Release
@@ -198,7 +204,11 @@ fn v6_relay_ia_na_lifecycle() {
     // Request -> Reply committing the same address
     let reply = relay_exchange(&sock, &build(MessageType::Request));
     assert_eq!(reply.msg_type(), MessageType::Reply);
-    assert_eq!(iana_addr(&reply), Some(addr), "Reply commits the requested addr");
+    assert_eq!(
+        iana_addr(&reply),
+        Some(addr),
+        "Reply commits the requested addr"
+    );
 
     // Renew -> Reply, same address extended
     let renew = relay_exchange(&sock, &build(MessageType::Renew));
@@ -234,7 +244,11 @@ fn v6_relay_solicit_is_stable() {
 
     // a second Solicit from the same DUID+IAID gets the same address back
     let adv2 = relay_exchange(&sock, &sol);
-    assert_eq!(iana_addr(&adv2), Some(a1), "same client keeps its offered address");
+    assert_eq!(
+        iana_addr(&adv2),
+        Some(a1),
+        "same client keeps its offered address"
+    );
 }
 
 /// IA_PD: Solicit for a prefix -> Advertise carrying an IA_PD + IAPREFIX from

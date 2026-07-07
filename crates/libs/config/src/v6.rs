@@ -254,8 +254,7 @@ impl NetRange {
     }
     /// iterate the assignable addresses in the range, skipping exclusions
     pub fn iter(&self) -> impl Iterator<Item = Ipv6Addr> + '_ {
-        Ipv6AddrRange::new(self.start(), self.end())
-            .filter(move |ip| !self.exclude.contains(ip))
+        Ipv6AddrRange::new(self.start(), self.end()).filter(move |ip| !self.exclude.contains(ip))
     }
 }
 
@@ -310,7 +309,11 @@ impl PdPool {
     /// total number of prefixes this pool can delegate (before exclusions)
     pub fn total_prefixes(&self) -> u128 {
         let bits = self.delegated_len.saturating_sub(self.prefix.prefix_len());
-        if bits >= 128 { u128::MAX } else { 1u128 << bits }
+        if bits >= 128 {
+            u128::MAX
+        } else {
+            1u128 << bits
+        }
     }
     /// lazily iterate the delegated prefix base addresses (skipping any in the
     /// `except` list). The iterator can be very long for wide pools, so callers
@@ -662,7 +665,10 @@ mod tests {
         // --- IA_NA ranges ---
         assert_eq!(net.ranges().len(), 1, "expected one address pool");
         let range = &net.ranges()[0];
-        assert_eq!(range.start(), "2001:db8:1::100".parse::<Ipv6Addr>().unwrap());
+        assert_eq!(
+            range.start(),
+            "2001:db8:1::100".parse::<Ipv6Addr>().unwrap()
+        );
         assert_eq!(range.end(), "2001:db8:1::1ff".parse::<Ipv6Addr>().unwrap());
         assert_eq!(range.valid().get_default(), Duration::from_secs(3600));
         assert_eq!(range.preferred().get_default(), Duration::from_secs(3600));
@@ -672,7 +678,10 @@ mod tests {
         let in_range = "2001:db8:1::101".parse::<Ipv6Addr>().unwrap();
         let out_of_range = "2001:db8:1::200".parse::<Ipv6Addr>().unwrap();
         assert!(range.contains(&in_range));
-        assert!(!range.contains(&excluded), "excluded addr must not be contained");
+        assert!(
+            !range.contains(&excluded),
+            "excluded addr must not be contained"
+        );
         assert!(!range.contains(&out_of_range));
         assert!(!range.iter().any(|ip| ip == excluded));
         assert_eq!(net.range(in_range).map(|r| r.start()), Some(range.start()));

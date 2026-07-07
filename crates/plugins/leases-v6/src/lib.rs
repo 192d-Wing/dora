@@ -124,10 +124,12 @@ where
 
         match msg_type {
             MessageType::Solicit | MessageType::Request => {
-                self.assign(ctx, msg_type, &duid, &ianas, &iapds, network).await
+                self.assign(ctx, msg_type, &duid, &ianas, &iapds, network)
+                    .await
             }
             MessageType::Renew | MessageType::Rebind => {
-                self.renew(ctx, msg_type, &duid, &ianas, &iapds, network).await
+                self.renew(ctx, msg_type, &duid, &ianas, &iapds, network)
+                    .await
             }
             // Confirm/Decline apply to addresses, not delegated prefixes
             MessageType::Confirm => self.confirm(ctx, &ianas, network).await,
@@ -157,7 +159,10 @@ where
         // or a Rapid-Commit Solicit); a plain Solicit gives an Advertise (offer).
         let commit = match msg_type {
             MessageType::Solicit => {
-                matches!(ctx.resp_msg().map(|m| m.msg_type()), Some(MessageType::Reply))
+                matches!(
+                    ctx.resp_msg().map(|m| m.msg_type()),
+                    Some(MessageType::Reply)
+                )
             }
             _ => true,
         };
@@ -264,8 +269,10 @@ where
                 }
                 let (preferred, valid) = pd_lifetimes(network, prefix);
                 let expires_at = SystemTime::now() + valid;
-                if let Ok(Some(IpAddr::V6(ip))) =
-                    self.ip_mgr.renew_pd(IpAddr::V6(prefix), plen, &id, expires_at).await
+                if let Ok(Some(IpAddr::V6(ip))) = self
+                    .ip_mgr
+                    .renew_pd(IpAddr::V6(prefix), plen, &id, expires_at)
+                    .await
                 {
                     extended = Some((ip, plen, preferred, valid));
                     break;
@@ -342,7 +349,11 @@ where
                 }
             }
             if !released {
-                ia_opts.push(iana_status(iana.id, Status::NoBinding, "no binding for this IA"));
+                ia_opts.push(iana_status(
+                    iana.id,
+                    Status::NoBinding,
+                    "no binding for this IA",
+                ));
             }
         }
         for iapd in iapds {
@@ -356,7 +367,11 @@ where
                 }
             }
             if !released {
-                ia_opts.push(iapd_status(iapd.id, Status::NoBinding, "no binding for this IA_PD"));
+                ia_opts.push(iapd_status(
+                    iapd.id,
+                    Status::NoBinding,
+                    "no binding for this IA_PD",
+                ));
             }
         }
         ia_opts.push(status_code(Status::Success, "released"));
@@ -380,13 +395,21 @@ where
             let id = binding_id(duid, iana.id);
             let mut declined = false;
             for addr in iana_addrs(iana) {
-                match self.ip_mgr.probate_ip(IpAddr::V6(addr), &id, expires_at).await {
+                match self
+                    .ip_mgr
+                    .probate_ip(IpAddr::V6(addr), &id, expires_at)
+                    .await
+                {
                     Ok(()) => declined = true,
                     Err(err) => debug!(?err, ?addr, "error probating declined v6 address"),
                 }
             }
             if !declined {
-                ia_opts.push(iana_status(iana.id, Status::NoBinding, "no binding for this IA"));
+                ia_opts.push(iana_status(
+                    iana.id,
+                    Status::NoBinding,
+                    "no binding for this IA",
+                ));
             }
         }
         ia_opts.push(status_code(Status::Success, "declined"));

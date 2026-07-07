@@ -157,7 +157,13 @@ impl Storage for SqliteDb {
                 let mut conn = self.inner.begin().await?;
                 // find the highest allocated address in the range, then step to the
                 // next available one; if the range is empty, use its start
-                let ip = match util_v6::max_in_range(&mut conn, &util_v6::to_bytes(start), &util_v6::to_bytes(end)).await? {
+                let ip = match util_v6::max_in_range(
+                    &mut conn,
+                    &util_v6::to_bytes(start),
+                    &util_v6::to_bytes(end),
+                )
+                .await?
+                {
                     Some(State::Leased(cur) | State::Reserved(cur) | State::Probated(cur)) => {
                         util_v6::inc_ip(cur.ip, IpAddr::V6(end), exclusions)
                     }
@@ -414,7 +420,8 @@ impl Storage for SqliteDb {
     ) -> Result<Option<ClientInfo>, Self::Error> {
         match prefix {
             IpAddr::V6(ip) => {
-                util_v6::release_pd(&self.inner, &util_v6::to_bytes(ip), prefix_len as i64, id).await
+                util_v6::release_pd(&self.inner, &util_v6::to_bytes(ip), prefix_len as i64, id)
+                    .await
             }
             IpAddr::V4(_) => Ok(None),
         }
@@ -1430,13 +1437,26 @@ mod v6_tests {
         expires_at: SystemTime,
     ) -> Result<IpAddr, sqlx::Error> {
         if let Some(ip) = db
-            .next_expired(range.clone(), network, id, expires_at, Some(IpState::Reserve))
+            .next_expired(
+                range.clone(),
+                network,
+                id,
+                expires_at,
+                Some(IpState::Reserve),
+            )
             .await?
         {
             return Ok(ip);
         }
         Ok(db
-            .insert_max_in_range(range.clone(), excl, network, id, expires_at, Some(IpState::Reserve))
+            .insert_max_in_range(
+                range.clone(),
+                excl,
+                network,
+                id,
+                expires_at,
+                Some(IpState::Reserve),
+            )
             .await?
             .expect("range should have an available address"))
     }
@@ -1464,7 +1484,10 @@ mod v6_tests {
         // a release carrying the wrong id must NOT delete another client's lease
         let wrong = db.release_ip(addr, &[0xde, 0xad]).await?;
         assert!(wrong.is_none(), "wrong-id release returns no info");
-        assert!(db.get(addr).await?.is_some(), "lease must survive wrong-id release");
+        assert!(
+            db.get(addr).await?.is_some(),
+            "lease must survive wrong-id release"
+        );
 
         let released = db.release_ip(addr, id).await?;
         assert!(released.is_some(), "release should return prior info");
@@ -1482,14 +1505,26 @@ mod v6_tests {
         excl.insert(v6("2001:db8:1::101"));
 
         // empty range -> start of range
-        assert_eq!(alloc(&db, &range, &excl, net, &[1], exp).await?, v6("2001:db8:1::100"));
+        assert_eq!(
+            alloc(&db, &range, &excl, net, &[1], exp).await?,
+            v6("2001:db8:1::100")
+        );
         // ::101 excluded -> ::102
-        assert_eq!(alloc(&db, &range, &excl, net, &[2], exp).await?, v6("2001:db8:1::102"));
+        assert_eq!(
+            alloc(&db, &range, &excl, net, &[2], exp).await?,
+            v6("2001:db8:1::102")
+        );
         // then ::103
-        assert_eq!(alloc(&db, &range, &excl, net, &[3], exp).await?, v6("2001:db8:1::103"));
+        assert_eq!(
+            alloc(&db, &range, &excl, net, &[3], exp).await?,
+            v6("2001:db8:1::103")
+        );
 
         // same id returns its existing address (idempotent via next_expired id-match)
-        assert_eq!(alloc(&db, &range, &excl, net, &[2], exp).await?, v6("2001:db8:1::102"));
+        assert_eq!(
+            alloc(&db, &range, &excl, net, &[2], exp).await?,
+            v6("2001:db8:1::102")
+        );
         Ok(())
     }
 
@@ -1504,7 +1539,10 @@ mod v6_tests {
         let mut excl = HashSet::new();
         excl.insert(v6("2001:db8:1::100")); // exclude the start
 
-        assert_eq!(alloc(&db, &range, &excl, net, &[1], exp).await?, v6("2001:db8:1::101"));
+        assert_eq!(
+            alloc(&db, &range, &excl, net, &[1], exp).await?,
+            v6("2001:db8:1::101")
+        );
         Ok(())
     }
 
@@ -1517,7 +1555,8 @@ mod v6_tests {
         let exp = SystemTime::now() + Duration::from_secs(60);
 
         // reserve (offer), then transition to lease (request/reply)
-        db.insert(addr, net, id, exp, Some(IpState::Reserve)).await?;
+        db.insert(addr, net, id, exp, Some(IpState::Reserve))
+            .await?;
         let leased = db
             .update_unexpired(addr, IpState::Lease, id, exp, Some(id))
             .await?;
@@ -1535,8 +1574,10 @@ mod v6_tests {
         let n6 = v6("2001:db8:1::");
         let exp = SystemTime::now() + Duration::from_secs(60);
 
-        db.insert(v4, v4net, &[1, 2, 3], exp, Some(IpState::Lease)).await?;
-        db.insert(a6, n6, &[4, 5, 6], exp, Some(IpState::Lease)).await?;
+        db.insert(v4, v4net, &[1, 2, 3], exp, Some(IpState::Lease))
+            .await?;
+        db.insert(a6, n6, &[4, 5, 6], exp, Some(IpState::Lease))
+            .await?;
 
         assert!(matches!(db.get(v4).await?, Some(State::Leased(i)) if i.ip() == v4));
         assert!(matches!(db.get(a6).await?, Some(State::Leased(i)) if i.ip() == a6));

@@ -455,7 +455,10 @@ impl Plugin<v6::Message> for MsgType {
         // Confirm and Rebind MUST NOT carry a Server Identifier; discard if they
         // do (RFC 8415 §16.5 / §16.9)
         if matches!(msg_type, MessageType::Confirm | MessageType::Rebind) && req_sid.is_some() {
-            debug!(?msg_type, "discarding Confirm/Rebind that carries a Server Identifier");
+            debug!(
+                ?msg_type,
+                "discarding Confirm/Rebind that carries a Server Identifier"
+            );
             return Ok(Action::NoResponse);
         }
         // add server id to response

@@ -113,11 +113,7 @@ pub trait Storage: Send + Sync + 'static {
 
     // ---- IA_PD (prefix delegation) ------------------------------------------
     /// get a delegated-prefix binding by its base address and delegated length
-    async fn get_pd(
-        &self,
-        prefix: IpAddr,
-        prefix_len: u8,
-    ) -> Result<Option<State>, Self::Error>;
+    async fn get_pd(&self, prefix: IpAddr, prefix_len: u8) -> Result<Option<State>, Self::Error>;
     /// insert or replace a delegated-prefix binding (caller has verified it is
     /// free / expired / owned by this client)
     async fn upsert_pd(
@@ -282,7 +278,12 @@ where
         timeout: Duration,
     ) -> Result<PingReply, icmp_ping::Error> {
         let seq_cnt = icmpv6.seq_cnt.fetch_add(1, Ordering::Relaxed);
-        icmpv6.listener.pinger(ip).timeout(timeout).ping(seq_cnt).await
+        icmpv6
+            .listener
+            .pinger(ip)
+            .timeout(timeout)
+            .ping(seq_cnt)
+            .await
     }
 
     /// used for tests to insert into ping cache
@@ -328,7 +329,10 @@ where
                     return Ok(());
                 };
                 let fut = async {
-                    match self.addr_in_use_v6(&icmpv6, ip, network.ping_timeout()).await {
+                    match self
+                        .addr_in_use_v6(&icmpv6, ip, network.ping_timeout())
+                        .await
+                    {
                         Ok(reply) => {
                             // reply => address is in use; drop our entry for it
                             if let Err(err) = self.store.delete(ip).await {
@@ -563,10 +567,7 @@ where
     }
 
     /// look up a client's existing delegated prefix (base + length) by DUID+IAID
-    pub async fn lookup_id_pd(
-        &self,
-        id: &[u8],
-    ) -> Result<Option<(IpAddr, u8)>, IpError<T::Error>> {
+    pub async fn lookup_id_pd(&self, id: &[u8]) -> Result<Option<(IpAddr, u8)>, IpError<T::Error>> {
         Ok(self.store.get_id_pd(id).await?)
     }
 
@@ -650,7 +651,10 @@ where
         id: &[u8],
         expires_at: SystemTime,
     ) -> Result<Option<IpAddr>, IpError<T::Error>> {
-        Ok(self.store.renew_pd(prefix, prefix_len, id, expires_at).await?)
+        Ok(self
+            .store
+            .renew_pd(prefix, prefix_len, id, expires_at)
+            .await?)
     }
 
     /// Release a delegated prefix (IA_PD Release).
@@ -795,9 +799,9 @@ mod tests {
     use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 
     use super::*;
-    use config::v4::{NetRange, Network};
     use crate::sqlite::SqliteDb;
     use config::LeaseTime;
+    use config::v4::{NetRange, Network};
     use icmp_ping::{DEFAULT_TOKEN_SIZE, EchoReply};
     use tracing_test::traced_test;
 
@@ -1414,8 +1418,8 @@ mod tests {
     #[traced_test]
     async fn test_v6_reserve_first_generalized() -> Result<()> {
         use config::DhcpConfig;
-        let cfg =
-            DhcpConfig::parse_str(include_str!("../../config/sample/config_v6_pools.yaml")).unwrap();
+        let cfg = DhcpConfig::parse_str(include_str!("../../config/sample/config_v6_pools.yaml"))
+            .unwrap();
         let (_subnet, net) = cfg.v6().get_first().expect("a v6 network");
         let range = &net.ranges()[0];
 
@@ -1448,15 +1452,21 @@ mod tests {
     #[traced_test]
     async fn test_renew_extends_only_existing() -> Result<()> {
         use config::DhcpConfig;
-        let cfg =
-            DhcpConfig::parse_str(include_str!("../../config/sample/config_v6_pools.yaml")).unwrap();
+        let cfg = DhcpConfig::parse_str(include_str!("../../config/sample/config_v6_pools.yaml"))
+            .unwrap();
         let (_subnet, net) = cfg.v6().get_first().expect("a v6 network");
         let range = &net.ranges()[0];
 
         let mgr = IpManager::new(SqliteDb::new("sqlite::memory:").await?)?;
         let now = SystemTime::now();
         let ip = mgr
-            .reserve_first(range, net, &[7, 7, 7], now + Duration::from_secs(60), Some(IpState::Lease))
+            .reserve_first(
+                range,
+                net,
+                &[7, 7, 7],
+                now + Duration::from_secs(60),
+                Some(IpState::Lease),
+            )
             .await?;
 
         // existing (ip,id) -> extended
@@ -1467,7 +1477,10 @@ mod tests {
         // address we don't hold -> None (no insert)
         let other = IpAddr::V6("2001:db8:1::105".parse()?);
         assert_eq!(mgr.renew(other, &[7, 7, 7], later).await?, None);
-        assert!(mgr.get(other).await?.is_none(), "renew must not create a binding");
+        assert!(
+            mgr.get(other).await?.is_none(),
+            "renew must not create a binding"
+        );
         Ok(())
     }
 
@@ -1476,8 +1489,8 @@ mod tests {
     #[traced_test]
     async fn test_allocate_pd() -> Result<()> {
         use config::DhcpConfig;
-        let cfg =
-            DhcpConfig::parse_str(include_str!("../../config/sample/config_v6_pools.yaml")).unwrap();
+        let cfg = DhcpConfig::parse_str(include_str!("../../config/sample/config_v6_pools.yaml"))
+            .unwrap();
         let (_subnet, net) = cfg.v6().get_first().expect("a v6 network");
         let pool = &net.pd_pools()[0]; // 2001:db8:100::/56 delegating /64
         let subnet = IpAddr::V6(net.full_subnet().network());
@@ -1486,14 +1499,23 @@ mod tests {
         let exp = SystemTime::now() + Duration::from_secs(60);
 
         // sequential clients get consecutive /64s from the pool start
-        let (p1, len) = mgr.allocate_pd(pool, subnet, &[1, 1, 1], exp, IpState::Lease).await?.unwrap();
+        let (p1, len) = mgr
+            .allocate_pd(pool, subnet, &[1, 1, 1], exp, IpState::Lease)
+            .await?
+            .unwrap();
         assert_eq!(len, 64);
         assert_eq!(p1, "2001:db8:100::".parse::<Ipv6Addr>()?);
-        let (p2, _) = mgr.allocate_pd(pool, subnet, &[2, 2, 2], exp, IpState::Lease).await?.unwrap();
+        let (p2, _) = mgr
+            .allocate_pd(pool, subnet, &[2, 2, 2], exp, IpState::Lease)
+            .await?
+            .unwrap();
         assert_eq!(p2, "2001:db8:100:1::".parse::<Ipv6Addr>()?);
 
         // same client reuses its delegation
-        let (p1b, _) = mgr.allocate_pd(pool, subnet, &[1, 1, 1], exp, IpState::Lease).await?.unwrap();
+        let (p1b, _) = mgr
+            .allocate_pd(pool, subnet, &[1, 1, 1], exp, IpState::Lease)
+            .await?
+            .unwrap();
         assert_eq!(p1b, p1);
 
         // renew extends, release frees
@@ -1502,9 +1524,16 @@ mod tests {
             mgr.renew_pd(IpAddr::V6(p1), 64, &[1, 1, 1], later).await?,
             Some(IpAddr::V6(p1))
         );
-        assert!(mgr.release_pd(IpAddr::V6(p1), 64, &[1, 1, 1]).await?.is_some());
+        assert!(
+            mgr.release_pd(IpAddr::V6(p1), 64, &[1, 1, 1])
+                .await?
+                .is_some()
+        );
         // renewing a released prefix returns None (no binding)
-        assert_eq!(mgr.renew_pd(IpAddr::V6(p1), 64, &[1, 1, 1], later).await?, None);
+        assert_eq!(
+            mgr.renew_pd(IpAddr::V6(p1), 64, &[1, 1, 1], later).await?,
+            None
+        );
         Ok(())
     }
 }
