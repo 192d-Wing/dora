@@ -23,8 +23,8 @@ remaining gaps, in order of impact, are:
 1. **DHCPv6 IA_TA and Reconfigure** are not implemented; v6 DAD uses ICMPv6 echo
    rather than Neighbor-Solicitation. (Relay — RelayForw/RelayRepl — is now
    supported.)
-2. **Several §4.1 / §4.3 edge behaviors are simplified** — notably DHCPINFORM
-   gating and the broadcast flag on replies to DHCPREQUEST.
+2. **A few §4.1 / §4.3 edge behaviors are simplified** — notably the broadcast
+   flag on replies to DHCPREQUEST.
 
 ---
 
@@ -36,7 +36,7 @@ remaining gaps, in order of impact, are:
 | DHCPREQUEST → DHCPACK/DHCPNAK | ✅ | Classified by §4.3.2 client state (SELECTING / INIT-REBOOT / RENEWING / REBINDING) in `plugins/leases` |
 | DHCPDECLINE (address probation) | ✅ | `Leases::decline`, IP put on probation for `probation_period` |
 | DHCPRELEASE (no reply) | ✅ | `Leases::release` returns `NoResponse` |
-| DHCPINFORM | 🟡 | Gated on `authoritative` + a matching range — see below |
+| DHCPINFORM | ✅ | Authoritative networks answer with local config regardless of pool coverage; yiaddr 0, no lease time (§4.3.5) |
 | Rapid Commit (option 80, RFC 4039) | ✅ | `rapid_commit` config flag; DISCOVER answered with ACK |
 | BOOTP (RFC 951 / 1542) | 🟡 | Supported when `bootp_enabled`; 300-byte min packet padding **not** implemented |
 | Address probing before OFFER (§3.1) | ✅ | ICMP ping / DAD via `libs/icmp-ping`, per-network `ping_check` |
@@ -72,14 +72,13 @@ renewing clients are reached, but the reply carries a flag the client did not
 request. Should be narrowed to the SELECTING/INIT-REBOOT case where the client
 cannot yet receive unicast.
 
-#### DHCPINFORM (§4.3.5)
+### DHCPINFORM (§4.3.5)
 
-INFORM is answered only when the network is `authoritative` **and** a matching
-range exists. RFC 2131 says a server responds to INFORM with the client's local
-configuration regardless of pools, MUST NOT return a lease time, and MUST set
-`yiaddr = 0`. The lease-time / `yiaddr` handling is correct; the
-`authoritative` + range gating is a deviation that can suppress a legitimate
-INFORM response.
+An `authoritative` network answers INFORM with the client's local configuration
+regardless of pool coverage: options come from the range containing the client's
+address if there is one, otherwise from class / interface-derived config. The
+reply sets `yiaddr = 0` and never includes a lease time (opt 51). A
+non-authoritative network still ignores INFORM (intentional, for coexistence).
 
 ---
 
@@ -150,8 +149,9 @@ with the full Solicit/Request/Renew/Rebind/Confirm/Release/Decline lifecycle
 2. ~~**Split the DHCPREQUEST handler by client state**~~ — **done** (RFC 2131
    §4.3.2, `plugins/leases`): INIT-REBOOT stays silent on unknown bindings and
    NAKs on the wrong network; RENEWING/REBINDING are classified.
-3. **Relax DHCPINFORM gating** so authoritative servers answer INFORM regardless
-   of pool coverage (RFC 2131 §4.3.5).
+3. ~~**Relax DHCPINFORM gating**~~ — **done** (RFC 2131 §4.3.5,
+   `plugins/message-type`): authoritative servers answer INFORM regardless of
+   pool coverage.
 4. **BOOTP 300-byte packet padding** for legacy clients (RFC 951 / 1542).
 5. **Parse Option Overload (52)** and honor Maximum Message Size (57).
 6. **DHCPv6 follow-ups** — Neighbor-Solicitation DAD, IA_TA, Reconfigure; publish
