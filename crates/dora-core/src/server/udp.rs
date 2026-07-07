@@ -1,5 +1,5 @@
 //! Functions/types for reading incoming message from UDP
-use dhcproto::{Decodable, Encodable};
+use dhcproto::Encodable;
 use futures::ready;
 use pin_project::pin_project;
 // use tokio::net::UdpSocket;
@@ -18,7 +18,7 @@ use std::{
 
 use crate::{
     handler::{MsgContext, State},
-    server::msg::SerialMsg,
+    server::{context::ServerDecode, msg::SerialMsg},
 };
 
 /// Abstracts reading buffers off of a tokio `net::UdpStream` and converting
@@ -36,7 +36,7 @@ pub(crate) struct UdpStream<T, S> {
 
 impl<T, S> UdpStream<T, S>
 where
-    T: Decodable + Encodable,
+    T: ServerDecode + Encodable,
     S: Borrow<UdpSocket>,
 {
     /// Create a new stream from a `UdpRecv`r and `State`
@@ -52,7 +52,7 @@ where
 
 impl<T, S> Stream for UdpStream<T, S>
 where
-    T: Decodable + Encodable,
+    T: ServerDecode + Encodable,
     S: Borrow<UdpSocket>,
 {
     type Item = io::Result<MsgContext<T>>;

@@ -403,12 +403,22 @@ impl Plugin<v6::Message> for MsgType {
         // set the interface, using data from config
         // MsgType plugin must run first because future plugins use this data
         let meta = ctx.meta();
-        let interface = self
-            .cfg
-            .v6()
-            .get_interface_link_local(meta.ifindex)
-            .context("no link-local address on interface?")?;
-        ctx.set_interface(interface);
+        // A relayed message identifies the client link via the relay's
+        // link-address, not the receiving interface, so its interface link-local
+        // is optional. A directly-received message still requires one.
+        let interface = self.cfg.v6().get_interface_link_local(meta.ifindex);
+        match interface {
+            Some(iface) => {
+                ctx.set_interface(iface);
+            }
+            None if ctx.relay().is_none() => {
+                return Err(anyhow::anyhow!(
+                    "no link-local address on interface {}",
+                    meta.ifindex
+                ));
+            }
+            None => {}
+        }
 
         if let Some(global_unicast) = self.cfg.v6().get_interface_global(meta.ifindex) {
             ctx.set_global(global_unicast);
@@ -416,10 +426,13 @@ impl Plugin<v6::Message> for MsgType {
 
         let req = ctx.msg();
         let msg_type = req.msg_type();
+        // honor Rapid Commit only if the client asked and we are configured for it
+        let rapid_commit =
+            req.opts().get(v6::OptionCode::RapidCommit).is_some() && self.cfg.v6().rapid_commit();
 
         debug!(
             ?msg_type,
-            %interface,
+            ?interface,
             global = ?ctx.global(),
             src_addr = %ctx.src_addr(),
             req = %ctx.msg(),
@@ -437,6 +450,15 @@ impl Plugin<v6::Message> for MsgType {
         // if the request includes a server id, it must match our server id
         if matches!(req_sid, Some(v6::DhcpOption::ServerId(id)) if *id != server_id) {
             debug!(?server_id, "server identifier in msg doesn't match");
+            return Ok(Action::NoResponse);
+        }
+        // Confirm and Rebind MUST NOT carry a Server Identifier; discard if they
+        // do (RFC 8415 §16.5 / §16.9)
+        if matches!(msg_type, MessageType::Confirm | MessageType::Rebind) && req_sid.is_some() {
+            debug!(
+                ?msg_type,
+                "discarding Confirm/Rebind that carries a Server Identifier"
+            );
             return Ok(Action::NoResponse);
         }
         // add server id to response
@@ -466,6 +488,23 @@ impl Plugin<v6::Message> for MsgType {
                     "couldn't match any options with INFORMATION-REQUEST message"
                 );
             }
+            // Solicit: Advertise an address, unless Rapid Commit turns this into a
+            // committing Reply. The leases-v6 plugin fills the IA_NA.
+            MessageType::Solicit => {
+                if rapid_commit {
+                    resp.opts_mut().insert(v6::DhcpOption::RapidCommit);
+                } else {
+                    resp.set_msg_type(MessageType::Advertise);
+                }
+            }
+            // Reply-type exchanges: response stays a Reply; leases-v6 processes
+            // the binding (commit / renew / confirm / release / decline).
+            MessageType::Request
+            | MessageType::Renew
+            | MessageType::Rebind
+            | MessageType::Confirm
+            | MessageType::Release
+            | MessageType::Decline => {}
             _ => {
                 debug!("currently unsupported message type");
                 return Ok(Action::NoResponse);

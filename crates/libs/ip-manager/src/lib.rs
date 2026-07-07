@@ -12,8 +12,7 @@
 //!
 //! [`Storage`]: ip_manager::Storage
 //! [`IpManager`]: ip_manager::IpManager
-use config::v4::{NetRange, Network};
-use icmp_ping::{Icmpv4, Listener, PingReply};
+use icmp_ping::{Icmpv4, Icmpv6, Listener, PingReply};
 
 use async_trait::async_trait;
 use chrono::DateTime;
@@ -23,10 +22,13 @@ use tracing::{debug, error, info, trace, warn};
 
 pub mod sqlite;
 
+mod pool;
+pub use pool::{NetworkParams, Pool};
+
 use core::fmt;
 use std::{
     collections::HashSet,
-    net::{IpAddr, Ipv4Addr},
+    net::{IpAddr, Ipv6Addr},
     ops::RangeInclusive,
     sync::{
         Arc,
@@ -102,7 +104,44 @@ pub trait Storage: Send + Sync + 'static {
     ) -> Result<(), Self::Error>;
 
     async fn get(&self, ip: IpAddr) -> Result<Option<State>, Self::Error>;
+    /// look up an unexpired v4 lease by client identity (v4 `leases` table)
     async fn get_id(&self, id: &[u8]) -> Result<Option<IpAddr>, Self::Error>;
+    /// look up an unexpired v6 binding by DUID+IAID identity (`leases_v6` table).
+    /// Separate from `get_id` so identity lookups target one table deterministically
+    /// and a v4/v6 client-id byte collision can never return the wrong family.
+    async fn get_id_v6(&self, id: &[u8]) -> Result<Option<IpAddr>, Self::Error>;
+
+    // ---- IA_PD (prefix delegation) ------------------------------------------
+    /// get a delegated-prefix binding by its base address and delegated length
+    async fn get_pd(&self, prefix: IpAddr, prefix_len: u8) -> Result<Option<State>, Self::Error>;
+    /// insert or replace a delegated-prefix binding (caller has verified it is
+    /// free / expired / owned by this client)
+    async fn upsert_pd(
+        &self,
+        prefix: IpAddr,
+        prefix_len: u8,
+        network: IpAddr,
+        id: &[u8],
+        expires_at: SystemTime,
+        state: Option<IpState>,
+    ) -> Result<(), Self::Error>;
+    /// look up a client's delegated prefix (base + length) by DUID+IAID identity
+    async fn get_id_pd(&self, id: &[u8]) -> Result<Option<(IpAddr, u8)>, Self::Error>;
+    /// extend an unexpired delegated prefix if the id matches
+    async fn renew_pd(
+        &self,
+        prefix: IpAddr,
+        prefix_len: u8,
+        id: &[u8],
+        expires_at: SystemTime,
+    ) -> Result<Option<IpAddr>, Self::Error>;
+    /// release a delegated prefix if the (prefix, len, id) match
+    async fn release_pd(
+        &self,
+        prefix: IpAddr,
+        prefix_len: u8,
+        id: &[u8],
+    ) -> Result<Option<ClientInfo>, Self::Error>;
     async fn select_all(&self) -> Result<Vec<State>, Self::Error>;
     async fn release_ip(&self, ip: IpAddr, id: &[u8]) -> Result<Option<ClientInfo>, Self::Error>;
     async fn delete(&self, ip: IpAddr) -> Result<(), Self::Error>;
@@ -119,8 +158,8 @@ pub trait Storage: Send + Sync + 'static {
     async fn insert_max_in_range(
         &self,
         range: RangeInclusive<IpAddr>,
-        // TODO not ipv4
-        exclusions: &HashSet<Ipv4Addr>,
+        // family-neutral: v4 or v6 addresses to skip
+        exclusions: &HashSet<IpAddr>,
         network: IpAddr,
         id: &[u8],
         expires_at: SystemTime,
@@ -174,7 +213,10 @@ impl State {
 
 pub struct IpManager<T> {
     store: T,
-    icmpv4: Arc<IcmpInner>,
+    icmpv4: Arc<IcmpInner<Icmpv4>>,
+    /// best-effort: `None` if the ICMPv6 socket could not be created (some CI /
+    /// container environments), in which case v6 DAD is skipped
+    icmpv6: Option<Arc<IcmpInner<Icmpv6>>>,
     ping_cache: moka::future::Cache<IpAddr, Option<PingReply>>,
 }
 
@@ -193,14 +235,15 @@ impl<T: Clone> Clone for IpManager<T> {
         Self {
             store: self.store.clone(),
             icmpv4: self.icmpv4.clone(),
+            icmpv6: self.icmpv6.clone(),
             ping_cache: self.ping_cache.clone(),
         }
     }
 }
 
-pub(crate) struct IcmpInner {
+pub(crate) struct IcmpInner<P> {
     seq_cnt: AtomicU16,
-    listener: Listener<Icmpv4>,
+    listener: Listener<P>,
 }
 
 impl<T> IpManager<T>
@@ -226,6 +269,23 @@ where
         // ping succeeded, meaning addr is in use
     }
 
+    /// v6 duplicate-address detection: send an ICMPv6 echo request; a reply
+    /// means the address is already in use on the link.
+    async fn addr_in_use_v6(
+        &self,
+        icmpv6: &IcmpInner<Icmpv6>,
+        ip: IpAddr,
+        timeout: Duration,
+    ) -> Result<PingReply, icmp_ping::Error> {
+        let seq_cnt = icmpv6.seq_cnt.fetch_add(1, Ordering::Relaxed);
+        icmpv6
+            .listener
+            .pinger(ip)
+            .timeout(timeout)
+            .ping(seq_cnt)
+            .await
+    }
+
     /// used for tests to insert into ping cache
     #[cfg(test)]
     pub(crate) async fn ping_insert(&self, ip: IpAddr, reply: Option<PingReply>) {
@@ -234,27 +294,60 @@ where
 
     /// returns Ok(()) if ping failed or ping == false
     /// returns Err if ping succeeded
-    pub async fn ping_check(&self, ip: IpAddr, network: &Network) -> Result<(), IpError<T::Error>> {
-        if network.ping_check() {
-            let fut = async {
-                match self.addr_in_use(ip, network.ping_timeout()).await {
-                    Ok(reply) => {
-                        // ping succeeded
-                        if let Err(err) = self.store.delete(ip).await {
-                            error!(?err, "error attempting to delete ip");
+    pub async fn ping_check<N: NetworkParams>(
+        &self,
+        ip: IpAddr,
+        network: &N,
+    ) -> Result<(), IpError<T::Error>> {
+        if !network.ping_check() {
+            return Ok(());
+        }
+        match ip {
+            IpAddr::V4(_) => {
+                let fut = async {
+                    match self.addr_in_use(ip, network.ping_timeout()).await {
+                        Ok(reply) => {
+                            // ping succeeded
+                            if let Err(err) = self.store.delete(ip).await {
+                                error!(?err, "error attempting to delete ip");
+                            }
+                            Some(reply)
                         }
-                        Some(reply)
+                        // ping failed, so addr is not in use
+                        Err(_) => None,
                     }
-                    // ping failed, so addr is not in use
-                    Err(_) => None,
+                };
+                match self.ping_cache.get_with(ip, fut).await {
+                    Some(_reply) => Err(IpError::AddrInUse(ip)),
+                    None => Ok(()),
                 }
-            };
-            match self.ping_cache.get_with(ip, fut).await {
-                Some(_reply) => Err(IpError::AddrInUse(ip)),
-                None => Ok(()),
             }
-        } else {
-            Ok(())
+            IpAddr::V6(_) => {
+                // v6 DAD via ICMPv6 echo. If no ICMPv6 socket is available, skip.
+                let Some(icmpv6) = self.icmpv6.clone() else {
+                    trace!(?ip, "no ICMPv6 socket; skipping v6 DAD");
+                    return Ok(());
+                };
+                let fut = async {
+                    match self
+                        .addr_in_use_v6(&icmpv6, ip, network.ping_timeout())
+                        .await
+                    {
+                        Ok(reply) => {
+                            // reply => address is in use; drop our entry for it
+                            if let Err(err) = self.store.delete(ip).await {
+                                error!(?err, "error attempting to delete ip");
+                            }
+                            Some(reply)
+                        }
+                        Err(_) => None,
+                    }
+                };
+                match self.ping_cache.get_with(ip, fut).await {
+                    Some(_reply) => Err(IpError::AddrInUse(ip)),
+                    None => Ok(()),
+                }
+            }
         }
     }
 }
@@ -264,11 +357,25 @@ where
     T: Storage,
 {
     pub fn new(store: T) -> Result<Self, icmp_ping::Error> {
-        Ok(Self {
-            icmpv4: Arc::new(IcmpInner {
+        let icmpv4 = Arc::new(IcmpInner {
+            seq_cnt: AtomicU16::new(1),
+            listener: Listener::<Icmpv4>::new()?,
+        });
+        // v6 DAD is best-effort: some CI/container environments can't create an
+        // ICMPv6 socket. Disable v6 probing there rather than failing startup.
+        let icmpv6 = match Listener::<Icmpv6>::new() {
+            Ok(listener) => Some(Arc::new(IcmpInner {
                 seq_cnt: AtomicU16::new(1),
-                listener: Listener::<Icmpv4>::new()?,
-            }),
+                listener,
+            })),
+            Err(err) => {
+                warn!(?err, "could not create ICMPv6 socket; v6 DAD disabled");
+                None
+            }
+        };
+        Ok(Self {
+            icmpv4,
+            icmpv6,
             store,
             ping_cache: moka::future::CacheBuilder::new(1_000)
                 // time_to_idle?
@@ -279,21 +386,23 @@ where
     }
 
     /// get the first available IP in a range with a given id/expiry/network
-    pub async fn reserve_first(
+    pub async fn reserve_first<P: Pool + fmt::Debug, N: NetworkParams>(
         &self,
-        range: &NetRange,
-        network: &Network,
+        range: &P,
+        network: &N,
         id: &[u8],
         expires_at: SystemTime,
         state: Option<IpState>,
     ) -> Result<IpAddr, IpError<T::Error>> {
         const MAX_ATTEMPTS: usize = 2;
-        let subnet = network.subnet().into();
+        let subnet = network.subnet();
+        // family-neutral exclusion set for the storage layer
+        let exclusions: HashSet<IpAddr> = range.exclusions();
         // unfortunately the sqlite connection is sometimes unreliable under high contention, meaning
         // we need to make a few attempts to get an address.
         let mut attempts = 0;
         loop {
-            let ip_range = range.start().into()..=range.end().into();
+            let ip_range = range.start()..=range.end();
             if attempts > MAX_ATTEMPTS {
                 return Err(IpError::MaxAttempts {
                     range: ip_range,
@@ -312,7 +421,7 @@ where
                     .store
                     .insert_max_in_range(
                         ip_range.clone(),
-                        range.exclusions(),
+                        &exclusions,
                         subnet,
                         id,
                         expires_at,
@@ -335,52 +444,45 @@ where
                     continue;
                 }
             };
-            match ip {
-                IpAddr::V4(ipv4) => {
-                    if range.contains(&ipv4) {
-                        // ping_check will delete the expired entry if it's in use
-                        match self.ping_check(ip, network).await {
-                            Ok(()) => return Ok(ip),
-                            // ping success so insert probated IP
-                            Err(err) => {
-                                let probation_time = SystemTime::now() + network.probation_period();
-                                info!(
-                                    ?err,
-                                    probation_time = %DateTime::<Utc>::from(probation_time).to_rfc3339_opts(SecondsFormat::Secs, true),
-                                    "ping succeeded. address is in use. marking IP on probation"
-                                );
-                                // update regardless of expiry/id because something is using the IP
-                                if let Err(err) = self
-                                    .store
-                                    .update_ip(ip, IpState::Probate, None, probation_time)
-                                    .await
-                                {
-                                    attempts += 1;
-                                    error!(?err, "failed to probate IP on ping success");
-                                    // not returning error because we must give client an IP
-                                } else {
-                                    debug!("IP put on probation, trying next");
-                                }
-                                continue;
-                            }
-                        }
-                    } else {
-                        attempts += 1;
-                        warn!(
-                            ?range,
-                            ?ipv4,
-                            "IP for client id returned from leases table is outside of network range"
+            if range.contains(ip) {
+                // ping_check will delete the expired entry if it's in use
+                match self.ping_check(ip, network).await {
+                    Ok(()) => return Ok(ip),
+                    // ping success so insert probated IP
+                    Err(err) => {
+                        let probation_time = SystemTime::now() + network.probation_period();
+                        info!(
+                            ?err,
+                            probation_time = %DateTime::<Utc>::from(probation_time).to_rfc3339_opts(SecondsFormat::Secs, true),
+                            "ping succeeded. address is in use. marking IP on probation"
                         );
-                        // entry for ip/id but the range doesn't match, remove the old entry
-                        if let Err(err) = self.store.release_ip(ip, id).await {
-                            error!(?err, "failed to delete entry");
+                        // update regardless of expiry/id because something is using the IP
+                        if let Err(err) = self
+                            .store
+                            .update_ip(ip, IpState::Probate, None, probation_time)
+                            .await
+                        {
+                            attempts += 1;
+                            error!(?err, "failed to probate IP on ping success");
+                            // not returning error because we must give client an IP
+                        } else {
+                            debug!("IP put on probation, trying next");
                         }
                         continue;
                     }
                 }
-                // we know this method is only called in ipv4 code, but the
-                // compiler doesn't
-                _ => panic!("ipv6 unsupported"),
+            } else {
+                attempts += 1;
+                warn!(
+                    ?range,
+                    ?ip,
+                    "IP for client id returned from leases table is outside of network range"
+                );
+                // entry for ip/id but the range doesn't match, remove the old entry
+                if let Err(err) = self.store.release_ip(ip, id).await {
+                    error!(?err, "failed to delete entry");
+                }
+                continue;
             }
         }
     }
@@ -390,13 +492,13 @@ where
     /// Returns
     ///     `Err` if ip/id are already present or ping succeeded
     ///     `Ok(())` allocated IP successfully
-    pub async fn try_ip(
+    pub async fn try_ip<N: NetworkParams>(
         &self,
         ip: IpAddr,
         subnet: IpAddr,
         id: &[u8],
         expires_at: SystemTime,
-        network: &Network,
+        network: &N,
         state: Option<IpState>,
     ) -> Result<(), IpError<T::Error>> {
         // TODO: there may be a way to remove this .get also
@@ -446,18 +548,136 @@ where
             }
         }
     }
+
+    /// like [`lookup_id`], but for DHCPv6 bindings (DUID+IAID identity,
+    /// `leases_v6` table).
+    ///
+    /// [`lookup_id`]: IpManager::lookup_id
+    pub async fn lookup_id_v6(&self, id: &[u8]) -> Result<IpAddr, IpError<T::Error>> {
+        match self.store.get_id_v6(id).await? {
+            Some(ip) => {
+                debug!(?ip, ?id, "we have a v6 address for this id");
+                Ok(ip)
+            }
+            None => {
+                debug!(?id, "no v6 address found for this id");
+                Err(IpError::Unreserved)
+            }
+        }
+    }
+
+    /// look up a client's existing delegated prefix (base + length) by DUID+IAID
+    pub async fn lookup_id_pd(&self, id: &[u8]) -> Result<Option<(IpAddr, u8)>, IpError<T::Error>> {
+        Ok(self.store.get_id_pd(id).await?)
+    }
+
+    /// Extend an existing, unexpired binding's lease time. Unlike [`try_lease`],
+    /// this never creates a binding: it returns `Ok(Some(ip))` only when a
+    /// binding for `(ip, id)` exists and is unexpired, else `Ok(None)`. Used for
+    /// DHCPv6 Renew/Rebind, where the client claims an address it already holds
+    /// and the server must answer NoBinding if it has no record.
+    ///
+    /// [`try_lease`]: IpManager::try_lease
+    pub async fn renew(
+        &self,
+        ip: IpAddr,
+        id: &[u8],
+        expires_at: SystemTime,
+    ) -> Result<Option<IpAddr>, IpError<T::Error>> {
+        Ok(self
+            .store
+            .update_unexpired(ip, IpState::Lease, id, expires_at, Some(id))
+            .await?)
+    }
+
+    /// Delegate a prefix from `pool` for this binding id (IA_PD). Reuses the
+    /// client's existing delegation if it has one, otherwise scans the pool for
+    /// the first prefix that is free, expired, or already ours. `network` is the
+    /// subnet recorded against the binding.
+    ///
+    /// The scan is bounded (`MAX_PD_SCAN`); a pool wider than that will only
+    /// allocate from its first `MAX_PD_SCAN` prefixes.
+    pub async fn allocate_pd(
+        &self,
+        pool: &config::v6::PdPool,
+        network: IpAddr,
+        id: &[u8],
+        expires_at: SystemTime,
+        state: IpState,
+    ) -> Result<Option<(Ipv6Addr, u8)>, IpError<T::Error>> {
+        const MAX_PD_SCAN: usize = 65_536;
+        let dlen = pool.delegated_len();
+
+        // reuse an existing delegation for this client, but only if it belongs to
+        // this pool (the client may have roamed to a network with different
+        // pd_pools; a stale delegation from another pool must not be handed back)
+        if let Some((IpAddr::V6(base), len)) = self.store.get_id_pd(id).await?
+            && len == dlen
+            && pool.prefix().contains(&base)
+        {
+            self.store
+                .upsert_pd(IpAddr::V6(base), len, network, id, expires_at, Some(state))
+                .await?;
+            return Ok(Some((base, len)));
+        }
+
+        let now = SystemTime::now();
+        for base in pool.iter_prefixes().take(MAX_PD_SCAN) {
+            let claimable = match self.store.get_pd(IpAddr::V6(base), dlen).await? {
+                None => true,
+                // reuse if the existing binding is expired or already this client's
+                Some(existing) => {
+                    let info = existing.as_ref();
+                    info.expires_at() < now || info.id() == Some(id)
+                }
+            };
+            if claimable {
+                self.store
+                    .upsert_pd(IpAddr::V6(base), dlen, network, id, expires_at, Some(state))
+                    .await?;
+                return Ok(Some((base, dlen)));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Extend an existing delegated prefix (IA_PD Renew/Rebind). Never creates a
+    /// binding: `Ok(Some(prefix))` only if `(prefix, prefix_len, id)` exists and
+    /// is unexpired.
+    pub async fn renew_pd(
+        &self,
+        prefix: IpAddr,
+        prefix_len: u8,
+        id: &[u8],
+        expires_at: SystemTime,
+    ) -> Result<Option<IpAddr>, IpError<T::Error>> {
+        Ok(self
+            .store
+            .renew_pd(prefix, prefix_len, id, expires_at)
+            .await?)
+    }
+
+    /// Release a delegated prefix (IA_PD Release).
+    pub async fn release_pd(
+        &self,
+        prefix: IpAddr,
+        prefix_len: u8,
+        id: &[u8],
+    ) -> Result<Option<ClientInfo>, IpError<T::Error>> {
+        Ok(self.store.release_pd(prefix, prefix_len, id).await?)
+    }
     /// Sets a reserved ip/id combo to leased state. If no un-expired ip/id pair
     /// found, then if we're authoritative we will just try to insert the IP, and
     /// if not we return.
     /// Returns
     ///     Err if ip/id don't match what's in storage or if it's expired
     ///     Ok(()) entry created successfully for lease
-    pub async fn try_lease(
+    pub async fn try_lease<N: NetworkParams>(
         &self,
         ip: IpAddr,
         id: &[u8],
         expires_at: SystemTime,
-        network: &Network,
+        network: &N,
     ) -> Result<(), IpError<T::Error>> {
         match self
             .store
@@ -482,13 +702,7 @@ where
                 // this will ACK even if there was no prior DISCOVER
                 match self
                     .store
-                    .insert(
-                        ip,
-                        network.subnet().into(),
-                        id,
-                        expires_at,
-                        Some(IpState::Lease),
-                    )
+                    .insert(ip, network.subnet(), id, expires_at, Some(IpState::Lease))
                     .await
                 {
                     Ok(()) => {
@@ -582,11 +796,12 @@ pub enum IpError<E> {
 
 #[cfg(test)]
 mod tests {
-    use std::net::{SocketAddr, SocketAddrV4};
+    use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 
     use super::*;
     use crate::sqlite::SqliteDb;
     use config::LeaseTime;
+    use config::v4::{NetRange, Network};
     use icmp_ping::{DEFAULT_TOKEN_SIZE, EchoReply};
     use tracing_test::traced_test;
 
@@ -1194,6 +1409,131 @@ mod tests {
         let client_id = (1..6).map(|_| rand::random()).collect::<Vec<u8>>();
 
         assert!(mgr.lookup_id(&client_id).await.is_err());
+        Ok(())
+    }
+
+    // the generalized allocator hands out v6 addresses from a v6 config pool
+    // through the same reserve_first path used by v4.
+    #[tokio::test]
+    #[traced_test]
+    async fn test_v6_reserve_first_generalized() -> Result<()> {
+        use config::DhcpConfig;
+        let cfg = DhcpConfig::parse_str(include_str!("../../config/sample/config_v6_pools.yaml"))
+            .unwrap();
+        let (_subnet, net) = cfg.v6().get_first().expect("a v6 network");
+        let range = &net.ranges()[0];
+
+        let mgr = IpManager::new(SqliteDb::new("sqlite::memory:").await?)?;
+        let exp = SystemTime::now() + Duration::from_secs(60);
+
+        // first two clients get sequential addresses from the pool start
+        let a = mgr
+            .reserve_first(range, net, &[1, 1, 1], exp, Some(IpState::Reserve))
+            .await?;
+        assert_eq!(a, IpAddr::V6("2001:db8:1::100".parse()?));
+        let b = mgr
+            .reserve_first(range, net, &[2, 2, 2], exp, Some(IpState::Reserve))
+            .await?;
+        assert_eq!(b, IpAddr::V6("2001:db8:1::101".parse()?));
+
+        // the reserved v6 binding is found by DUID+IAID identity, and not by the
+        // v4 identity lookup
+        assert_eq!(mgr.lookup_id_v6(&[1, 1, 1]).await?, a);
+        assert!(mgr.lookup_id(&[1, 1, 1]).await.is_err());
+
+        // commit the lease (Request/Reply) and confirm it persists as Leased
+        mgr.try_lease(a, &[1, 1, 1], exp, net).await?;
+        assert!(matches!(mgr.get(a).await?, Some(State::Leased(_))));
+        Ok(())
+    }
+
+    // renew() extends an existing binding but never creates one (Renew/Rebind)
+    #[tokio::test]
+    #[traced_test]
+    async fn test_renew_extends_only_existing() -> Result<()> {
+        use config::DhcpConfig;
+        let cfg = DhcpConfig::parse_str(include_str!("../../config/sample/config_v6_pools.yaml"))
+            .unwrap();
+        let (_subnet, net) = cfg.v6().get_first().expect("a v6 network");
+        let range = &net.ranges()[0];
+
+        let mgr = IpManager::new(SqliteDb::new("sqlite::memory:").await?)?;
+        let now = SystemTime::now();
+        let ip = mgr
+            .reserve_first(
+                range,
+                net,
+                &[7, 7, 7],
+                now + Duration::from_secs(60),
+                Some(IpState::Lease),
+            )
+            .await?;
+
+        // existing (ip,id) -> extended
+        let later = now + Duration::from_secs(120);
+        assert_eq!(mgr.renew(ip, &[7, 7, 7], later).await?, Some(ip));
+        // wrong id -> no binding created/extended
+        assert_eq!(mgr.renew(ip, &[9, 9, 9], later).await?, None);
+        // address we don't hold -> None (no insert)
+        let other = IpAddr::V6("2001:db8:1::105".parse()?);
+        assert_eq!(mgr.renew(other, &[7, 7, 7], later).await?, None);
+        assert!(
+            mgr.get(other).await?.is_none(),
+            "renew must not create a binding"
+        );
+        Ok(())
+    }
+
+    // IA_PD: delegate /64s from a /56 pool, reuse per client, renew, release
+    #[tokio::test]
+    #[traced_test]
+    async fn test_allocate_pd() -> Result<()> {
+        use config::DhcpConfig;
+        let cfg = DhcpConfig::parse_str(include_str!("../../config/sample/config_v6_pools.yaml"))
+            .unwrap();
+        let (_subnet, net) = cfg.v6().get_first().expect("a v6 network");
+        let pool = &net.pd_pools()[0]; // 2001:db8:100::/56 delegating /64
+        let subnet = IpAddr::V6(net.full_subnet().network());
+
+        let mgr = IpManager::new(SqliteDb::new("sqlite::memory:").await?)?;
+        let exp = SystemTime::now() + Duration::from_secs(60);
+
+        // sequential clients get consecutive /64s from the pool start
+        let (p1, len) = mgr
+            .allocate_pd(pool, subnet, &[1, 1, 1], exp, IpState::Lease)
+            .await?
+            .unwrap();
+        assert_eq!(len, 64);
+        assert_eq!(p1, "2001:db8:100::".parse::<Ipv6Addr>()?);
+        let (p2, _) = mgr
+            .allocate_pd(pool, subnet, &[2, 2, 2], exp, IpState::Lease)
+            .await?
+            .unwrap();
+        assert_eq!(p2, "2001:db8:100:1::".parse::<Ipv6Addr>()?);
+
+        // same client reuses its delegation
+        let (p1b, _) = mgr
+            .allocate_pd(pool, subnet, &[1, 1, 1], exp, IpState::Lease)
+            .await?
+            .unwrap();
+        assert_eq!(p1b, p1);
+
+        // renew extends, release frees
+        let later = exp + Duration::from_secs(60);
+        assert_eq!(
+            mgr.renew_pd(IpAddr::V6(p1), 64, &[1, 1, 1], later).await?,
+            Some(IpAddr::V6(p1))
+        );
+        assert!(
+            mgr.release_pd(IpAddr::V6(p1), 64, &[1, 1, 1])
+                .await?
+                .is_some()
+        );
+        // renewing a released prefix returns None (no binding)
+        assert_eq!(
+            mgr.renew_pd(IpAddr::V6(p1), 64, &[1, 1, 1], later).await?,
+            None
+        );
         Ok(())
     }
 }

@@ -15,8 +15,41 @@ use unix_udp_sock::RecvMeta;
 
 use crate::{
     metrics::{self, RECV_TYPE_COUNT, SENT_TYPE_COUNT, V6_RECV_TYPE_COUNT, V6_SENT_TYPE_COUNT},
-    server::{State, msg::SerialMsg, typemap::TypeMap},
+    server::{
+        State,
+        msg::SerialMsg,
+        relay::{self, RelayChain},
+        typemap::TypeMap,
+    },
 };
+
+/// Server-side message decode that also extracts a DHCPv6 relay wrapper. v4 has
+/// no relay concept, so it decodes the message and reports no relay chain.
+pub trait ServerDecode: Decodable + Sized {
+    /// decode a received datagram into a message plus, for v6, any relay chain
+    fn server_decode(bytes: &[u8]) -> io::Result<(Self, Option<RelayChain>)>;
+}
+
+impl ServerDecode for v4::Message {
+    fn server_decode(bytes: &[u8]) -> io::Result<(Self, Option<RelayChain>)> {
+        let msg = Self::decode(&mut Decoder::new(bytes))
+            .map_err(|op| Error::new(ErrorKind::InvalidData, op))?;
+        Ok((msg, None))
+    }
+}
+
+impl ServerDecode for v6::Message {
+    fn server_decode(bytes: &[u8]) -> io::Result<(Self, Option<RelayChain>)> {
+        // Relay-forward has a different wire layout than a client message, so
+        // unwrap it first; otherwise decode the message directly.
+        if let Some((msg, chain)) = relay::unwrap(bytes) {
+            return Ok((msg, Some(chain)));
+        }
+        let msg = Self::decode(&mut Decoder::new(bytes))
+            .map_err(|op| Error::new(ErrorKind::InvalidData, op))?;
+        Ok((msg, None))
+    }
+}
 
 /// Context is what will be passed to the [handler] traits and mutated by
 /// the plugins to enrich with data.
@@ -52,6 +85,9 @@ pub struct MsgContext<T> {
     interface: Option<IpNetwork>,
     /// global unicast address
     global: Option<IpNetwork>,
+    /// if this v6 message arrived via one or more relay agents, the relay chain
+    /// (outermost hop first). `msg` is the unwrapped innermost client message.
+    relay: Option<RelayChain>,
 }
 
 impl<T: fmt::Debug> fmt::Debug for MsgContext<T> {
@@ -90,6 +126,11 @@ impl<T> MsgContext<T> {
     /// return meta data associated with recv'd packet
     pub fn meta(&self) -> RecvMeta {
         self.meta
+    }
+    /// the relay chain if this v6 message arrived via one or more relay agents
+    /// (outermost hop first); `None` for directly-received or v4 messages
+    pub fn relay(&self) -> Option<&RelayChain> {
+        self.relay.as_ref()
     }
 
     /// Get `Serial` message by shared ref
@@ -193,13 +234,12 @@ impl<T> MsgContext<T> {
     }
 }
 
-impl<T: Encodable + Decodable> MsgContext<T> {
-    /// Create a `MsgContext` with state
+impl<T: Encodable + ServerDecode> MsgContext<T> {
+    /// Create a `MsgContext` with state. For DHCPv6 this transparently unwraps a
+    /// Relay-forward, so `msg` is always the innermost client message and the
+    /// relay chain (if any) is recorded for building the Relay-reply.
     pub fn new(msg_buf: SerialMsg, meta: RecvMeta, state: Arc<State>) -> io::Result<Self> {
-        let msg = {
-            let mut decoder = Decoder::new(msg_buf.bytes());
-            T::decode(&mut decoder).map_err(|op| io::Error::new(io::ErrorKind::InvalidData, op))?
-        };
+        let (msg, relay) = T::server_decode(msg_buf.bytes())?;
 
         Ok(Self {
             msg_buf,
@@ -215,9 +255,12 @@ impl<T: Encodable + Decodable> MsgContext<T> {
             is_live: true,
             interface: None,
             global: None,
+            relay,
         })
     }
+}
 
+impl<T: Encodable + Decodable> MsgContext<T> {
     /// Decode the currently held binary data in `resp_msg` using [`Decoder`] into a message.
     /// A decoded DHCP query.
     ///

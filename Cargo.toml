@@ -32,7 +32,7 @@ clap = { version = "4.6.1", features = ["derive", "env"] }
 base64 = "0.22.1"
 # usg-dhcproto is the 192d-Wing fork of dhcproto; package-renamed so code keeps
 # using `dhcproto::`.
-dhcproto = { package = "usg-dhcproto", version = "0.17.1" }
+dhcproto = { package = "usg-dhcproto", version = "0.18.0" }
 futures = { version = "0.3", default-features = false, features = ["std"] }
 ipnet = { features = ["serde"], version = "2.12.0" }
 pnet = { features = ["serde", "std"], version = "0.35.0" }

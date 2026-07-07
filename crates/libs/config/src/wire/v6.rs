@@ -23,6 +23,10 @@ pub struct Config {
     // TODO: better defaults than blank? pull information from the system
     #[serde(default)]
     pub options: Option<Options>,
+    /// honor the Rapid Commit option (opt 14): answer a Solicit that carries it
+    /// with a committing Reply instead of Advertise. RFC 8415 §18.3.1.
+    #[serde(default = "super::default_rapid_commit")]
+    pub rapid_commit: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
@@ -31,6 +35,13 @@ pub struct Net {
     #[serde(default)]
     pub options: Options,
     pub interfaces: Option<Vec<String>>,
+    /// address pools used for IA_NA (non-temporary address) assignment.
+    /// RFC 8415 stateful DHCPv6.
+    #[serde(default)]
+    pub ranges: Vec<IpRange>,
+    /// prefix pools used for IA_PD (prefix delegation). RFC 8415 §6.3.
+    #[serde(default)]
+    pub pd_pools: Vec<PdPool>,
     /// ping check is an optional value, when turned on an ICMP echo request will be sent
     /// before OFFER for this network
     #[serde(default)]
@@ -44,6 +55,23 @@ pub struct Net {
     /// Whether we are authoritative for this network (default: true)
     #[serde(default = "super::default_authoritative")]
     pub authoritative: bool,
+}
+
+/// A prefix delegation pool: a parent prefix carved into equal-length
+/// delegated prefixes handed out via IA_PD. e.g. delegate /64s out of a /48.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub struct PdPool {
+    /// the parent prefix to delegate from, e.g. `2001:db8:1::/48`
+    pub prefix: Ipv6Net,
+    /// length of the prefixes delegated to clients, e.g. `64`.
+    /// must be greater than the parent `prefix` length and <= 128.
+    pub delegated_len: u8,
+    #[serde(default)]
+    pub options: Options,
+    pub config: NetworkConfig,
+    /// delegated prefixes to skip (never hand out)
+    #[serde(default)]
+    pub except: Vec<Ipv6Net>,
 }
 
 #[derive(Serialize, Deserialize, Debug, PartialEq, Eq, Clone, Default)]

@@ -12,6 +12,7 @@ external-api = { path = "../external-api" }
 # plugins
 message-type = { path = "../plugins/message-type" }
 leases = { path = "../plugins/leases" }
+leases-v6 = { path = "../plugins/leases-v6" }
 static-addr = { path = "../plugins/static-addr" }
 # libs
 ip-manager = { path = "../libs/ip-manager" }

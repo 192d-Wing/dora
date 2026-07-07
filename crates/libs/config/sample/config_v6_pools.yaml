@@ -1,0 +1,51 @@
+v6:
+    server_id:
+        type: LLT
+        identifier: fe80::c981:b769:461a:bfb4
+        time: 1111112
+        hardware_type: 1
+        persist: false
+        path: ./server_id_pools
+    options:
+        values:
+            23:
+                type: ip_list
+                value:
+                    - 2001:db8::1
+                    - 2001:db8::2
+    networks:
+        2001:db8:1::/64:
+            config:
+                lease_time:
+                    default: 3600
+                preferred_time:
+                    default: 3600
+            options:
+                values:
+                    23:
+                        type: ip_list
+                        value:
+                            - 2001:db8::1
+                            - 2001:db8::2
+            # IA_NA address pools (RFC 8415)
+            ranges:
+                - start: 2001:db8:1::100
+                  end: 2001:db8:1::1ff
+                  config:
+                      lease_time:
+                          default: 3600
+                      preferred_time:
+                          default: 3600
+                  options:
+                      values: {}
+                  except:
+                      - 2001:db8:1::150
+            # IA_PD prefix delegation pools (RFC 8415 §6.3)
+            pd_pools:
+                - prefix: 2001:db8:100::/56
+                  delegated_len: 64
+                  config:
+                      lease_time:
+                          default: 3600
+                      preferred_time:
+                          default: 3600

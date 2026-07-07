@@ -1,5 +1,23 @@
 {
   "db": "SQLite",
+  "02af022c8dfb79a651a37c5ce9d243be222adc473bef3db6dc21e1683909f8fa": {
+    "describe": {
+      "columns": [
+        {
+          "name": "addr",
+          "ordinal": 0,
+          "type_info": "Blob"
+        }
+      ],
+      "nullable": [
+        false
+      ],
+      "parameters": {
+        "Right": 7
+      }
+    },
+    "query": "\n            UPDATE leases_v6\n            SET leased = ?4, expires_at = ?5, probation = ?6, client_id = ?7\n            WHERE prefix_len = 128 AND addr IN\n               (\n                    SELECT addr FROM leases_v6\n                    WHERE prefix_len = 128\n                      AND ((expires_at > ?1) AND (client_id = ?2) AND (addr = ?3))\n                    ORDER BY addr LIMIT 1\n               )\n            RETURNING addr\n            "
+  },
   "0ed87a7db669b203bea70d30069fd27c97d74931053e69d39d5487075d575976": {
     "describe": {
       "columns": [
@@ -17,6 +35,96 @@
       }
     },
     "query": "SELECT ip\n            FROM\n                leases\n            WHERE\n                client_id = ?1 AND expires_at > ?2\n            LIMIT 1"
+  },
+  "0f2b7976a6483ca2280b0e9c5fecb9208f97a79e40b2148e1a255ffff1cd9ad0": {
+    "describe": {
+      "columns": [
+        {
+          "name": "addr",
+          "ordinal": 0,
+          "type_info": "Blob"
+        },
+        {
+          "name": "prefix_len",
+          "ordinal": 1,
+          "type_info": "Int64"
+        },
+        {
+          "name": "client_id",
+          "ordinal": 2,
+          "type_info": "Blob"
+        },
+        {
+          "name": "leased",
+          "ordinal": 3,
+          "type_info": "Bool"
+        },
+        {
+          "name": "probation",
+          "ordinal": 4,
+          "type_info": "Bool"
+        },
+        {
+          "name": "expires_at",
+          "ordinal": 5,
+          "type_info": "Int64"
+        },
+        {
+          "name": "network",
+          "ordinal": 6,
+          "type_info": "Blob"
+        }
+      ],
+      "nullable": [
+        false,
+        false,
+        true,
+        false,
+        false,
+        false,
+        false
+      ],
+      "parameters": {
+        "Right": 2
+      }
+    },
+    "query": "SELECT * FROM leases_v6 WHERE addr = ?1 AND client_id = ?2 AND prefix_len = 128"
+  },
+  "11e2e48bae3b1518cd3dbcb34917e576fadcfb113f257266ec033faf27647fce": {
+    "describe": {
+      "columns": [
+        {
+          "name": "count_addr",
+          "ordinal": 0,
+          "type_info": "Int"
+        }
+      ],
+      "nullable": [
+        false
+      ],
+      "parameters": {
+        "Right": 3
+      }
+    },
+    "query": "SELECT COUNT(addr) as count_addr FROM leases_v6 WHERE leased = ?1 AND probation = ?2 AND expires_at > ?3"
+  },
+  "2705ef6ede59cb46a73fc0799bab3c4c4f1148d2cd73c63f1c90fb09fa51a2c6": {
+    "describe": {
+      "columns": [
+        {
+          "name": "addr",
+          "ordinal": 0,
+          "type_info": "Blob"
+        }
+      ],
+      "nullable": [
+        false
+      ],
+      "parameters": {
+        "Right": 6
+      }
+    },
+    "query": "\n            UPDATE leases_v6\n            SET client_id = ?2, leased = ?4, expires_at = ?5, probation = ?6\n            WHERE prefix_len = 128 AND addr IN\n               (\n                    SELECT addr FROM leases_v6\n                    WHERE prefix_len = 128\n                      AND ((client_id = ?2 AND addr = ?3) OR (expires_at < ?1 AND addr = ?3))\n                    ORDER BY addr LIMIT 1\n               )\n            RETURNING addr\n            "
   },
   "47c078186e966aa9ce236a2e0e54edf870cf6cbca6fbb20eb0896675be9347f3": {
     "describe": {
@@ -65,6 +173,206 @@
       }
     },
     "query": "SELECT * FROM leases WHERE ip = ?1"
+  },
+  "54c2bb0b702f74ddf7eec04e988c451cc4e6f3f3fe8381770c0ab548bae8f00b": {
+    "describe": {
+      "columns": [
+        {
+          "name": "addr",
+          "ordinal": 0,
+          "type_info": "Blob"
+        },
+        {
+          "name": "prefix_len",
+          "ordinal": 1,
+          "type_info": "Int64"
+        },
+        {
+          "name": "client_id",
+          "ordinal": 2,
+          "type_info": "Blob"
+        },
+        {
+          "name": "leased",
+          "ordinal": 3,
+          "type_info": "Bool"
+        },
+        {
+          "name": "probation",
+          "ordinal": 4,
+          "type_info": "Bool"
+        },
+        {
+          "name": "expires_at",
+          "ordinal": 5,
+          "type_info": "Int64"
+        },
+        {
+          "name": "network",
+          "ordinal": 6,
+          "type_info": "Blob"
+        }
+      ],
+      "nullable": [
+        false,
+        false,
+        true,
+        false,
+        false,
+        false,
+        false
+      ],
+      "parameters": {
+        "Right": 1
+      }
+    },
+    "query": "SELECT * FROM leases_v6 WHERE addr = ?1 AND prefix_len = 128"
+  },
+  "5c1a24787bd4dc547d627386a946c121877922112645661601bf1d758f189adf": {
+    "describe": {
+      "columns": [
+        {
+          "name": "addr",
+          "ordinal": 0,
+          "type_info": "Blob"
+        },
+        {
+          "name": "prefix_len",
+          "ordinal": 1,
+          "type_info": "Int64"
+        },
+        {
+          "name": "client_id",
+          "ordinal": 2,
+          "type_info": "Blob"
+        },
+        {
+          "name": "leased",
+          "ordinal": 3,
+          "type_info": "Bool"
+        },
+        {
+          "name": "probation",
+          "ordinal": 4,
+          "type_info": "Bool"
+        },
+        {
+          "name": "expires_at",
+          "ordinal": 5,
+          "type_info": "Int64"
+        },
+        {
+          "name": "network",
+          "ordinal": 6,
+          "type_info": "Blob"
+        }
+      ],
+      "nullable": [
+        false,
+        false,
+        true,
+        false,
+        false,
+        false,
+        false
+      ],
+      "parameters": {
+        "Right": 2
+      }
+    },
+    "query": "SELECT * FROM leases_v6 WHERE addr = ?1 AND prefix_len = ?2"
+  },
+  "5e81acdb85b9075041cb55ec2bfe4a354c7caebaa0d84109cf11fe84f58fd454": {
+    "describe": {
+      "columns": [],
+      "nullable": [],
+      "parameters": {
+        "Right": 2
+      }
+    },
+    "query": "DELETE FROM leases_v6 WHERE addr = ?1 AND prefix_len = ?2"
+  },
+  "5f7cfe48bc31ba425572aaf16bec764e4cbc70a6ee3e84825e45a87ccc850230": {
+    "describe": {
+      "columns": [
+        {
+          "name": "addr",
+          "ordinal": 0,
+          "type_info": "Blob"
+        }
+      ],
+      "nullable": [
+        false
+      ],
+      "parameters": {
+        "Right": 2
+      }
+    },
+    "query": "SELECT addr FROM leases_v6\n             WHERE client_id = ?1 AND expires_at > ?2 AND prefix_len = 128\n             LIMIT 1"
+  },
+  "60795cad75e1b2ff85c27d721429616e953f3c0493d91cebe9aee011b8a142cc": {
+    "describe": {
+      "columns": [],
+      "nullable": [],
+      "parameters": {
+        "Right": 1
+      }
+    },
+    "query": "DELETE FROM leases_v6 WHERE addr = ?1 AND prefix_len = 128"
+  },
+  "6643cdd27231ae0375339081e4a7b85f837b6a348674bac19e63db75a73f8441": {
+    "describe": {
+      "columns": [
+        {
+          "name": "addr",
+          "ordinal": 0,
+          "type_info": "Blob"
+        },
+        {
+          "name": "prefix_len",
+          "ordinal": 1,
+          "type_info": "Int64"
+        },
+        {
+          "name": "client_id",
+          "ordinal": 2,
+          "type_info": "Blob"
+        },
+        {
+          "name": "leased",
+          "ordinal": 3,
+          "type_info": "Bool"
+        },
+        {
+          "name": "probation",
+          "ordinal": 4,
+          "type_info": "Bool"
+        },
+        {
+          "name": "expires_at",
+          "ordinal": 5,
+          "type_info": "Int64"
+        },
+        {
+          "name": "network",
+          "ordinal": 6,
+          "type_info": "Blob"
+        }
+      ],
+      "nullable": [
+        false,
+        false,
+        true,
+        false,
+        false,
+        false,
+        false
+      ],
+      "parameters": {
+        "Right": 3
+      }
+    },
+    "query": "SELECT * FROM leases_v6 WHERE addr = ?1 AND prefix_len = ?2 AND client_id = ?3"
   },
   "793f1692b36d96a6815c6bfb21d5de88c4f64c020af406405a2ed8c9535ffff3": {
     "describe": {
@@ -177,6 +485,138 @@
       }
     },
     "query": "\n            UPDATE leases\n            SET\n                client_id = ?2, leased = ?4, expires_at = ?5, probation = ?6\n            WHERE ip in\n               (\n                    SELECT ip\n                    FROM leases\n                    WHERE\n                        ((client_id = ?2 AND ip = ?3)\n                            OR (expires_at < ?1 AND ip = ?3))\n                    ORDER BY ip LIMIT 1\n                )\n            RETURNING ip\n            "
+  },
+  "93cce35e72e99e8fe7950a2e14ab7dff8ba5c9d2dead96505deace27ea34a8d1": {
+    "describe": {
+      "columns": [
+        {
+          "name": "addr",
+          "ordinal": 0,
+          "type_info": "Blob"
+        },
+        {
+          "name": "prefix_len",
+          "ordinal": 1,
+          "type_info": "Int64"
+        },
+        {
+          "name": "client_id",
+          "ordinal": 2,
+          "type_info": "Blob"
+        },
+        {
+          "name": "leased",
+          "ordinal": 3,
+          "type_info": "Bool"
+        },
+        {
+          "name": "probation",
+          "ordinal": 4,
+          "type_info": "Bool"
+        },
+        {
+          "name": "expires_at",
+          "ordinal": 5,
+          "type_info": "Int64"
+        },
+        {
+          "name": "network",
+          "ordinal": 6,
+          "type_info": "Blob"
+        }
+      ],
+      "nullable": [
+        false,
+        false,
+        true,
+        false,
+        false,
+        false,
+        false
+      ],
+      "parameters": {
+        "Right": 0
+      }
+    },
+    "query": "SELECT * FROM leases_v6"
+  },
+  "a11f2a496a10a85c1ae27d145421894e488006498e2cec2a8861b66def35f808": {
+    "describe": {
+      "columns": [
+        {
+          "name": "addr",
+          "ordinal": 0,
+          "type_info": "Blob"
+        },
+        {
+          "name": "prefix_len",
+          "ordinal": 1,
+          "type_info": "Int64"
+        }
+      ],
+      "nullable": [
+        false,
+        false
+      ],
+      "parameters": {
+        "Right": 2
+      }
+    },
+    "query": "SELECT addr, prefix_len FROM leases_v6\n             WHERE client_id = ?1 AND expires_at > ?2 AND prefix_len != 128\n             LIMIT 1"
+  },
+  "a471109cf2557201a6ffd0dbc94d7ca53d60275cab3d2566bb9b16ac9cf8190d": {
+    "describe": {
+      "columns": [
+        {
+          "name": "addr",
+          "ordinal": 0,
+          "type_info": "Blob"
+        },
+        {
+          "name": "prefix_len",
+          "ordinal": 1,
+          "type_info": "Int64"
+        },
+        {
+          "name": "client_id",
+          "ordinal": 2,
+          "type_info": "Blob"
+        },
+        {
+          "name": "leased",
+          "ordinal": 3,
+          "type_info": "Bool"
+        },
+        {
+          "name": "probation",
+          "ordinal": 4,
+          "type_info": "Bool"
+        },
+        {
+          "name": "expires_at",
+          "ordinal": 5,
+          "type_info": "Int64"
+        },
+        {
+          "name": "network",
+          "ordinal": 6,
+          "type_info": "Blob"
+        }
+      ],
+      "nullable": [
+        false,
+        false,
+        true,
+        false,
+        false,
+        false,
+        false
+      ],
+      "parameters": {
+        "Right": 2
+      }
+    },
+    "query": "SELECT * FROM leases_v6\n               WHERE prefix_len = 128 AND addr >= ?1 AND addr <= ?2\n               ORDER BY addr DESC LIMIT 1"
   },
   "ac1e7d2c911b8205f797601c1106d8dd455ad37d7805bb5e708cc389fef971e2": {
     "describe": {
@@ -302,6 +742,16 @@
     },
     "query": "\n            SELECT\n                *\n            FROM\n                leases\n            WHERE\n                ip >= ?1 AND ip <= ?2\n            ORDER BY\n                ip DESC\n            LIMIT 1\n            "
   },
+  "b6db6958d19d788ab37a5c0cb7c1682d01a3dff7f03d98cfabc78bbc053b5e61": {
+    "describe": {
+      "columns": [],
+      "nullable": [],
+      "parameters": {
+        "Right": 7
+      }
+    },
+    "query": "INSERT OR REPLACE INTO leases_v6\n                (addr, prefix_len, client_id, expires_at, network, leased, probation)\n               VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)"
+  },
   "b956acaf5fae340ca8d4f050a8d5825fd77dd03d68ccfec6f5c97bc49178bfce": {
     "describe": {
       "columns": [
@@ -350,6 +800,16 @@
     },
     "query": "SELECT * FROM leases"
   },
+  "c5aa15319b04a100c32ce71c53ad264e638edf4763b972d209ee673085e5f16c": {
+    "describe": {
+      "columns": [],
+      "nullable": [],
+      "parameters": {
+        "Right": 6
+      }
+    },
+    "query": "INSERT INTO leases_v6\n                (addr, prefix_len, client_id, expires_at, network, leased, probation)\n               VALUES (?1, 128, ?2, ?3, ?4, ?5, ?6)"
+  },
   "d936276b3e7ea7fd4e26597791388e43779d3b87835573709227673ab8d49847": {
     "describe": {
       "columns": [],
@@ -359,5 +819,95 @@
       }
     },
     "query": "DELETE FROM leases WHERE ip = ?1"
+  },
+  "db15720365451c8034b89671ac419e155342cabd0651044c7282b754e3a1c4ea": {
+    "describe": {
+      "columns": [
+        {
+          "name": "addr",
+          "ordinal": 0,
+          "type_info": "Blob"
+        }
+      ],
+      "nullable": [
+        false
+      ],
+      "parameters": {
+        "Right": 5
+      }
+    },
+    "query": "UPDATE leases_v6 SET leased = 1, expires_at = ?4, probation = 0\n               WHERE addr = ?1 AND prefix_len = ?2 AND client_id = ?3 AND expires_at > ?5\n               RETURNING addr"
+  },
+  "ddbb4b8501abbe06e707597e271a7b287618fde4eca58d00fb6aed32a6be7cc8": {
+    "describe": {
+      "columns": [
+        {
+          "name": "addr",
+          "ordinal": 0,
+          "type_info": "Blob"
+        }
+      ],
+      "nullable": [
+        false
+      ],
+      "parameters": {
+        "Right": 6
+      }
+    },
+    "query": "\n            UPDATE leases_v6\n            SET client_id = ?4, leased = ?5, expires_at = ?6, probation = FALSE\n            WHERE prefix_len = 128 AND addr IN\n               (\n                   SELECT addr FROM leases_v6\n                   WHERE prefix_len = 128\n                     AND (((expires_at < ?1) AND (addr >= ?2 AND addr <= ?3)) OR (client_id = ?4))\n                   ORDER BY addr LIMIT 1\n               )\n            RETURNING addr\n            "
+  },
+  "eda60b173904af51894fc1b08d849dddf57718c0b8df89cd9af5f1a82dec5f17": {
+    "describe": {
+      "columns": [
+        {
+          "name": "addr",
+          "ordinal": 0,
+          "type_info": "Blob"
+        },
+        {
+          "name": "prefix_len",
+          "ordinal": 1,
+          "type_info": "Int64"
+        },
+        {
+          "name": "client_id",
+          "ordinal": 2,
+          "type_info": "Blob"
+        },
+        {
+          "name": "leased",
+          "ordinal": 3,
+          "type_info": "Bool"
+        },
+        {
+          "name": "probation",
+          "ordinal": 4,
+          "type_info": "Bool"
+        },
+        {
+          "name": "expires_at",
+          "ordinal": 5,
+          "type_info": "Int64"
+        },
+        {
+          "name": "network",
+          "ordinal": 6,
+          "type_info": "Blob"
+        }
+      ],
+      "nullable": [
+        false,
+        false,
+        true,
+        false,
+        false,
+        false,
+        false
+      ],
+      "parameters": {
+        "Right": 5
+      }
+    },
+    "query": "\n            UPDATE leases_v6\n            SET client_id = ?2, expires_at = ?3, leased = ?4, probation = ?5\n            WHERE addr = ?1 AND prefix_len = 128\n            RETURNING *\n            "
   }
 }
