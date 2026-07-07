@@ -34,6 +34,11 @@ use ip_manager::{IpManager, IpState, Storage};
 use message_type::MsgType;
 use register_derive::Register;
 
+/// how long an offered-but-uncommitted (Advertise) binding is held before it can
+/// be reclaimed, so Solicit-only clients can't exhaust the pool by never sending
+/// a Request. Committed leases persist for their full valid lifetime.
+const OFFER_WINDOW: Duration = Duration::from_secs(60);
+
 #[derive(Register)]
 #[register(msg(v6::Message))]
 #[register(plugin(MsgType))]
@@ -149,20 +154,18 @@ where
             }
             _ => true,
         };
-        let (preferred, valid) = lifetimes(network);
         let state = if commit {
             IpState::Lease
         } else {
             IpState::Reserve
         };
-        let expires_at = SystemTime::now() + valid;
 
         let mut ia_opts = Vec::with_capacity(ianas.len() + iapds.len());
-        // IA_NA: assign an address per IA
+        // IA_NA: assign an address per IA (with that pool's lifetimes)
         for iana in ianas {
             let id = binding_id(duid, iana.id);
-            match self.allocate(network, &id, expires_at, state).await {
-                Some(addr) => {
+            match self.allocate(network, &id, state).await {
+                Some((addr, preferred, valid)) => {
                     debug!(?addr, iaid = iana.id, commit, "assigned v6 address");
                     ia_opts.push(iana_with_addr(iana.id, addr, preferred, valid));
                 }
@@ -172,11 +175,11 @@ where
                 }
             }
         }
-        // IA_PD: delegate a prefix per IA
+        // IA_PD: delegate a prefix per IA (with that pool's lifetimes)
         for iapd in iapds {
             let id = binding_id(duid, iapd.id);
-            match self.allocate_prefix(network, &id, expires_at, state).await {
-                Some((prefix, plen)) => {
+            match self.allocate_prefix(network, &id, state).await {
+                Some((prefix, plen, preferred, valid)) => {
                     debug!(?prefix, plen, iaid = iapd.id, commit, "delegated v6 prefix");
                     ia_opts.push(iapd_with_prefix(iapd.id, prefix, plen, preferred, valid));
                 }
@@ -201,67 +204,74 @@ where
         iapds: &[IAPD],
         network: &Network,
     ) -> Result<Action> {
-        let (preferred, valid) = lifetimes(network);
-        let expires_at = SystemTime::now() + valid;
-
         let mut ia_opts = Vec::with_capacity(ianas.len() + iapds.len());
         let mut any_extended = false;
+        let is_renew = msg_type == MessageType::Renew;
 
-        // IA_NA: extend addresses
+        // IA_NA: extend addresses (with that pool's lifetimes)
         for iana in ianas {
             let id = binding_id(duid, iana.id);
             let mut extended = None;
             for addr in iana_addrs(iana) {
+                let (preferred, valid) = na_lifetimes(network, addr);
+                let expires_at = SystemTime::now() + valid;
                 if let Ok(Some(IpAddr::V6(ip))) =
                     self.ip_mgr.renew(IpAddr::V6(addr), &id, expires_at).await
                 {
-                    extended = Some(ip);
+                    extended = Some((ip, preferred, valid));
                     break;
                 }
             }
             match extended {
-                Some(addr) => {
+                Some((addr, preferred, valid)) => {
                     any_extended = true;
                     debug!(?addr, iaid = iana.id, "extended v6 lease");
                     ia_opts.push(iana_with_addr(iana.id, addr, preferred, valid));
                 }
-                None => ia_opts.push(iana_status(
+                // Renew: reply NoBinding for an IA we don't have (§18.3.4).
+                // Rebind: omit the IA entirely — NoBinding is not valid there
+                // (§18.3.5); the client keeps trying other servers.
+                None if is_renew => ia_opts.push(iana_status(
                     iana.id,
                     Status::NoBinding,
                     "no binding for this IA",
                 )),
+                None => {}
             }
         }
 
-        // IA_PD: extend delegated prefixes
+        // IA_PD: extend delegated prefixes (with that pool's lifetimes)
         for iapd in iapds {
             let id = binding_id(duid, iapd.id);
             let mut extended = None;
             for (prefix, plen) in iapd_prefixes(iapd) {
+                let (preferred, valid) = pd_lifetimes(network, prefix);
+                let expires_at = SystemTime::now() + valid;
                 if let Ok(Some(IpAddr::V6(ip))) =
                     self.ip_mgr.renew_pd(IpAddr::V6(prefix), plen, &id, expires_at).await
                 {
-                    extended = Some((ip, plen));
+                    extended = Some((ip, plen, preferred, valid));
                     break;
                 }
             }
             match extended {
-                Some((prefix, plen)) => {
+                Some((prefix, plen, preferred, valid)) => {
                     any_extended = true;
                     debug!(?prefix, plen, iaid = iapd.id, "extended v6 prefix");
                     ia_opts.push(iapd_with_prefix(iapd.id, prefix, plen, preferred, valid));
                 }
-                None => ia_opts.push(iapd_status(
+                None if is_renew => ia_opts.push(iapd_status(
                     iapd.id,
                     Status::NoBinding,
                     "no binding for this IA_PD",
                 )),
+                None => {}
             }
         }
 
         // A Rebind that matches no binding must not be answered (let another
         // server reply). Renew always answers.
-        if msg_type == MessageType::Rebind && !any_extended {
+        if !is_renew && !any_extended {
             debug!("Rebind matched no bindings; not responding");
             return Ok(Action::NoResponse);
         }
@@ -344,21 +354,24 @@ where
 
     /// allocate the first available address across the network's IA_NA pools for
     /// this binding id, reusing the client's existing address if it already has
-    /// one (reserve_first matches on the id).
+    /// one (reserve_first matches on the id). Returns the address with the
+    /// allocating range's (preferred, valid) lifetimes.
     async fn allocate(
         &self,
         network: &Network,
         id: &[u8],
-        expires_at: SystemTime,
         state: IpState,
-    ) -> Option<Ipv6Addr> {
+    ) -> Option<(Ipv6Addr, Duration, Duration)> {
         for range in network.ranges() {
+            let preferred = range.preferred().determine_lease(None).0;
+            let valid = range.valid().determine_lease(None).0;
+            let expires_at = SystemTime::now() + db_ttl(state, valid);
             match self
                 .ip_mgr
                 .reserve_first(range, network, id, expires_at, Some(state))
                 .await
             {
-                Ok(IpAddr::V6(ip)) => return Some(ip),
+                Ok(IpAddr::V6(ip)) => return Some((ip, preferred, valid)),
                 Ok(IpAddr::V4(_)) => continue, // never for a v6 range
                 Err(err) => {
                     debug!(?err, "v6 range could not allocate an address, trying next");
@@ -369,22 +382,25 @@ where
         None
     }
 
-    /// delegate a prefix from the network's pd_pools for this binding id.
+    /// delegate a prefix from the network's pd_pools for this binding id. Returns
+    /// the prefix with the allocating pool's (preferred, valid) lifetimes.
     async fn allocate_prefix(
         &self,
         network: &Network,
         id: &[u8],
-        expires_at: SystemTime,
         state: IpState,
-    ) -> Option<(Ipv6Addr, u8)> {
+    ) -> Option<(Ipv6Addr, u8, Duration, Duration)> {
         let subnet = IpAddr::V6(network.subnet());
         for pool in network.pd_pools() {
+            let preferred = pool.preferred().determine_lease(None).0;
+            let valid = pool.valid().determine_lease(None).0;
+            let expires_at = SystemTime::now() + db_ttl(state, valid);
             match self
                 .ip_mgr
                 .allocate_pd(pool, subnet, id, expires_at, state)
                 .await
             {
-                Ok(Some(pd)) => return Some(pd),
+                Ok(Some((prefix, plen))) => return Some((prefix, plen, preferred, valid)),
                 Ok(None) => continue,
                 Err(err) => {
                     debug!(?err, "pd pool could not delegate a prefix, trying next");
@@ -433,8 +449,10 @@ fn iana_with_addr(iaid: u32, addr: Ipv6Addr, preferred: Duration, valid: Duratio
     }));
     DhcpOption::IANA(IANA {
         id: iaid,
-        t1: config::renew(valid).as_secs() as u32,
-        t2: config::rebind(valid).as_secs() as u32,
+        // T1/T2 are based on the PREFERRED lifetime so the client renews before
+        // the address is deprecated (RFC 8415 §21.4), not the valid lifetime.
+        t1: config::renew(preferred).as_secs() as u32,
+        t2: config::rebind(preferred).as_secs() as u32,
         opts,
     })
 }
@@ -499,12 +517,49 @@ fn extract_client(msg: &v6::Message) -> Option<(Vec<u8>, Vec<IANA>, Vec<IAPD>)> 
     Some((duid, ianas, iapds))
 }
 
-/// the (preferred, valid) lifetimes configured for a network.
+/// the (preferred, valid) lifetimes configured at the network level.
 fn lifetimes(network: &Network) -> (Duration, Duration) {
     (
         network.preferred().determine_lease(None).0,
         network.valid().determine_lease(None).0,
     )
+}
+
+/// DB reservation time-to-live: the full valid lifetime for a committed lease,
+/// but only a short offer window (capped at valid) for an offered reservation so
+/// an un-Requested address is reclaimed quickly.
+fn db_ttl(state: IpState, valid: Duration) -> Duration {
+    if state == IpState::Lease {
+        valid
+    } else {
+        OFFER_WINDOW.min(valid)
+    }
+}
+
+/// (preferred, valid) for an IA_NA address: the containing range's lifetimes if
+/// the address falls in a configured range, else the network default.
+fn na_lifetimes(network: &Network, addr: Ipv6Addr) -> (Duration, Duration) {
+    match network.range(addr) {
+        Some(r) => (
+            r.preferred().determine_lease(None).0,
+            r.valid().determine_lease(None).0,
+        ),
+        None => lifetimes(network),
+    }
+}
+
+/// (preferred, valid) for a delegated prefix: the containing pd_pool's lifetimes
+/// if the prefix falls in a configured pool, else the network default.
+fn pd_lifetimes(network: &Network, prefix: Ipv6Addr) -> (Duration, Duration) {
+    for pool in network.pd_pools() {
+        if pool.prefix().contains(&prefix) {
+            return (
+                pool.preferred().determine_lease(None).0,
+                pool.valid().determine_lease(None).0,
+            );
+        }
+    }
+    lifetimes(network)
 }
 
 /// the addresses a client listed inside an IA_NA (its IAADDR sub-options).
@@ -540,8 +595,9 @@ fn iapd_with_prefix(
     }));
     DhcpOption::IAPD(IAPD {
         id: iaid,
-        t1: config::renew(valid).as_secs() as u32,
-        t2: config::rebind(valid).as_secs() as u32,
+        // T1/T2 from the PREFERRED lifetime (RFC 8415 §21.4)
+        t1: config::renew(preferred).as_secs() as u32,
+        t2: config::rebind(preferred).as_secs() as u32,
         opts,
     })
 }
@@ -602,8 +658,9 @@ mod tests {
             panic!("expected IANA");
         };
         assert_eq!(iana.id, 42);
-        assert_eq!(iana.t1, 1800); // renew  = valid / 2
-        assert_eq!(iana.t2, 3150); // rebind = valid * 7/8
+        // T1/T2 derive from the PREFERRED lifetime (1800), not valid (3600)
+        assert_eq!(iana.t1, 900); // renew  = preferred / 2
+        assert_eq!(iana.t2, 1575); // rebind = preferred * 7/8
 
         let Some(DhcpOption::IAAddr(a)) = iana.opts.get(OptionCode::IAAddr) else {
             panic!("IA_NA must contain an IAADDR");
@@ -669,8 +726,9 @@ mod tests {
             panic!("expected IA_PD");
         };
         assert_eq!(iapd.id, 5);
-        assert_eq!(iapd.t1, 1800);
-        assert_eq!(iapd.t2, 3150);
+        // T1/T2 from the PREFERRED lifetime (1800), not valid (3600)
+        assert_eq!(iapd.t1, 900);
+        assert_eq!(iapd.t2, 1575);
         let Some(DhcpOption::IAPrefix(p)) = iapd.opts.get(OptionCode::IAPrefix) else {
             panic!("IA_PD must contain an IAPREFIX");
         };

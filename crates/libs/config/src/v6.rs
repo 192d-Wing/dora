@@ -344,18 +344,39 @@ impl TryFrom<wire::v6::PdPool> for PdPool {
                 p.prefix
             );
         }
-        if p.delegated_len > 128 {
-            bail!("pd_pool delegated_len ({}) must be <= 128", p.delegated_len);
+        // < 128: a /128 "prefix" is a single address and would collide with the
+        // IA_NA namespace in storage (both stored as prefix_len 128).
+        if p.delegated_len >= 128 {
+            bail!(
+                "pd_pool delegated_len ({}) must be < 128 (a delegated prefix cannot be a single address)",
+                p.delegated_len
+            );
         }
+        let valid: LeaseTime = p.config.lease_time.into();
+        let preferred: LeaseTime = p.config.preferred_time.into();
+        check_lifetimes(&format!("pd_pool {}", p.prefix), preferred, valid)?;
         Ok(Self {
             prefix: p.prefix,
             delegated_len: p.delegated_len,
-            valid: p.config.lease_time.into(),
-            preferred: p.config.preferred_time.into(),
+            valid,
+            preferred,
             opts: p.options.get(),
             except: p.except,
         })
     }
+}
+
+/// A preferred lifetime greater than the valid lifetime produces a wire-invalid
+/// IAADDR/IAPREFIX that clients MUST discard (RFC 8415 §21.6). Reject it in config.
+fn check_lifetimes(what: &str, preferred: LeaseTime, valid: LeaseTime) -> Result<()> {
+    if preferred.get_default() > valid.get_default() {
+        bail!(
+            "{what}: preferred_time ({:?}) must be <= lease_time/valid ({:?})",
+            preferred.get_default(),
+            valid.get_default()
+        );
+    }
+    Ok(())
 }
 
 // TODO: replace with is_unicast_global from std when released
@@ -536,6 +557,13 @@ impl TryFrom<wire::v6::Config> for Config {
 
                 // convert address pools (IA_NA) and prefix pools (IA_PD)
                 let ranges: Vec<NetRange> = ranges.into_iter().map(NetRange::from).collect();
+                for r in &ranges {
+                    check_lifetimes(
+                        &format!("range {}-{}", r.start(), r.end()),
+                        r.preferred(),
+                        r.valid(),
+                    )?;
+                }
                 let pd_pools: Vec<PdPool> = pd_pools
                     .into_iter()
                     .map(PdPool::try_from)
@@ -567,7 +595,9 @@ impl TryFrom<wire::v6::Config> for Config {
                     })
                     .transpose()?;
 
-                let (valid, preferred) = (config.lease_time.into(), config.preferred_time.into());
+                let (valid, preferred): (LeaseTime, LeaseTime) =
+                    (config.lease_time.into(), config.preferred_time.into());
+                check_lifetimes(&format!("network {subnet}"), preferred, valid)?;
 
                 let network = Network {
                     interfaces: net_interfaces,
@@ -695,6 +725,64 @@ v6:
         let err = Config::new(yaml).expect_err("delegated_len < prefix len must fail");
         assert!(
             format!("{err:#}").contains("delegated_len"),
+            "unexpected error: {err:#}"
+        );
+    }
+
+    /// a pd_pool delegating full /128 prefixes must be rejected (collides with IA_NA)
+    #[test]
+    fn test_v6_pd_pool_delegated_len_128_rejected() {
+        let yaml = r#"
+v6:
+    server_id:
+        type: LL
+        identifier: fe80::1
+        persist: false
+        path: ./server_id_pd128
+    networks:
+        2001:db8:1::/64:
+            config:
+                lease_time:
+                    default: 3600
+                preferred_time:
+                    default: 3600
+            pd_pools:
+                - prefix: 2001:db8:100::/64
+                  delegated_len: 128
+                  config:
+                      lease_time:
+                          default: 3600
+                      preferred_time:
+                          default: 3600
+"#;
+        let err = Config::new(yaml).expect_err("delegated_len 128 must fail");
+        assert!(
+            format!("{err:#}").contains("delegated_len"),
+            "unexpected error: {err:#}"
+        );
+    }
+
+    /// a preferred_time greater than the valid lifetime must be rejected
+    #[test]
+    fn test_v6_preferred_gt_valid_rejected() {
+        let yaml = r#"
+v6:
+    server_id:
+        type: LL
+        identifier: fe80::1
+        persist: false
+        path: ./server_id_badlife
+    networks:
+        2001:db8:1::/64:
+            config:
+                lease_time:
+                    default: 1800
+                preferred_time:
+                    default: 3600
+"#;
+        let err = Config::new(yaml).expect_err("preferred > valid must fail");
+        assert!(
+            format!("{err:#}").contains("preferred_time"),
             "unexpected error: {err:#}"
         );
     }
