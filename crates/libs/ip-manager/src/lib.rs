@@ -562,6 +562,14 @@ where
         }
     }
 
+    /// look up a client's existing delegated prefix (base + length) by DUID+IAID
+    pub async fn lookup_id_pd(
+        &self,
+        id: &[u8],
+    ) -> Result<Option<(IpAddr, u8)>, IpError<T::Error>> {
+        Ok(self.store.get_id_pd(id).await?)
+    }
+
     /// Extend an existing, unexpired binding's lease time. Unlike [`try_lease`],
     /// this never creates a binding: it returns `Ok(Some(ip))` only when a
     /// binding for `(ip, id)` exists and is unexpired, else `Ok(None)`. Used for

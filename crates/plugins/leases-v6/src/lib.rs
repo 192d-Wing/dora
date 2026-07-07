@@ -96,13 +96,17 @@ where
             }
         };
 
-        // relayed messages select the subnet by the relay's link-address; direct
-        // messages use the receiving interface (RFC 8415 §13.1).
-        let client_link = ctx.relay().and_then(|c| c.client_link());
-        let network = match client_link {
-            Some(link) => self.cfg.v6().get_network_by_addr(link),
-            None => self.cfg.v6().get_network(meta.ifindex),
-        };
+        // Relayed messages select the subnet by the relay's link-address (RFC
+        // 8415 §13.1). A relay may leave the link-address unspecified (LDRA, RFC
+        // 6221) or present one we don't serve; in those cases fall back to the
+        // receiving interface, as for a directly-received message.
+        let client_link = ctx
+            .relay()
+            .and_then(|c| c.client_link())
+            .filter(|l| !l.is_unspecified());
+        let network = client_link
+            .and_then(|link| self.cfg.v6().get_network_by_addr(link))
+            .or_else(|| self.cfg.v6().get_network(meta.ifindex));
         let network = match network {
             Some(net) => net,
             None => {
@@ -395,20 +399,27 @@ where
         {
             let preferred = range.preferred().determine_lease(None).0;
             let valid = range.valid().determine_lease(None).0;
-            let expires_at = SystemTime::now() + db_ttl(state, valid);
-            if self
-                .ip_mgr
-                .try_ip(
-                    IpAddr::V6(existing),
-                    IpAddr::V6(network.subnet()),
-                    id,
-                    expires_at,
-                    network,
-                    Some(state),
-                )
-                .await
-                .is_ok()
-            {
+            if state == IpState::Lease {
+                // Request / Rapid-Commit: commit to a full-lifetime lease.
+                let expires_at = SystemTime::now() + valid;
+                if self
+                    .ip_mgr
+                    .try_ip(
+                        IpAddr::V6(existing),
+                        IpAddr::V6(network.subnet()),
+                        id,
+                        expires_at,
+                        network,
+                        Some(IpState::Lease),
+                    )
+                    .await
+                    .is_ok()
+                {
+                    return Some((existing, preferred, valid));
+                }
+            } else {
+                // Plain Solicit: re-advertise the existing binding without
+                // mutating it — never demote a committed lease to a short offer.
                 return Some((existing, preferred, valid));
             }
         }
@@ -441,6 +452,32 @@ where
         state: IpState,
     ) -> Option<(Ipv6Addr, u8, Duration, Duration)> {
         let subnet = IpAddr::V6(network.subnet());
+        // Reuse the client's existing delegation from whichever pool holds it, so
+        // a multi-pool network keeps the prefix stable (the per-pool loop below
+        // returns on the first pool and would otherwise hand out a fresh prefix).
+        if let Ok(Some((IpAddr::V6(existing), len))) = self.ip_mgr.lookup_id_pd(id).await
+            && let Some(pool) = network
+                .pd_pools()
+                .iter()
+                .find(|p| p.delegated_len() == len && p.prefix().contains(&existing))
+        {
+            let preferred = pool.preferred().determine_lease(None).0;
+            let valid = pool.valid().determine_lease(None).0;
+            if state == IpState::Lease {
+                // commit the existing prefix to a full-lifetime lease
+                let expires_at = SystemTime::now() + valid;
+                if let Ok(Some((prefix, plen))) = self
+                    .ip_mgr
+                    .allocate_pd(pool, subnet, id, expires_at, IpState::Lease)
+                    .await
+                {
+                    return Some((prefix, plen, preferred, valid));
+                }
+            } else {
+                // Solicit: re-advertise the existing delegation without mutating it
+                return Some((existing, len, preferred, valid));
+            }
+        }
         for pool in network.pd_pools() {
             let preferred = pool.preferred().determine_lease(None).0;
             let valid = pool.valid().determine_lease(None).0;
@@ -499,10 +536,10 @@ fn iana_with_addr(iaid: u32, addr: Ipv6Addr, preferred: Duration, valid: Duratio
     }));
     DhcpOption::IANA(IANA {
         id: iaid,
-        // T1/T2 are based on the PREFERRED lifetime so the client renews before
-        // the address is deprecated (RFC 8415 §21.4), not the valid lifetime.
-        t1: config::renew(preferred).as_secs() as u32,
-        t2: config::rebind(preferred).as_secs() as u32,
+        // T1/T2 from the PREFERRED lifetime so the client renews before the
+        // address is deprecated, at the RFC 8415 §21.4 recommended 0.5 / 0.8.
+        t1: (preferred.as_secs() / 2) as u32,
+        t2: (preferred.as_secs() * 4 / 5) as u32,
         opts,
     })
 }
@@ -645,9 +682,9 @@ fn iapd_with_prefix(
     }));
     DhcpOption::IAPD(IAPD {
         id: iaid,
-        // T1/T2 from the PREFERRED lifetime (RFC 8415 §21.4)
-        t1: config::renew(preferred).as_secs() as u32,
-        t2: config::rebind(preferred).as_secs() as u32,
+        // T1/T2 from the PREFERRED lifetime at the §21.4 recommended 0.5 / 0.8
+        t1: (preferred.as_secs() / 2) as u32,
+        t2: (preferred.as_secs() * 4 / 5) as u32,
         opts,
     })
 }
@@ -709,8 +746,8 @@ mod tests {
         };
         assert_eq!(iana.id, 42);
         // T1/T2 derive from the PREFERRED lifetime (1800), not valid (3600)
-        assert_eq!(iana.t1, 900); // renew  = preferred / 2
-        assert_eq!(iana.t2, 1575); // rebind = preferred * 7/8
+        assert_eq!(iana.t1, 900); // 0.5 * preferred
+        assert_eq!(iana.t2, 1440); // 0.8 * preferred
 
         let Some(DhcpOption::IAAddr(a)) = iana.opts.get(OptionCode::IAAddr) else {
             panic!("IA_NA must contain an IAADDR");
@@ -776,9 +813,9 @@ mod tests {
             panic!("expected IA_PD");
         };
         assert_eq!(iapd.id, 5);
-        // T1/T2 from the PREFERRED lifetime (1800), not valid (3600)
+        // T1/T2 from the PREFERRED lifetime (1800): 0.5 / 0.8
         assert_eq!(iapd.t1, 900);
-        assert_eq!(iapd.t2, 1575);
+        assert_eq!(iapd.t2, 1440);
         let Some(DhcpOption::IAPrefix(p)) = iapd.opts.get(OptionCode::IAPrefix) else {
             panic!("IA_PD must contain an IAPREFIX");
         };

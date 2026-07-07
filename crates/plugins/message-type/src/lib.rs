@@ -403,12 +403,22 @@ impl Plugin<v6::Message> for MsgType {
         // set the interface, using data from config
         // MsgType plugin must run first because future plugins use this data
         let meta = ctx.meta();
-        let interface = self
-            .cfg
-            .v6()
-            .get_interface_link_local(meta.ifindex)
-            .context("no link-local address on interface?")?;
-        ctx.set_interface(interface);
+        // A relayed message identifies the client link via the relay's
+        // link-address, not the receiving interface, so its interface link-local
+        // is optional. A directly-received message still requires one.
+        let interface = self.cfg.v6().get_interface_link_local(meta.ifindex);
+        match interface {
+            Some(iface) => {
+                ctx.set_interface(iface);
+            }
+            None if ctx.relay().is_none() => {
+                return Err(anyhow::anyhow!(
+                    "no link-local address on interface {}",
+                    meta.ifindex
+                ));
+            }
+            None => {}
+        }
 
         if let Some(global_unicast) = self.cfg.v6().get_interface_global(meta.ifindex) {
             ctx.set_global(global_unicast);
@@ -422,7 +432,7 @@ impl Plugin<v6::Message> for MsgType {
 
         debug!(
             ?msg_type,
-            %interface,
+            ?interface,
             global = ?ctx.global(),
             src_addr = %ctx.src_addr(),
             req = %ctx.msg(),

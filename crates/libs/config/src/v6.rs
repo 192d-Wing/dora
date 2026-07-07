@@ -369,11 +369,15 @@ impl TryFrom<wire::v6::PdPool> for PdPool {
 /// A preferred lifetime greater than the valid lifetime produces a wire-invalid
 /// IAADDR/IAPREFIX that clients MUST discard (RFC 8415 §21.6). Reject it in config.
 fn check_lifetimes(what: &str, preferred: LeaseTime, valid: LeaseTime) -> Result<()> {
-    if preferred.get_default() > valid.get_default() {
+    // check the default and the max: a requested time is clamped to [min, max],
+    // so preferred.max > valid.max could still put preferred > valid on the wire.
+    if preferred.get_default() > valid.get_default() || preferred.get_max() > valid.get_max() {
         bail!(
-            "{what}: preferred_time ({:?}) must be <= lease_time/valid ({:?})",
+            "{what}: preferred_time must be <= lease_time/valid (default {:?} vs {:?}, max {:?} vs {:?})",
             preferred.get_default(),
-            valid.get_default()
+            valid.get_default(),
+            preferred.get_max(),
+            valid.get_max()
         );
     }
     Ok(())
