@@ -16,14 +16,15 @@ Legend:
 ## Summary
 
 `dora` is a mature, largely conformant **DHCPv4** server (RFC 2131 / 2132) with
-good coverage of the relay, subnet-selection, and DDNS extension RFCs. The main
-gaps, in order of impact, are:
+good coverage of the relay, subnet-selection, and DDNS extension RFCs, plus
+**stateful DHCPv6** (RFC 8415: IA_NA + IA_PD, see `plugins/leases-v6`). The main
+remaining gaps, in order of impact, are:
 
-1. **DHCPv6 is stateless-only** — no stateful address assignment or prefix
-   delegation (RFC 8415).
-2. **The DHCPREQUEST client-state machine (RFC 2131 §4.3.2) is collapsed** — the
+1. **The DHCPREQUEST client-state machine (RFC 2131 §4.3.2) is collapsed** — the
    four request states (SELECTING / INIT-REBOOT / RENEWING / REBINDING) are
    handled by a single path.
+2. **DHCPv6 relay (RelayForw/RelayRepl), IA_TA, and Reconfigure** are not
+   implemented; v6 DAD uses ICMPv6 echo rather than Neighbor-Solicitation.
 3. **Several §4.1 / §4.3 edge behaviors are simplified** — notably DHCPINFORM
    gating and the broadcast flag on replies to DHCPREQUEST.
 
@@ -120,30 +121,38 @@ See [ddns.md](./ddns.md) for configuration and details.
 | Information-Request → Reply (stateless, RFC 3736) | ✅ | `message-type` v6 handler |
 | Server DUID | ✅ | `libs/config/src/v6.rs` |
 | ORO (option request) handling, client-id echo | ✅ | `MsgContext::<v6>::populate_opts` |
-| Solicit → Advertise → Request → Reply | ❌ | Falls through to `NoResponse` |
-| IA_NA / IA_TA address assignment | ❌ | No v6 pool/lease allocation path |
-| IA_PD prefix delegation | ❌ | |
-| Renew / Rebind / Confirm | ❌ | |
-| Release / Decline (IA) | ❌ | |
-| Rapid Commit (option 14) | ❌ | |
-| Status Codes (option 13) | ❌ | |
+| Solicit → Advertise → Request → Reply | ✅ | `plugins/leases-v6` |
+| IA_NA address assignment | ✅ | `plugins/leases-v6`; pools in v6 `ranges` |
+| IA_PD prefix delegation | ✅ | `plugins/leases-v6`; pools in v6 `pd_pools` |
+| Renew / Rebind | ✅ | extend-only; NoBinding when unknown |
+| Confirm | ✅ | on-link check → Success / NotOnLink |
+| Release / Decline (IA) | ✅ | Release frees; Decline → probation |
+| Rapid Commit (option 14) | ✅ | v6 `rapid_commit` flag (default off) |
+| Status Codes (option 13) | ✅ | NoAddrsAvail / NoPrefixAvail / NoBinding / NotOnLink |
+| Duplicate Address Detection | 🟡 | ICMPv6 echo probe (not Neighbor-Solicitation DAD) |
+| IA_TA (temporary addresses) | ❌ | rarely used; out of scope |
 | RelayForw / RelayRepl | ❌ | Marked `TODO` in code |
+| Reconfigure | ❌ | requires Reconfigure Key auth; out of scope |
 
-DHCPv6 is currently **stateless-only**. Stateful address assignment and prefix
-delegation are the single largest missing surface.
+DHCPv6 is now **stateful**: IA_NA address assignment and IA_PD prefix delegation
+with the full Solicit/Request/Renew/Rebind/Confirm/Release/Decline lifecycle
+(RFC 8415), implemented in `plugins/leases-v6`. Relay handling (RelayForw/Repl),
+IA_TA, and Reconfigure remain unimplemented.
 
 ---
 
 ## Prioritized roadmap
 
-1. **DHCPv6 stateful** — IA_NA/IA_PD allocation, the Solicit/Request/Renew/Rebind
-   exchange, and status codes (RFC 8415).
+1. ~~**DHCPv6 stateful** — IA_NA/IA_PD allocation and the full lifecycle~~ —
+   **done** (RFC 8415, `plugins/leases-v6`). See [rfc8415_plan.md](./rfc8415_plan.md).
 2. **Split the DHCPREQUEST handler by client state** so INIT-REBOOT stays silent
    on unknown bindings and RENEWING/REBINDING are distinguished (RFC 2131 §4.3.2).
 3. **Relax DHCPINFORM gating** so authoritative servers answer INFORM regardless
    of pool coverage (RFC 2131 §4.3.5).
 4. **BOOTP 300-byte packet padding** for legacy clients (RFC 951 / 1542).
 5. **Parse Option Overload (52)** and honor Maximum Message Size (57).
+6. **DHCPv6 follow-ups** — relay (RelayForw/RelayRepl), Neighbor-Solicitation
+   DAD, IA_TA, Reconfigure; and end-to-end packet-level v6 integration tests.
 
 ---
 

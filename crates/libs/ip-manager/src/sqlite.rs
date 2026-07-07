@@ -447,17 +447,17 @@ impl Storage for SqliteDb {
     }
     async fn count(&self, state: IpState) -> Result<usize, Self::Error> {
         let (lease, probation) = state.into();
-        util::count(
-            &self.inner,
-            lease,
-            probation,
-            util::systime_epoch(SystemTime::now()),
-        )
-        .await
+        let now = util::systime_epoch(SystemTime::now());
+        // count both v4 and v6 bindings
+        let v4 = util::count(&self.inner, lease, probation, now).await?;
+        let v6 = util_v6::count(&self.inner, lease, probation, now).await?;
+        Ok(v4 + v6)
     }
 
     async fn select_all(&self) -> Result<Vec<State>, Self::Error> {
-        util::select_all(&self.inner).await
+        let mut all = util::select_all(&self.inner).await?;
+        all.extend(util_v6::select_all(&self.inner).await?);
+        Ok(all)
     }
 }
 
@@ -1364,6 +1364,42 @@ mod util_v6 {
         trans.commit().await?;
         Ok(cur)
     }
+
+    /// count leases_v6 rows in the given state that are un-expired
+    pub async fn count(
+        pool: &SqlitePool,
+        leased: bool,
+        probation: bool,
+        now: i64,
+    ) -> Result<usize, sqlx::Error> {
+        Ok(sqlx::query_scalar!(
+            "SELECT COUNT(addr) as count_addr FROM leases_v6 WHERE leased = ?1 AND probation = ?2 AND expires_at > ?3",
+            leased,
+            probation,
+            now
+        )
+        .fetch_one(pool)
+        .await? as usize)
+    }
+
+    /// all leases_v6 bindings (IA_NA addresses and IA_PD prefixes)
+    pub async fn select_all(pool: &SqlitePool) -> Result<Vec<State>, sqlx::Error> {
+        Ok(sqlx::query!("SELECT * FROM leases_v6")
+            .fetch_all(pool)
+            .await?
+            .into_iter()
+            .map(|cur| {
+                to_state(
+                    &cur.addr,
+                    cur.client_id,
+                    &cur.network,
+                    cur.expires_at,
+                    cur.leased,
+                    cur.probation,
+                )
+            })
+            .collect())
+    }
 }
 
 #[cfg(test)]
@@ -1507,6 +1543,10 @@ mod v6_tests {
         // family lookups do not cross tables: v6 id absent from v4 table and vice versa
         assert_eq!(db.get_id(&[4, 5, 6]).await?, None);
         assert_eq!(db.get_id_v6(&[1, 2, 3]).await?, None);
+
+        // select_all and count(Lease) include both families
+        assert_eq!(db.select_all().await?.len(), 2);
+        assert_eq!(db.count(IpState::Lease).await?, 2);
         Ok(())
     }
 }

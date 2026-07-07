@@ -90,6 +90,24 @@
     },
     "query": "SELECT * FROM leases_v6 WHERE addr = ?1 AND client_id = ?2 AND prefix_len = 128"
   },
+  "11e2e48bae3b1518cd3dbcb34917e576fadcfb113f257266ec033faf27647fce": {
+    "describe": {
+      "columns": [
+        {
+          "name": "count_addr",
+          "ordinal": 0,
+          "type_info": "Int"
+        }
+      ],
+      "nullable": [
+        false
+      ],
+      "parameters": {
+        "Right": 3
+      }
+    },
+    "query": "SELECT COUNT(addr) as count_addr FROM leases_v6 WHERE leased = ?1 AND probation = ?2 AND expires_at > ?3"
+  },
   "2705ef6ede59cb46a73fc0799bab3c4c4f1148d2cd73c63f1c90fb09fa51a2c6": {
     "describe": {
       "columns": [
@@ -467,6 +485,60 @@
       }
     },
     "query": "\n            UPDATE leases\n            SET\n                client_id = ?2, leased = ?4, expires_at = ?5, probation = ?6\n            WHERE ip in\n               (\n                    SELECT ip\n                    FROM leases\n                    WHERE\n                        ((client_id = ?2 AND ip = ?3)\n                            OR (expires_at < ?1 AND ip = ?3))\n                    ORDER BY ip LIMIT 1\n                )\n            RETURNING ip\n            "
+  },
+  "93cce35e72e99e8fe7950a2e14ab7dff8ba5c9d2dead96505deace27ea34a8d1": {
+    "describe": {
+      "columns": [
+        {
+          "name": "addr",
+          "ordinal": 0,
+          "type_info": "Blob"
+        },
+        {
+          "name": "prefix_len",
+          "ordinal": 1,
+          "type_info": "Int64"
+        },
+        {
+          "name": "client_id",
+          "ordinal": 2,
+          "type_info": "Blob"
+        },
+        {
+          "name": "leased",
+          "ordinal": 3,
+          "type_info": "Bool"
+        },
+        {
+          "name": "probation",
+          "ordinal": 4,
+          "type_info": "Bool"
+        },
+        {
+          "name": "expires_at",
+          "ordinal": 5,
+          "type_info": "Int64"
+        },
+        {
+          "name": "network",
+          "ordinal": 6,
+          "type_info": "Blob"
+        }
+      ],
+      "nullable": [
+        false,
+        false,
+        true,
+        false,
+        false,
+        false,
+        false
+      ],
+      "parameters": {
+        "Right": 0
+      }
+    },
+    "query": "SELECT * FROM leases_v6"
   },
   "a11f2a496a10a85c1ae27d145421894e488006498e2cec2a8861b66def35f808": {
     "describe": {

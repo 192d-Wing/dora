@@ -199,6 +199,9 @@ v6:
     # optional, interfaces to bind
     # interfaces:
         # - enp6s0
+    # optional (default false). Honor the Rapid Commit option (14): answer a
+    # Solicit that carries it with a committing Reply instead of Advertise.
+    rapid_commit: false
     # Optional, if server_id is not specified, we will generate an server identifer or use previous generated server identifier(if exists). Addtionally, if all settings are the same as previous settings, we will also use previous generated server identifier.
     server_id:
         type: LLT # LLT (default) | LL | EN | UUID
@@ -233,7 +236,6 @@ v6:
             # optional - what interfaces we will apply to this network
             interfaces:
                 # - enp6s0
-            # no explicit ranges (yet)
             config:
                 lease_time:
                     default: 3600
@@ -249,6 +251,31 @@ v6:
                         value:
                             - 2001:db8::1
                             - 2001:db8::2
+            # IA_NA address pools (RFC 8415). Each range hands out non-temporary
+            # addresses between start and end (inclusive), skipping `except`.
+            ranges:
+                - start: 2001:db8:1::100
+                  end: 2001:db8:1::1ff
+                  config:
+                      lease_time:
+                          default: 3600
+                      preferred_time:
+                          default: 3600
+                  options:
+                      values: {}
+                  # optional addresses to never hand out
+                  except:
+                      - 2001:db8:1::150
+            # IA_PD prefix delegation pools (RFC 8415 sec 6.3). Delegates
+            # `delegated_len`-sized prefixes carved from the parent `prefix`.
+            pd_pools:
+                - prefix: 2001:db8:100::/56
+                  delegated_len: 64
+                  config:
+                      lease_time:
+                          default: 3600
+                      preferred_time:
+                          default: 3600
 
 # Example Client Classifier
 #

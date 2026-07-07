@@ -1,10 +1,25 @@
 # RFC 8415 — Stateful DHCPv6 Implementation Plan
 
-Status: **proposed, awaiting review**. No code has been written yet.
+Status: **implemented** (Phases 1–6). IA_NA address assignment and IA_PD prefix
+delegation with the full lifecycle and Rapid Commit are in `plugins/leases-v6`
+and the supporting `config` / `ip-manager` crates.
 
-This document plans the addition of **stateful DHCPv6** to `dora`: IA_NA address
-assignment and IA_PD prefix delegation, with the full RFC 8415 message lifecycle
-and Rapid Commit. It is the roadmap referenced by
+| Phase | Scope | Status |
+| --- | --- | --- |
+| 1 | v6 config pools (`ranges`, `pd_pools`) | ✅ done |
+| 2 | v6 lease storage (`leases_v6` table) | ✅ done |
+| 3 | IA_NA Solicit/Advertise + Request/Reply + Rapid Commit | ✅ done |
+| 4 | IA_NA lifecycle (Renew/Rebind/Confirm/Release/Decline) + v6 DAD | ✅ done |
+| 5 | IA_PD prefix delegation | ✅ done |
+| 6 | metrics, `/v1/leases` v6, examples, docs | ✅ done |
+
+**Remaining follow-ups** (tracked in [rfc_compliance.md](./rfc_compliance.md)):
+end-to-end packet-level v6 integration tests (need the netns/veth harness),
+Neighbor-Solicitation DAD (currently ICMPv6 echo), relay (RelayForw/RelayRepl),
+IA_TA, and Reconfigure.
+
+This document originally planned the work; the design notes below are retained
+for reference. It is the roadmap referenced by
 [rfc_compliance.md](./rfc_compliance.md).
 
 ## Goal
