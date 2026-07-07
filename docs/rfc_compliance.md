@@ -20,13 +20,10 @@ good coverage of the relay, subnet-selection, and DDNS extension RFCs, plus
 **stateful DHCPv6** (RFC 8415: IA_NA + IA_PD, see `plugins/leases-v6`). The main
 remaining gaps, in order of impact, are:
 
-1. **The DHCPREQUEST client-state machine (RFC 2131 §4.3.2) is collapsed** — the
-   four request states (SELECTING / INIT-REBOOT / RENEWING / REBINDING) are
-   handled by a single path.
-2. **DHCPv6 IA_TA and Reconfigure** are not implemented; v6 DAD uses ICMPv6 echo
+1. **DHCPv6 IA_TA and Reconfigure** are not implemented; v6 DAD uses ICMPv6 echo
    rather than Neighbor-Solicitation. (Relay — RelayForw/RelayRepl — is now
    supported.)
-3. **Several §4.1 / §4.3 edge behaviors are simplified** — notably DHCPINFORM
+2. **Several §4.1 / §4.3 edge behaviors are simplified** — notably DHCPINFORM
    gating and the broadcast flag on replies to DHCPREQUEST.
 
 ---
@@ -36,7 +33,7 @@ remaining gaps, in order of impact, are:
 | Feature | Status | Notes |
 | --- | --- | --- |
 | DHCPDISCOVER → DHCPOFFER | ✅ | `plugins/message-type`, `plugins/leases` |
-| DHCPREQUEST → DHCPACK/DHCPNAK | 🟡 | Works, but request states are not differentiated — see below |
+| DHCPREQUEST → DHCPACK/DHCPNAK | ✅ | Classified by §4.3.2 client state (SELECTING / INIT-REBOOT / RENEWING / REBINDING) in `plugins/leases` |
 | DHCPDECLINE (address probation) | ✅ | `Leases::decline`, IP put on probation for `probation_period` |
 | DHCPRELEASE (no reply) | ✅ | `Leases::release` returns `NoResponse` |
 | DHCPINFORM | 🟡 | Gated on `authoritative` + a matching range — see below |
@@ -48,23 +45,23 @@ remaining gaps, in order of impact, are:
 | Response addressing (§4.1) | ✅ | All giaddr/ciaddr/broadcast/yiaddr cases + ARP injection in `MsgContext::resp_addr` |
 | Renew/rebind lease-extension | ✅ | Renew threshold cache in `plugins/leases` |
 
+### DHCPREQUEST client states (§4.3.2)
+
+`MsgContext::request_state()` classifies each DHCPREQUEST from the server-id
+(opt 54) and requested-ip (opt 50) options and `ciaddr`, and `Leases::request`
+applies the per-state rules:
+
+- **SELECTING** (server-id present) — commit the offered address, creating the
+  lease when authoritative; NAK if it can't be honored.
+- **INIT-REBOOT** (no server-id, opt 50, `ciaddr` 0) — verify a cached address:
+  NAK only when the address is positively on the wrong network; **stay silent**
+  when the client is unknown (RFC 2131 §4.3.2, for coexistence of
+  non-communicating servers); never create a new lease.
+- **RENEWING / REBINDING** (no server-id, `ciaddr` set) — extend the lease, or
+  NAK/stay-silent per `authoritative`. The two are split best-effort on the
+  datagram's destination and handled the same.
+
 ### Known deviations
-
-#### DHCPREQUEST states are collapsed (§4.3.2)
-
-`requested_ip()` returns `ciaddr` or option 50 without classifying the request,
-and `Leases::request` handles all four states identically. Effects:
-
-- **INIT-REBOOT with no binding may produce a spurious NAK.** RFC 2131 §4.3.2:
-  if the server has *no record* of the client it **MUST remain silent** (it may
-  only NAK if it positively knows the client is on the wrong network). When
-  `authoritative`, `dora` NAKs any un-leasable requested IP.
-- **Server-id presence rules per state are not enforced.** SELECTING MUST include
-  a matching server-id; RENEWING/REBINDING/INIT-REBOOT MUST NOT include one.
-  `dora` validates "if present, must match" but does not use presence/absence to
-  classify the request or reject malformed ones.
-- **RENEWING vs REBINDING are indistinguishable** to the server, so the
-  authoritative-NAK logic applies to both identically.
 
 #### Broadcast flag forced on DHCPREQUEST replies (§4.1)
 
@@ -150,8 +147,9 @@ with the full Solicit/Request/Renew/Rebind/Confirm/Release/Decline lifecycle
 
 1. ~~**DHCPv6 stateful** — IA_NA/IA_PD allocation and the full lifecycle~~ —
    **done** (RFC 8415, `plugins/leases-v6`). See [rfc8415_plan.md](./rfc8415_plan.md).
-2. **Split the DHCPREQUEST handler by client state** so INIT-REBOOT stays silent
-   on unknown bindings and RENEWING/REBINDING are distinguished (RFC 2131 §4.3.2).
+2. ~~**Split the DHCPREQUEST handler by client state**~~ — **done** (RFC 2131
+   §4.3.2, `plugins/leases`): INIT-REBOOT stays silent on unknown bindings and
+   NAKs on the wrong network; RENEWING/REBINDING are classified.
 3. **Relax DHCPINFORM gating** so authoritative servers answer INFORM regardless
    of pool coverage (RFC 2131 §4.3.5).
 4. **BOOTP 300-byte packet padding** for legacy clients (RFC 951 / 1542).
