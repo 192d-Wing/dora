@@ -1,211 +1,561 @@
 {
-    "$schema": "https://json-schema.org/draft/2020-12/schema",
-    "$id": "https://example.com/product.schema.json",
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "$id": "https://github.com/bluecatengineering/dora/config_schema.json",
     "title": "dora schema",
-    "description": "dora JSON schema",
+    "description": "dora DHCP server configuration schema (v4 + v6)",
     "definitions": {
-        "lease_time": {
+        "duration": {
+            "description": "seconds as a positive integer, or a duration string with a unit (e.g. \"3600s\", \"60m\", \"24h\")",
+            "oneOf": [
+                { "type": "integer", "minimum": 1 },
+                { "type": "string" }
+            ]
+        },
+        "min_max": {
+            "description": "a lifetime with a required default and optional min/max clamps",
             "type": "object",
             "required": ["default"],
             "properties": {
-                "default": {
-                    "type": "integer"
-                },
-                "min": {
-                    "type": "integer"
-                },
-                "max": {
-                    "type": "integer"
-                }
+                "default": { "$ref": "#/definitions/duration" },
+                "min": { "$ref": "#/definitions/duration" },
+                "max": { "$ref": "#/definitions/duration" }
             }
         },
         "config": {
+            "description": "lease/lifetime settings for a v4 scope",
             "type": "object",
-            "required": ["lease_time"],
             "properties": {
-                "lease_time": {
-                    "$ref": "#/definitions/lease_time"
-                }
+                "lease_time": { "$ref": "#/definitions/min_max" }
             }
         },
         "option": {
+            "description": "a single DHCPv4 option, tagged by `type` with a matching `value`",
             "type": "object",
             "required": ["type", "value"],
             "oneOf": [
                 {
-                    "type": "object",
                     "additionalProperties": false,
                     "properties": {
-                        "type": {
-                            "const": "ip"
-                        },
+                        "type": { "const": "ip" },
                         "value": {
-                            "type": "string",
-                            "format": "ipv4"
+                            "oneOf": [
+                                { "type": "string", "format": "ipv4" },
+                                { "type": "array", "items": { "type": "string", "format": "ipv4" } }
+                            ]
                         }
                     }
                 },
                 {
-                    "type": "object",
                     "additionalProperties": false,
                     "properties": {
-                        "type": {
-                            "const": "ip_list"
-                        },
+                        "type": { "const": "ip_list" },
+                        "value": { "type": "array", "items": { "type": "string", "format": "ipv4" } }
+                    }
+                },
+                {
+                    "additionalProperties": false,
+                    "properties": {
+                        "type": { "const": "domain" },
                         "value": {
-                            "type": "array",
-                            "items": {
-                                "type": "string",
-                                "format": "ipv4"
-                            }
+                            "oneOf": [
+                                { "type": "string" },
+                                { "type": "array", "items": { "type": "string" } }
+                            ]
                         }
                     }
                 },
                 {
-                    "type": "object",
                     "additionalProperties": false,
                     "properties": {
-                        "type": {
-                            "const": "u32"
-                        },
+                        "type": { "const": "domain_list" },
+                        "value": { "type": "array", "items": { "type": "string" } }
+                    }
+                },
+                {
+                    "additionalProperties": false,
+                    "properties": {
+                        "type": { "const": "u8" },
+                        "value": { "$ref": "#/definitions/int_or_int_list" }
+                    }
+                },
+                {
+                    "additionalProperties": false,
+                    "properties": {
+                        "type": { "const": "i8" },
+                        "value": { "$ref": "#/definitions/int_or_int_list" }
+                    }
+                },
+                {
+                    "additionalProperties": false,
+                    "properties": {
+                        "type": { "const": "u16" },
+                        "value": { "$ref": "#/definitions/int_or_int_list" }
+                    }
+                },
+                {
+                    "additionalProperties": false,
+                    "properties": {
+                        "type": { "const": "i16" },
+                        "value": { "$ref": "#/definitions/int_or_int_list" }
+                    }
+                },
+                {
+                    "additionalProperties": false,
+                    "properties": {
+                        "type": { "const": "u32" },
+                        "value": { "$ref": "#/definitions/int_or_int_list" }
+                    }
+                },
+                {
+                    "additionalProperties": false,
+                    "properties": {
+                        "type": { "const": "i32" },
+                        "value": { "$ref": "#/definitions/int_or_int_list" }
+                    }
+                },
+                {
+                    "additionalProperties": false,
+                    "properties": {
+                        "type": { "const": "bool" },
                         "value": {
-                            "type": "number"
+                            "oneOf": [
+                                { "type": "boolean" },
+                                { "type": "array", "items": { "type": "boolean" } }
+                            ]
                         }
                     }
                 },
                 {
-                    "type": "object",
                     "additionalProperties": false,
                     "properties": {
-                        "type": {
-                            "const": "u16"
-                        },
+                        "type": { "const": "str" },
                         "value": {
-                            "type": "number"
+                            "oneOf": [
+                                { "type": "string" },
+                                { "type": "array", "items": { "type": "string" } }
+                            ]
                         }
                     }
                 },
                 {
-                    "type": "object",
                     "additionalProperties": false,
                     "properties": {
-                        "type": {
-                            "const": "hex"
-                        },
-                        "value": {
-                            "type": "string"
-                        }
+                        "type": { "const": "b64" },
+                        "value": { "type": "string" }
                     }
                 },
                 {
-                    "type": "object",
                     "additionalProperties": false,
                     "properties": {
-                        "type": {
-                            "const": "str"
-                        },
-                        "value": {
-                            "type": "string"
-                        }
+                        "type": { "const": "hex" },
+                        "value": { "type": "string" }
                     }
                 },
                 {
-                    "type": "object",
                     "additionalProperties": false,
                     "properties": {
-                        "type": {
-                            "const": "b64"
-                        },
+                        "type": { "const": "sub_option" },
                         "value": {
-                            "type": "string"
+                            "description": "encapsulated options keyed by sub-option code",
+                            "type": "object",
+                            "additionalProperties": { "$ref": "#/definitions/option" }
                         }
                     }
                 }
             ]
         },
+        "int_or_int_list": {
+            "oneOf": [
+                { "type": "integer" },
+                { "type": "array", "items": { "type": "integer" } }
+            ]
+        },
         "options": {
+            "description": "an options map. keys are option codes (e.g. \"3\") or known names (e.g. \"routers\")",
             "type": "object",
+            "required": ["values"],
             "properties": {
                 "values": {
                     "type": "object",
-                    "patternProperties": {
-                        "\"[0-255]\"": {
-                            "$ref": "#/definitions/option"
-                        }
-                    }
+                    "additionalProperties": { "$ref": "#/definitions/option" }
                 }
             }
         },
-        "except": {
-            "type": "array",
-            "items": {
-                "type": "string",
-                "format": "ipv4"
-            }
-        },
         "range": {
+            "description": "a v4 address pool",
             "type": "object",
-            "required": ["config", "start", "end", "options"],
+            "required": ["start", "end", "options"],
             "properties": {
-                "config": {
-                    "$ref": "#/definitions/config"
-                },
-                "start": {
-                    "type": "string",
-                    "format": "ipv4"
-                },
-                "end": {
-                    "type": "string",
-                    "format": "ipv4"
-                },
-                "options": {
-                    "$ref": "#/definitions/options"
-                },
+                "start": { "type": "string", "format": "ipv4" },
+                "end": { "type": "string", "format": "ipv4" },
+                "config": { "$ref": "#/definitions/config" },
+                "options": { "$ref": "#/definitions/options" },
                 "except": {
-                    "$ref": "#/definitions/except"
+                    "type": "array",
+                    "items": { "type": "string", "format": "ipv4" }
+                },
+                "class": {
+                    "description": "restrict this range to a matched client class",
+                    "type": "string"
                 }
             }
         },
         "match": {
+            "description": "a reservation match: a single `chaddr` or `options` key",
             "type": "object",
             "oneOf": [
                 {
-                    "type": "object",
                     "additionalProperties": false,
-                    "properties": {
-                        "chaddr": {
-                            "type": "string"
-                        }
-                    }
+                    "properties": { "chaddr": { "type": "string" } },
+                    "required": ["chaddr"]
                 },
                 {
-                    "type": "object",
                     "additionalProperties": false,
-                    "properties": {
-                        "options": {
-                            "$ref": "#/definitions/options"
-                        }
-                    }
+                    "properties": { "options": { "$ref": "#/definitions/options" } },
+                    "required": ["options"]
                 }
             ]
         },
         "reservation": {
             "type": "object",
-            "additionalProperties": false,
-            "required": ["config", "ip", "match", "options"],
+            "required": ["ip", "match", "options"],
             "properties": {
-                "config": {
-                    "$ref": "#/definitions/config"
-                },
-                "ip": {
+                "ip": { "type": "string", "format": "ipv4" },
+                "config": { "$ref": "#/definitions/config" },
+                "options": { "$ref": "#/definitions/options" },
+                "match": { "$ref": "#/definitions/match" },
+                "class": {
+                    "description": "restrict this reservation to a matched client class",
+                    "type": "string"
+                }
+            }
+        },
+        "v4_network": {
+            "type": "object",
+            "properties": {
+                "server_id": {
+                    "description": "IP dora is reachable on for this network; defaults to the receiving interface IP",
                     "type": "string",
                     "format": "ipv4"
                 },
-                "options": {
-                    "$ref": "#/definitions/options"
+                "server_name": {
+                    "description": "replaces the `sname` DHCP header field",
+                    "type": "string"
                 },
-                "match": {
-                    "$ref": "#/definitions/match"
+                "file_name": {
+                    "description": "replaces the `fname` DHCP header field",
+                    "type": "string"
+                },
+                "ping_check": { "type": "boolean" },
+                "ping_timeout_ms": { "type": "integer" },
+                "authoritative": { "type": "boolean" },
+                "probation_period": { "type": "integer" },
+                "ranges": {
+                    "type": "array",
+                    "items": { "$ref": "#/definitions/range" }
+                },
+                "reservations": {
+                    "type": "array",
+                    "items": { "$ref": "#/definitions/reservation" }
+                }
+            }
+        },
+        "client_classes": {
+            "description": "client classification (v4 only)",
+            "type": "object",
+            "required": ["v4"],
+            "properties": {
+                "v4": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "required": ["name", "assert"],
+                        "properties": {
+                            "name": { "type": "string" },
+                            "assert": {
+                                "description": "Kea-style predicate expression evaluated per message",
+                                "type": "string"
+                            },
+                            "options": { "$ref": "#/definitions/options" }
+                        }
+                    }
+                }
+            }
+        },
+        "ddns_server": {
+            "type": "object",
+            "required": ["name", "ip"],
+            "properties": {
+                "name": {
+                    "description": "DNS zone / FQDN this server is authoritative for (e.g. \"example.com.\")",
+                    "type": "string"
+                },
+                "key": {
+                    "description": "name of a tsig key defined in `tsig_keys`",
+                    "type": "string"
+                },
+                "ip": {
+                    "description": "socket address of the DNS server (e.g. \"192.168.3.111:53\")",
+                    "type": "string"
+                }
+            }
+        },
+        "tsig_key": {
+            "type": "object",
+            "required": ["algorithm", "data"],
+            "properties": {
+                "algorithm": {
+                    "enum": [
+                        "hmac-md5",
+                        "hmac-sha1",
+                        "hmac-sha256",
+                        "hmac-sha384",
+                        "hmac-sha512"
+                    ]
+                },
+                "data": {
+                    "description": "base64-encoded key data",
+                    "type": "string"
+                }
+            }
+        },
+        "ddns": {
+            "description": "dynamic DNS update configuration",
+            "type": "object",
+            "required": ["forward", "reverse", "tsig_keys"],
+            "properties": {
+                "enable_updates": { "type": "boolean" },
+                "override_client_updates": { "type": "boolean" },
+                "override_no_updates": { "type": "boolean" },
+                "forward": {
+                    "type": "array",
+                    "items": { "$ref": "#/definitions/ddns_server" }
+                },
+                "reverse": {
+                    "type": "array",
+                    "items": { "$ref": "#/definitions/ddns_server" }
+                },
+                "tsig_keys": {
+                    "type": "object",
+                    "additionalProperties": { "$ref": "#/definitions/tsig_key" }
+                }
+            }
+        },
+        "v6_network_config": {
+            "description": "valid (lease_time) and preferred lifetimes for a v6 scope",
+            "type": "object",
+            "required": ["lease_time", "preferred_time"],
+            "properties": {
+                "lease_time": { "$ref": "#/definitions/min_max" },
+                "preferred_time": { "$ref": "#/definitions/min_max" }
+            }
+        },
+        "v6_option": {
+            "description": "a single DHCPv6 option, tagged by `type` with a matching `value`",
+            "type": "object",
+            "required": ["type", "value"],
+            "oneOf": [
+                {
+                    "additionalProperties": false,
+                    "properties": {
+                        "type": { "const": "ip" },
+                        "value": {
+                            "oneOf": [
+                                { "type": "string", "format": "ipv6" },
+                                { "type": "array", "items": { "type": "string", "format": "ipv6" } }
+                            ]
+                        }
+                    }
+                },
+                {
+                    "additionalProperties": false,
+                    "properties": {
+                        "type": { "const": "ip_list" },
+                        "value": { "type": "array", "items": { "type": "string", "format": "ipv6" } }
+                    }
+                },
+                {
+                    "additionalProperties": false,
+                    "properties": {
+                        "type": { "const": "u8" },
+                        "value": { "$ref": "#/definitions/int_or_int_list" }
+                    }
+                },
+                {
+                    "additionalProperties": false,
+                    "properties": {
+                        "type": { "const": "u16" },
+                        "value": { "$ref": "#/definitions/int_or_int_list" }
+                    }
+                },
+                {
+                    "additionalProperties": false,
+                    "properties": {
+                        "type": { "const": "u32" },
+                        "value": { "$ref": "#/definitions/int_or_int_list" }
+                    }
+                },
+                {
+                    "additionalProperties": false,
+                    "properties": {
+                        "type": { "const": "str" },
+                        "value": {
+                            "oneOf": [
+                                { "type": "string" },
+                                { "type": "array", "items": { "type": "string" } }
+                            ]
+                        }
+                    }
+                },
+                {
+                    "additionalProperties": false,
+                    "properties": {
+                        "type": { "const": "hex" },
+                        "value": { "type": "string" }
+                    }
+                },
+                {
+                    "additionalProperties": false,
+                    "properties": {
+                        "type": { "const": "b64" },
+                        "value": { "type": "string" }
+                    }
+                }
+            ]
+        },
+        "v6_options": {
+            "type": "object",
+            "required": ["values"],
+            "properties": {
+                "values": {
+                    "description": "v6 option keys are numeric option codes only (no name aliases)",
+                    "type": "object",
+                    "patternProperties": {
+                        "^[0-9]+$": { "$ref": "#/definitions/v6_option" }
+                    },
+                    "additionalProperties": false
+                }
+            }
+        },
+        "v6_range": {
+            "description": "an IA_NA address pool (RFC 8415)",
+            "type": "object",
+            "required": ["config", "start", "end", "options"],
+            "properties": {
+                "config": { "$ref": "#/definitions/v6_network_config" },
+                "start": { "type": "string", "format": "ipv6" },
+                "end": { "type": "string", "format": "ipv6" },
+                "options": { "$ref": "#/definitions/v6_options" },
+                "except": {
+                    "type": "array",
+                    "items": { "type": "string", "format": "ipv6" }
+                }
+            }
+        },
+        "v6_pd_pool": {
+            "description": "an IA_PD prefix delegation pool: delegate `delegated_len` prefixes carved out of the parent `prefix` (RFC 8415 6.3)",
+            "type": "object",
+            "required": ["prefix", "delegated_len", "config"],
+            "properties": {
+                "prefix": {
+                    "description": "parent prefix to delegate from, e.g. \"2001:db8:1::/48\"",
+                    "type": "string"
+                },
+                "delegated_len": {
+                    "description": "length of prefixes delegated to clients; must be greater than the parent prefix length and < 128",
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 127
+                },
+                "config": { "$ref": "#/definitions/v6_network_config" },
+                "options": { "$ref": "#/definitions/v6_options" },
+                "except": {
+                    "description": "delegated prefixes to never hand out",
+                    "type": "array",
+                    "items": { "type": "string" }
+                }
+            }
+        },
+        "v6_server_id": {
+            "description": "the server's DUID. `type` selects the DUID form; unrecognized fields are ignored",
+            "type": "object",
+            "required": ["type"],
+            "properties": {
+                "type": { "enum": ["LLT", "LL", "EN", "UUID"] },
+                "persist": {
+                    "description": "persist the generated DUID to `path` (default true)",
+                    "type": "boolean"
+                },
+                "path": { "type": "string" },
+                "htype": {
+                    "description": "hardware type for LL/LLT (default 0 -> Ethernet)",
+                    "type": "integer"
+                },
+                "time": {
+                    "description": "timestamp for LLT (default 0 -> now)",
+                    "type": "integer"
+                },
+                "enterprise_id": {
+                    "description": "IANA enterprise number for EN",
+                    "type": "integer"
+                },
+                "identifier": {
+                    "description": "LL/LLT: an IPv6/link-layer address; EN/UUID: a hex string. Required for UUID",
+                    "type": "string"
+                }
+            },
+            "if": {
+                "properties": { "type": { "const": "UUID" } }
+            },
+            "then": {
+                "required": ["identifier"]
+            }
+        },
+        "v6_net": {
+            "type": "object",
+            "required": ["config"],
+            "properties": {
+                "config": { "$ref": "#/definitions/v6_network_config" },
+                "options": { "$ref": "#/definitions/v6_options" },
+                "interfaces": {
+                    "type": "array",
+                    "items": { "type": "string" }
+                },
+                "ranges": {
+                    "description": "IA_NA address pools",
+                    "type": "array",
+                    "items": { "$ref": "#/definitions/v6_range" }
+                },
+                "pd_pools": {
+                    "description": "IA_PD prefix delegation pools",
+                    "type": "array",
+                    "items": { "$ref": "#/definitions/v6_pd_pool" }
+                },
+                "ping_check": { "type": "boolean" },
+                "ping_timeout_ms": { "type": "integer" },
+                "probation_period": { "type": "integer" },
+                "authoritative": { "type": "boolean" }
+            }
+        },
+        "v6": {
+            "description": "stateful DHCPv6 server configuration (RFC 8415)",
+            "type": "object",
+            "required": ["networks"],
+            "properties": {
+                "interfaces": {
+                    "type": "array",
+                    "items": { "type": "string" }
+                },
+                "server_id": { "$ref": "#/definitions/v6_server_id" },
+                "options": { "$ref": "#/definitions/v6_options" },
+                "rapid_commit": {
+                    "description": "honor the Rapid Commit option (opt 14): answer a Solicit carrying it with a committing Reply instead of Advertise (default false)",
+                    "type": "boolean"
+                },
+                "networks": {
+                    "description": "v6 networks keyed by subnet prefix, e.g. \"2001:db8:1::/64\"",
+                    "type": "object",
+                    "additionalProperties": { "$ref": "#/definitions/v6_net" }
                 }
             }
         }
@@ -213,46 +563,44 @@
     "type": "object",
     "properties": {
         "chaddr_only": {
+            "description": "only use the `chaddr` header field for client identity, ignoring opt 61 (default false)",
             "type": "boolean"
         },
-        "interfaces": {
-            "type": "array",
-            "items": {
-                "type": "string"
+        "bootp_enable": {
+            "description": "enable BOOTP support, RFC 1497 only (default true)",
+            "type": "boolean"
+        },
+        "rapid_commit": {
+            "description": "enable v4 rapid commit, RFC 4039 (default false)",
+            "type": "boolean"
+        },
+        "cache_threshold": {
+            "description": "percent (0-100) of lease time during which a renew returns the existing lease rather than extending it (default 0)",
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100
+        },
+        "flood_protection_threshold": {
+            "description": "per-MAC DHCP flood protection: at most `packets` per `secs` (off by default)",
+            "type": "object",
+            "required": ["packets", "secs"],
+            "properties": {
+                "packets": { "type": "integer", "minimum": 1 },
+                "secs": { "type": "integer", "minimum": 1 }
             }
         },
+        "interfaces": {
+            "description": "interfaces to bind; if empty, dora binds 0.0.0.0. Entries may be \"name\" or \"name@ip\"",
+            "type": "array",
+            "items": { "type": "string" }
+        },
         "networks": {
-            "description": "top level bucket for network configurations",
+            "description": "v4 networks keyed by subnet, e.g. \"192.168.1.0/24\"",
             "type": "object",
-            "additionalProperties": {
-                "type": "object",
-                "properties": {
-                    "ping_check": {
-                        "type": "boolean"
-                    },
-                    "ping_timeout_ms": {
-                        "type": "integer"
-                    },
-                    "authoritative": {
-                        "type": "boolean"
-                    },
-                    "probation_period": {
-                        "type": "integer"
-                    },
-                    "ranges": {
-                        "type": "array",
-                        "items": {
-                            "$ref": "#/definitions/range"
-                        }
-                    },
-                    "reservations": {
-                        "type": "array",
-                        "items": {
-                            "$ref": "#/definitions/reservation"
-                        }
-                    }
-                }
-            }
-        }
+            "additionalProperties": { "$ref": "#/definitions/v4_network" }
+        },
+        "client_classes": { "$ref": "#/definitions/client_classes" },
+        "ddns": { "$ref": "#/definitions/ddns" },
+        "v6": { "$ref": "#/definitions/v6" }
     }
 }
