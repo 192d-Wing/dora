@@ -26,7 +26,7 @@ use tokio::{
     sync::{Mutex, oneshot},
     time,
 };
-use tracing::trace;
+use tracing::warn;
 
 /// ICMPv6 Neighbor Solicitation message type (RFC 4861 §4.3).
 const ND_NEIGHBOR_SOLICIT: u8 = 135;
@@ -116,8 +116,11 @@ impl NeighborSolicitor {
                         }
                     }
                     Err(err) => {
-                        trace!(?err, "ICMPv6 ND receive loop ended");
-                        break;
+                        // a transient recv error (e.g. ENOBUFS) must not
+                        // permanently disable DAD — keep the loop alive, but
+                        // throttle so a persistent error can't hot-spin.
+                        warn!(?err, "ICMPv6 ND receive error; continuing");
+                        time::sleep(Duration::from_millis(100)).await;
                     }
                 }
             }
