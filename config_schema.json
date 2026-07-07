@@ -1,343 +1,58 @@
 {
-    "$schema": "https://json-schema.org/draft/2020-12/schema",
-    "$id": "https://example.com/product.schema.json",
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "$id": "https://github.com/bluecatengineering/dora/config_schema.json",
     "title": "dora schema",
-    "description": "dora JSON schema",
+    "description": "dora DHCP server configuration schema (v4 + v6)",
     "definitions": {
-        "lease_time": {
-            "type": "object",
-            "required": ["default"],
-            "properties": {
-                "default": {
-                    "type": "integer"
-                },
-                "min": {
-                    "type": "integer"
-                },
-                "max": {
-                    "type": "integer"
-                }
-            }
-        },
-        "config": {
-            "type": "object",
-            "required": ["lease_time"],
-            "properties": {
-                "lease_time": {
-                    "$ref": "#/definitions/lease_time"
-                }
-            }
-        },
-        "option": {
-            "type": "object",
-            "required": ["type", "value"],
-            "oneOf": [
-                {
-                    "type": "object",
-                    "additionalProperties": false,
-                    "properties": {
-                        "type": {
-                            "const": "ip"
-                        },
-                        "value": {
-                            "type": "string",
-                            "format": "ipv4"
-                        }
-                    }
-                },
-                {
-                    "type": "object",
-                    "additionalProperties": false,
-                    "properties": {
-                        "type": {
-                            "const": "ip_list"
-                        },
-                        "value": {
-                            "type": "array",
-                            "items": {
-                                "type": "string",
-                                "format": "ipv4"
-                            }
-                        }
-                    }
-                },
-                {
-                    "type": "object",
-                    "additionalProperties": false,
-                    "properties": {
-                        "type": {
-                            "const": "u32"
-                        },
-                        "value": {
-                            "type": "number"
-                        }
-                    }
-                },
-                {
-                    "type": "object",
-                    "additionalProperties": false,
-                    "properties": {
-                        "type": {
-                            "const": "u16"
-                        },
-                        "value": {
-                            "type": "number"
-                        }
-                    }
-                },
-                {
-                    "type": "object",
-                    "additionalProperties": false,
-                    "properties": {
-                        "type": {
-                            "const": "hex"
-                        },
-                        "value": {
-                            "type": "string"
-                        }
-                    }
-                },
-                {
-                    "type": "object",
-                    "additionalProperties": false,
-                    "properties": {
-                        "type": {
-                            "const": "str"
-                        },
-                        "value": {
-                            "type": "string"
-                        }
-                    }
-                },
-                {
-                    "type": "object",
-                    "additionalProperties": false,
-                    "properties": {
-                        "type": {
-                            "const": "b64"
-                        },
-                        "value": {
-                            "type": "string"
-                        }
-                    }
-                }
-            ]
-        },
-        "options": {
-            "type": "object",
-            "properties": {
-                "values": {
-                    "type": "object",
-                    "patternProperties": {
-                        "\"[0-255]\"": {
-                            "$ref": "#/definitions/option"
-                        }
-                    }
-                }
-            }
-        },
-        "except": {
-            "type": "array",
-            "items": {
-                "type": "string",
-                "format": "ipv4"
-            }
-        },
-        "range": {
-            "type": "object",
-            "required": ["config", "start", "end", "options"],
-            "properties": {
-                "config": {
-                    "$ref": "#/definitions/config"
-                },
-                "start": {
-                    "type": "string",
-                    "format": "ipv4"
-                },
-                "end": {
-                    "type": "string",
-                    "format": "ipv4"
-                },
-                "options": {
-                    "$ref": "#/definitions/options"
-                },
-                "except": {
-                    "$ref": "#/definitions/except"
-                }
-            }
-        },
-        "match": {
-            "type": "object",
-            "oneOf": [
-                {
-                    "type": "object",
-                    "additionalProperties": false,
-                    "properties": {
-                        "chaddr": {
-                            "type": "string"
-                        }
-                    }
-                },
-                {
-                    "type": "object",
-                    "additionalProperties": false,
-                    "properties": {
-                        "options": {
-                            "$ref": "#/definitions/options"
-                        }
-                    }
-                }
-            ]
-        },
-        "reservation": {
-            "type": "object",
-            "additionalProperties": false,
-            "required": ["config", "ip", "match", "options"],
-            "properties": {
-                "config": {
-                    "$ref": "#/definitions/config"
-                },
-                "ip": {
-                    "type": "string",
-                    "format": "ipv4"
-                },
-                "options": {
-                    "$ref": "#/definitions/options"
-                },
-                "match": {
-                    "$ref": "#/definitions/match"
-                }
-            }
-        },
-        "v6_duration": {
+        "duration": {
             "description": "seconds as an integer, or a duration string with a unit (e.g. \"3600s\", \"60m\", \"24h\")",
             "type": ["integer", "string"]
         },
-        "v6_min_max": {
+        "min_max": {
             "description": "a lifetime with a required default and optional min/max clamps",
             "type": "object",
             "required": ["default"],
             "properties": {
-                "default": {
-                    "$ref": "#/definitions/v6_duration"
-                },
-                "min": {
-                    "$ref": "#/definitions/v6_duration"
-                },
-                "max": {
-                    "$ref": "#/definitions/v6_duration"
-                }
+                "default": { "$ref": "#/definitions/duration" },
+                "min": { "$ref": "#/definitions/duration" },
+                "max": { "$ref": "#/definitions/duration" }
             }
         },
-        "v6_network_config": {
-            "description": "valid (lease_time) and preferred lifetimes for a v6 scope",
+        "config": {
+            "description": "lease/lifetime settings for a v4 scope",
             "type": "object",
-            "required": ["lease_time", "preferred_time"],
             "properties": {
-                "lease_time": {
-                    "$ref": "#/definitions/v6_min_max"
-                },
-                "preferred_time": {
-                    "$ref": "#/definitions/v6_min_max"
-                }
+                "lease_time": { "$ref": "#/definitions/min_max" }
             }
         },
-        "v6_option": {
+        "option": {
+            "description": "a single DHCPv4 option, tagged by `type` with a matching `value`",
             "type": "object",
             "required": ["type", "value"],
             "oneOf": [
                 {
-                    "type": "object",
                     "additionalProperties": false,
                     "properties": {
-                        "type": {
-                            "const": "ip"
-                        },
+                        "type": { "const": "ip" },
                         "value": {
                             "oneOf": [
-                                {
-                                    "type": "string",
-                                    "format": "ipv6"
-                                },
-                                {
-                                    "type": "array",
-                                    "items": {
-                                        "type": "string",
-                                        "format": "ipv6"
-                                    }
-                                }
+                                { "type": "string", "format": "ipv4" },
+                                { "type": "array", "items": { "type": "string", "format": "ipv4" } }
                             ]
                         }
                     }
                 },
                 {
-                    "type": "object",
                     "additionalProperties": false,
                     "properties": {
-                        "type": {
-                            "const": "ip_list"
-                        },
-                        "value": {
-                            "type": "array",
-                            "items": {
-                                "type": "string",
-                                "format": "ipv6"
-                            }
-                        }
+                        "type": { "const": "ip_list" },
+                        "value": { "type": "array", "items": { "type": "string", "format": "ipv4" } }
                     }
                 },
                 {
-                    "type": "object",
                     "additionalProperties": false,
                     "properties": {
-                        "type": {
-                            "const": "u8"
-                        },
-                        "value": {
-                            "oneOf": [
-                                { "type": "integer" },
-                                { "type": "array", "items": { "type": "integer" } }
-                            ]
-                        }
-                    }
-                },
-                {
-                    "type": "object",
-                    "additionalProperties": false,
-                    "properties": {
-                        "type": {
-                            "const": "u16"
-                        },
-                        "value": {
-                            "oneOf": [
-                                { "type": "integer" },
-                                { "type": "array", "items": { "type": "integer" } }
-                            ]
-                        }
-                    }
-                },
-                {
-                    "type": "object",
-                    "additionalProperties": false,
-                    "properties": {
-                        "type": {
-                            "const": "u32"
-                        },
-                        "value": {
-                            "oneOf": [
-                                { "type": "integer" },
-                                { "type": "array", "items": { "type": "integer" } }
-                            ]
-                        }
-                    }
-                },
-                {
-                    "type": "object",
-                    "additionalProperties": false,
-                    "properties": {
-                        "type": {
-                            "const": "str"
-                        },
+                        "type": { "const": "domain" },
                         "value": {
                             "oneOf": [
                                 { "type": "string" },
@@ -347,27 +62,358 @@
                     }
                 },
                 {
-                    "type": "object",
                     "additionalProperties": false,
                     "properties": {
-                        "type": {
-                            "const": "hex"
-                        },
+                        "type": { "const": "domain_list" },
+                        "value": { "type": "array", "items": { "type": "string" } }
+                    }
+                },
+                {
+                    "additionalProperties": false,
+                    "properties": {
+                        "type": { "const": "u8" },
+                        "value": { "$ref": "#/definitions/int_or_int_list" }
+                    }
+                },
+                {
+                    "additionalProperties": false,
+                    "properties": {
+                        "type": { "const": "i8" },
+                        "value": { "$ref": "#/definitions/int_or_int_list" }
+                    }
+                },
+                {
+                    "additionalProperties": false,
+                    "properties": {
+                        "type": { "const": "u16" },
+                        "value": { "$ref": "#/definitions/int_or_int_list" }
+                    }
+                },
+                {
+                    "additionalProperties": false,
+                    "properties": {
+                        "type": { "const": "i16" },
+                        "value": { "$ref": "#/definitions/int_or_int_list" }
+                    }
+                },
+                {
+                    "additionalProperties": false,
+                    "properties": {
+                        "type": { "const": "u32" },
+                        "value": { "$ref": "#/definitions/int_or_int_list" }
+                    }
+                },
+                {
+                    "additionalProperties": false,
+                    "properties": {
+                        "type": { "const": "i32" },
+                        "value": { "$ref": "#/definitions/int_or_int_list" }
+                    }
+                },
+                {
+                    "additionalProperties": false,
+                    "properties": {
+                        "type": { "const": "bool" },
                         "value": {
-                            "type": "string"
+                            "oneOf": [
+                                { "type": "boolean" },
+                                { "type": "array", "items": { "type": "boolean" } }
+                            ]
                         }
                     }
                 },
                 {
-                    "type": "object",
                     "additionalProperties": false,
                     "properties": {
-                        "type": {
-                            "const": "b64"
-                        },
+                        "type": { "const": "str" },
                         "value": {
-                            "type": "string"
+                            "oneOf": [
+                                { "type": "string" },
+                                { "type": "array", "items": { "type": "string" } }
+                            ]
                         }
+                    }
+                },
+                {
+                    "additionalProperties": false,
+                    "properties": {
+                        "type": { "const": "b64" },
+                        "value": { "type": "string" }
+                    }
+                },
+                {
+                    "additionalProperties": false,
+                    "properties": {
+                        "type": { "const": "hex" },
+                        "value": { "type": "string" }
+                    }
+                },
+                {
+                    "additionalProperties": false,
+                    "properties": {
+                        "type": { "const": "sub_option" },
+                        "value": {
+                            "description": "encapsulated options keyed by sub-option code",
+                            "type": "object",
+                            "additionalProperties": { "$ref": "#/definitions/option" }
+                        }
+                    }
+                }
+            ]
+        },
+        "int_or_int_list": {
+            "oneOf": [
+                { "type": "integer" },
+                { "type": "array", "items": { "type": "integer" } }
+            ]
+        },
+        "options": {
+            "description": "an options map. keys are option codes (e.g. \"3\") or known names (e.g. \"routers\")",
+            "type": "object",
+            "properties": {
+                "values": {
+                    "type": "object",
+                    "additionalProperties": { "$ref": "#/definitions/option" }
+                }
+            }
+        },
+        "range": {
+            "description": "a v4 address pool",
+            "type": "object",
+            "required": ["start", "end", "options"],
+            "properties": {
+                "start": { "type": "string", "format": "ipv4" },
+                "end": { "type": "string", "format": "ipv4" },
+                "config": { "$ref": "#/definitions/config" },
+                "options": { "$ref": "#/definitions/options" },
+                "except": {
+                    "type": "array",
+                    "items": { "type": "string", "format": "ipv4" }
+                },
+                "class": {
+                    "description": "restrict this range to a matched client class",
+                    "type": "string"
+                }
+            }
+        },
+        "match": {
+            "description": "a reservation match: a single `chaddr` or `options` key",
+            "type": "object",
+            "oneOf": [
+                {
+                    "additionalProperties": false,
+                    "properties": { "chaddr": { "type": "string" } },
+                    "required": ["chaddr"]
+                },
+                {
+                    "additionalProperties": false,
+                    "properties": { "options": { "$ref": "#/definitions/options" } },
+                    "required": ["options"]
+                }
+            ]
+        },
+        "reservation": {
+            "type": "object",
+            "required": ["ip", "match", "options"],
+            "properties": {
+                "ip": { "type": "string", "format": "ipv4" },
+                "config": { "$ref": "#/definitions/config" },
+                "options": { "$ref": "#/definitions/options" },
+                "match": { "$ref": "#/definitions/match" },
+                "class": {
+                    "description": "restrict this reservation to a matched client class",
+                    "type": "string"
+                }
+            }
+        },
+        "v4_network": {
+            "type": "object",
+            "properties": {
+                "server_id": {
+                    "description": "IP dora is reachable on for this network; defaults to the receiving interface IP",
+                    "type": "string",
+                    "format": "ipv4"
+                },
+                "server_name": {
+                    "description": "replaces the `sname` DHCP header field",
+                    "type": "string"
+                },
+                "file_name": {
+                    "description": "replaces the `fname` DHCP header field",
+                    "type": "string"
+                },
+                "ping_check": { "type": "boolean" },
+                "ping_timeout_ms": { "type": "integer" },
+                "authoritative": { "type": "boolean" },
+                "probation_period": { "type": "integer" },
+                "ranges": {
+                    "type": "array",
+                    "items": { "$ref": "#/definitions/range" }
+                },
+                "reservations": {
+                    "type": "array",
+                    "items": { "$ref": "#/definitions/reservation" }
+                }
+            }
+        },
+        "client_classes": {
+            "description": "client classification (v4 only)",
+            "type": "object",
+            "properties": {
+                "v4": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "required": ["name", "assert"],
+                        "properties": {
+                            "name": { "type": "string" },
+                            "assert": {
+                                "description": "Kea-style predicate expression evaluated per message",
+                                "type": "string"
+                            },
+                            "options": { "$ref": "#/definitions/options" }
+                        }
+                    }
+                }
+            }
+        },
+        "ddns_server": {
+            "type": "object",
+            "required": ["name", "ip"],
+            "properties": {
+                "name": {
+                    "description": "DNS zone / FQDN this server is authoritative for (e.g. \"example.com.\")",
+                    "type": "string"
+                },
+                "key": {
+                    "description": "name of a tsig key defined in `tsig_keys`",
+                    "type": "string"
+                },
+                "ip": {
+                    "description": "socket address of the DNS server (e.g. \"192.168.3.111:53\")",
+                    "type": "string"
+                }
+            }
+        },
+        "tsig_key": {
+            "type": "object",
+            "required": ["algorithm", "data"],
+            "properties": {
+                "algorithm": {
+                    "enum": [
+                        "hmac-md5",
+                        "hmac-sha1",
+                        "hmac-sha256",
+                        "hmac-sha384",
+                        "hmac-sha512"
+                    ]
+                },
+                "data": {
+                    "description": "base64-encoded key data",
+                    "type": "string"
+                }
+            }
+        },
+        "ddns": {
+            "description": "dynamic DNS update configuration",
+            "type": "object",
+            "required": ["forward", "reverse", "tsig_keys"],
+            "properties": {
+                "enable_updates": { "type": "boolean" },
+                "override_client_updates": { "type": "boolean" },
+                "override_no_updates": { "type": "boolean" },
+                "forward": {
+                    "type": "array",
+                    "items": { "$ref": "#/definitions/ddns_server" }
+                },
+                "reverse": {
+                    "type": "array",
+                    "items": { "$ref": "#/definitions/ddns_server" }
+                },
+                "tsig_keys": {
+                    "type": "object",
+                    "additionalProperties": { "$ref": "#/definitions/tsig_key" }
+                }
+            }
+        },
+        "v6_network_config": {
+            "description": "valid (lease_time) and preferred lifetimes for a v6 scope",
+            "type": "object",
+            "required": ["lease_time", "preferred_time"],
+            "properties": {
+                "lease_time": { "$ref": "#/definitions/min_max" },
+                "preferred_time": { "$ref": "#/definitions/min_max" }
+            }
+        },
+        "v6_option": {
+            "description": "a single DHCPv6 option, tagged by `type` with a matching `value`",
+            "type": "object",
+            "required": ["type", "value"],
+            "oneOf": [
+                {
+                    "additionalProperties": false,
+                    "properties": {
+                        "type": { "const": "ip" },
+                        "value": {
+                            "oneOf": [
+                                { "type": "string", "format": "ipv6" },
+                                { "type": "array", "items": { "type": "string", "format": "ipv6" } }
+                            ]
+                        }
+                    }
+                },
+                {
+                    "additionalProperties": false,
+                    "properties": {
+                        "type": { "const": "ip_list" },
+                        "value": { "type": "array", "items": { "type": "string", "format": "ipv6" } }
+                    }
+                },
+                {
+                    "additionalProperties": false,
+                    "properties": {
+                        "type": { "const": "u8" },
+                        "value": { "$ref": "#/definitions/int_or_int_list" }
+                    }
+                },
+                {
+                    "additionalProperties": false,
+                    "properties": {
+                        "type": { "const": "u16" },
+                        "value": { "$ref": "#/definitions/int_or_int_list" }
+                    }
+                },
+                {
+                    "additionalProperties": false,
+                    "properties": {
+                        "type": { "const": "u32" },
+                        "value": { "$ref": "#/definitions/int_or_int_list" }
+                    }
+                },
+                {
+                    "additionalProperties": false,
+                    "properties": {
+                        "type": { "const": "str" },
+                        "value": {
+                            "oneOf": [
+                                { "type": "string" },
+                                { "type": "array", "items": { "type": "string" } }
+                            ]
+                        }
+                    }
+                },
+                {
+                    "additionalProperties": false,
+                    "properties": {
+                        "type": { "const": "hex" },
+                        "value": { "type": "string" }
+                    }
+                },
+                {
+                    "additionalProperties": false,
+                    "properties": {
+                        "type": { "const": "b64" },
+                        "value": { "type": "string" }
                     }
                 }
             ]
@@ -378,9 +424,7 @@
                 "values": {
                     "type": "object",
                     "patternProperties": {
-                        "^[0-9]+$": {
-                            "$ref": "#/definitions/v6_option"
-                        }
+                        "^[0-9]+$": { "$ref": "#/definitions/v6_option" }
                     }
                 }
             }
@@ -390,26 +434,13 @@
             "type": "object",
             "required": ["config", "start", "end", "options"],
             "properties": {
-                "config": {
-                    "$ref": "#/definitions/v6_network_config"
-                },
-                "start": {
-                    "type": "string",
-                    "format": "ipv6"
-                },
-                "end": {
-                    "type": "string",
-                    "format": "ipv6"
-                },
-                "options": {
-                    "$ref": "#/definitions/v6_options"
-                },
+                "config": { "$ref": "#/definitions/v6_network_config" },
+                "start": { "type": "string", "format": "ipv6" },
+                "end": { "type": "string", "format": "ipv6" },
+                "options": { "$ref": "#/definitions/v6_options" },
                 "except": {
                     "type": "array",
-                    "items": {
-                        "type": "string",
-                        "format": "ipv6"
-                    }
+                    "items": { "type": "string", "format": "ipv6" }
                 }
             }
         },
@@ -428,18 +459,12 @@
                     "minimum": 1,
                     "maximum": 127
                 },
-                "config": {
-                    "$ref": "#/definitions/v6_network_config"
-                },
-                "options": {
-                    "$ref": "#/definitions/v6_options"
-                },
+                "config": { "$ref": "#/definitions/v6_network_config" },
+                "options": { "$ref": "#/definitions/v6_options" },
                 "except": {
                     "description": "delegated prefixes to never hand out",
                     "type": "array",
-                    "items": {
-                        "type": "string"
-                    }
+                    "items": { "type": "string" }
                 }
             }
         },
@@ -448,16 +473,12 @@
             "type": "object",
             "required": ["type"],
             "properties": {
-                "type": {
-                    "enum": ["LLT", "LL", "EN", "UUID"]
-                },
+                "type": { "enum": ["LLT", "LL", "EN", "UUID"] },
                 "persist": {
                     "description": "persist the generated DUID to `path` (default true)",
                     "type": "boolean"
                 },
-                "path": {
-                    "type": "string"
-                },
+                "path": { "type": "string" },
                 "htype": {
                     "description": "hardware type for LL/LLT (default 0 -> Ethernet)",
                     "type": "integer"
@@ -475,59 +496,37 @@
                     "type": "string"
                 }
             },
-            "allOf": [
-                {
-                    "if": {
-                        "properties": { "type": { "const": "UUID" } }
-                    },
-                    "then": {
-                        "required": ["identifier"]
-                    }
-                }
-            ]
+            "if": {
+                "properties": { "type": { "const": "UUID" } }
+            },
+            "then": {
+                "required": ["identifier"]
+            }
         },
         "v6_net": {
             "type": "object",
             "required": ["config"],
             "properties": {
-                "config": {
-                    "$ref": "#/definitions/v6_network_config"
-                },
-                "options": {
-                    "$ref": "#/definitions/v6_options"
-                },
+                "config": { "$ref": "#/definitions/v6_network_config" },
+                "options": { "$ref": "#/definitions/v6_options" },
                 "interfaces": {
                     "type": "array",
-                    "items": {
-                        "type": "string"
-                    }
+                    "items": { "type": "string" }
                 },
                 "ranges": {
                     "description": "IA_NA address pools",
                     "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/v6_range"
-                    }
+                    "items": { "$ref": "#/definitions/v6_range" }
                 },
                 "pd_pools": {
                     "description": "IA_PD prefix delegation pools",
                     "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/v6_pd_pool"
-                    }
+                    "items": { "$ref": "#/definitions/v6_pd_pool" }
                 },
-                "ping_check": {
-                    "type": "boolean"
-                },
-                "ping_timeout_ms": {
-                    "type": "integer"
-                },
-                "probation_period": {
-                    "type": "integer"
-                },
-                "authoritative": {
-                    "type": "boolean"
-                }
+                "ping_check": { "type": "boolean" },
+                "ping_timeout_ms": { "type": "integer" },
+                "probation_period": { "type": "integer" },
+                "authoritative": { "type": "boolean" }
             }
         },
         "v6": {
@@ -537,16 +536,10 @@
             "properties": {
                 "interfaces": {
                     "type": "array",
-                    "items": {
-                        "type": "string"
-                    }
+                    "items": { "type": "string" }
                 },
-                "server_id": {
-                    "$ref": "#/definitions/v6_server_id"
-                },
-                "options": {
-                    "$ref": "#/definitions/v6_options"
-                },
+                "server_id": { "$ref": "#/definitions/v6_server_id" },
+                "options": { "$ref": "#/definitions/v6_options" },
                 "rapid_commit": {
                     "description": "honor the Rapid Commit option (opt 14): answer a Solicit carrying it with a committing Reply instead of Advertise (default false)",
                     "type": "boolean"
@@ -554,9 +547,7 @@
                 "networks": {
                     "description": "v6 networks keyed by subnet prefix, e.g. \"2001:db8:1::/64\"",
                     "type": "object",
-                    "additionalProperties": {
-                        "$ref": "#/definitions/v6_net"
-                    }
+                    "additionalProperties": { "$ref": "#/definitions/v6_net" }
                 }
             }
         }
@@ -564,49 +555,44 @@
     "type": "object",
     "properties": {
         "chaddr_only": {
+            "description": "only use the `chaddr` header field for client identity, ignoring opt 61 (default false)",
             "type": "boolean"
         },
-        "interfaces": {
-            "type": "array",
-            "items": {
-                "type": "string"
+        "bootp_enable": {
+            "description": "enable BOOTP support, RFC 1497 only (default true)",
+            "type": "boolean"
+        },
+        "rapid_commit": {
+            "description": "enable v4 rapid commit, RFC 4039 (default false)",
+            "type": "boolean"
+        },
+        "cache_threshold": {
+            "description": "percent (0-100) of lease time during which a renew returns the existing lease rather than extending it (default 0)",
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100
+        },
+        "flood_protection_threshold": {
+            "description": "per-MAC DHCP flood protection: at most `packets` per `secs` (off by default)",
+            "type": "object",
+            "required": ["packets", "secs"],
+            "properties": {
+                "packets": { "type": "integer", "minimum": 1 },
+                "secs": { "type": "integer", "minimum": 1 }
             }
+        },
+        "interfaces": {
+            "description": "interfaces to bind; if empty, dora binds 0.0.0.0. Entries may be \"name\" or \"name@ip\"",
+            "type": "array",
+            "items": { "type": "string" }
         },
         "networks": {
-            "description": "top level bucket for network configurations",
+            "description": "v4 networks keyed by subnet, e.g. \"192.168.1.0/24\"",
             "type": "object",
-            "additionalProperties": {
-                "type": "object",
-                "properties": {
-                    "ping_check": {
-                        "type": "boolean"
-                    },
-                    "ping_timeout_ms": {
-                        "type": "integer"
-                    },
-                    "authoritative": {
-                        "type": "boolean"
-                    },
-                    "probation_period": {
-                        "type": "integer"
-                    },
-                    "ranges": {
-                        "type": "array",
-                        "items": {
-                            "$ref": "#/definitions/range"
-                        }
-                    },
-                    "reservations": {
-                        "type": "array",
-                        "items": {
-                            "$ref": "#/definitions/reservation"
-                        }
-                    }
-                }
-            }
+            "additionalProperties": { "$ref": "#/definitions/v4_network" }
         },
-        "v6": {
-            "$ref": "#/definitions/v6"
-        }
+        "client_classes": { "$ref": "#/definitions/client_classes" },
+        "ddns": { "$ref": "#/definitions/ddns" },
+        "v6": { "$ref": "#/definitions/v6" }
     }
 }
