@@ -208,6 +208,357 @@
                     "$ref": "#/definitions/match"
                 }
             }
+        },
+        "v6_duration": {
+            "description": "seconds as an integer, or a duration string with a unit (e.g. \"3600s\", \"60m\", \"24h\")",
+            "type": ["integer", "string"]
+        },
+        "v6_min_max": {
+            "description": "a lifetime with a required default and optional min/max clamps",
+            "type": "object",
+            "required": ["default"],
+            "properties": {
+                "default": {
+                    "$ref": "#/definitions/v6_duration"
+                },
+                "min": {
+                    "$ref": "#/definitions/v6_duration"
+                },
+                "max": {
+                    "$ref": "#/definitions/v6_duration"
+                }
+            }
+        },
+        "v6_network_config": {
+            "description": "valid (lease_time) and preferred lifetimes for a v6 scope",
+            "type": "object",
+            "required": ["lease_time", "preferred_time"],
+            "properties": {
+                "lease_time": {
+                    "$ref": "#/definitions/v6_min_max"
+                },
+                "preferred_time": {
+                    "$ref": "#/definitions/v6_min_max"
+                }
+            }
+        },
+        "v6_option": {
+            "type": "object",
+            "required": ["type", "value"],
+            "oneOf": [
+                {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "type": {
+                            "const": "ip"
+                        },
+                        "value": {
+                            "oneOf": [
+                                {
+                                    "type": "string",
+                                    "format": "ipv6"
+                                },
+                                {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "string",
+                                        "format": "ipv6"
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                },
+                {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "type": {
+                            "const": "ip_list"
+                        },
+                        "value": {
+                            "type": "array",
+                            "items": {
+                                "type": "string",
+                                "format": "ipv6"
+                            }
+                        }
+                    }
+                },
+                {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "type": {
+                            "const": "u8"
+                        },
+                        "value": {
+                            "oneOf": [
+                                { "type": "integer" },
+                                { "type": "array", "items": { "type": "integer" } }
+                            ]
+                        }
+                    }
+                },
+                {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "type": {
+                            "const": "u16"
+                        },
+                        "value": {
+                            "oneOf": [
+                                { "type": "integer" },
+                                { "type": "array", "items": { "type": "integer" } }
+                            ]
+                        }
+                    }
+                },
+                {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "type": {
+                            "const": "u32"
+                        },
+                        "value": {
+                            "oneOf": [
+                                { "type": "integer" },
+                                { "type": "array", "items": { "type": "integer" } }
+                            ]
+                        }
+                    }
+                },
+                {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "type": {
+                            "const": "str"
+                        },
+                        "value": {
+                            "oneOf": [
+                                { "type": "string" },
+                                { "type": "array", "items": { "type": "string" } }
+                            ]
+                        }
+                    }
+                },
+                {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "type": {
+                            "const": "hex"
+                        },
+                        "value": {
+                            "type": "string"
+                        }
+                    }
+                },
+                {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "type": {
+                            "const": "b64"
+                        },
+                        "value": {
+                            "type": "string"
+                        }
+                    }
+                }
+            ]
+        },
+        "v6_options": {
+            "type": "object",
+            "properties": {
+                "values": {
+                    "type": "object",
+                    "patternProperties": {
+                        "^[0-9]+$": {
+                            "$ref": "#/definitions/v6_option"
+                        }
+                    }
+                }
+            }
+        },
+        "v6_range": {
+            "description": "an IA_NA address pool (RFC 8415)",
+            "type": "object",
+            "required": ["config", "start", "end", "options"],
+            "properties": {
+                "config": {
+                    "$ref": "#/definitions/v6_network_config"
+                },
+                "start": {
+                    "type": "string",
+                    "format": "ipv6"
+                },
+                "end": {
+                    "type": "string",
+                    "format": "ipv6"
+                },
+                "options": {
+                    "$ref": "#/definitions/v6_options"
+                },
+                "except": {
+                    "type": "array",
+                    "items": {
+                        "type": "string",
+                        "format": "ipv6"
+                    }
+                }
+            }
+        },
+        "v6_pd_pool": {
+            "description": "an IA_PD prefix delegation pool: delegate `delegated_len` prefixes carved out of the parent `prefix` (RFC 8415 6.3)",
+            "type": "object",
+            "required": ["prefix", "delegated_len", "config"],
+            "properties": {
+                "prefix": {
+                    "description": "parent prefix to delegate from, e.g. \"2001:db8:1::/48\"",
+                    "type": "string"
+                },
+                "delegated_len": {
+                    "description": "length of prefixes delegated to clients; must be greater than the parent prefix length and < 128",
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 127
+                },
+                "config": {
+                    "$ref": "#/definitions/v6_network_config"
+                },
+                "options": {
+                    "$ref": "#/definitions/v6_options"
+                },
+                "except": {
+                    "description": "delegated prefixes to never hand out",
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                }
+            }
+        },
+        "v6_server_id": {
+            "description": "the server's DUID. `type` selects the DUID form; unrecognized fields are ignored",
+            "type": "object",
+            "required": ["type"],
+            "properties": {
+                "type": {
+                    "enum": ["LLT", "LL", "EN", "UUID"]
+                },
+                "persist": {
+                    "description": "persist the generated DUID to `path` (default true)",
+                    "type": "boolean"
+                },
+                "path": {
+                    "type": "string"
+                },
+                "htype": {
+                    "description": "hardware type for LL/LLT (default 0 -> Ethernet)",
+                    "type": "integer"
+                },
+                "time": {
+                    "description": "timestamp for LLT (default 0 -> now)",
+                    "type": "integer"
+                },
+                "enterprise_id": {
+                    "description": "IANA enterprise number for EN",
+                    "type": "integer"
+                },
+                "identifier": {
+                    "description": "LL/LLT: an IPv6/link-layer address; EN/UUID: a hex string. Required for UUID",
+                    "type": "string"
+                }
+            },
+            "allOf": [
+                {
+                    "if": {
+                        "properties": { "type": { "const": "UUID" } }
+                    },
+                    "then": {
+                        "required": ["identifier"]
+                    }
+                }
+            ]
+        },
+        "v6_net": {
+            "type": "object",
+            "required": ["config"],
+            "properties": {
+                "config": {
+                    "$ref": "#/definitions/v6_network_config"
+                },
+                "options": {
+                    "$ref": "#/definitions/v6_options"
+                },
+                "interfaces": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "ranges": {
+                    "description": "IA_NA address pools",
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/v6_range"
+                    }
+                },
+                "pd_pools": {
+                    "description": "IA_PD prefix delegation pools",
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/v6_pd_pool"
+                    }
+                },
+                "ping_check": {
+                    "type": "boolean"
+                },
+                "ping_timeout_ms": {
+                    "type": "integer"
+                },
+                "probation_period": {
+                    "type": "integer"
+                },
+                "authoritative": {
+                    "type": "boolean"
+                }
+            }
+        },
+        "v6": {
+            "description": "stateful DHCPv6 server configuration (RFC 8415)",
+            "type": "object",
+            "required": ["networks"],
+            "properties": {
+                "interfaces": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "server_id": {
+                    "$ref": "#/definitions/v6_server_id"
+                },
+                "options": {
+                    "$ref": "#/definitions/v6_options"
+                },
+                "rapid_commit": {
+                    "description": "honor the Rapid Commit option (opt 14): answer a Solicit carrying it with a committing Reply instead of Advertise (default false)",
+                    "type": "boolean"
+                },
+                "networks": {
+                    "description": "v6 networks keyed by subnet prefix, e.g. \"2001:db8:1::/64\"",
+                    "type": "object",
+                    "additionalProperties": {
+                        "$ref": "#/definitions/v6_net"
+                    }
+                }
+            }
         }
     },
     "type": "object",
@@ -253,6 +604,9 @@
                     }
                 }
             }
+        },
+        "v6": {
+            "$ref": "#/definitions/v6"
         }
     }
 }
