@@ -478,8 +478,14 @@ impl Plugin<v6::Message> for MsgType {
                     resp.set_msg_type(MessageType::Advertise);
                 }
             }
-            // Request: response stays a Reply; leases-v6 commits the binding.
-            MessageType::Request => {}
+            // Reply-type exchanges: response stays a Reply; leases-v6 processes
+            // the binding (commit / renew / confirm / release / decline).
+            MessageType::Request
+            | MessageType::Renew
+            | MessageType::Rebind
+            | MessageType::Confirm
+            | MessageType::Release
+            | MessageType::Decline => {}
             _ => {
                 debug!("currently unsupported message type");
                 return Ok(Action::NoResponse);

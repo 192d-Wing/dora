@@ -12,7 +12,7 @@
 //!
 //! [`Storage`]: ip_manager::Storage
 //! [`IpManager`]: ip_manager::IpManager
-use icmp_ping::{Icmpv4, Listener, PingReply};
+use icmp_ping::{Icmpv4, Icmpv6, Listener, PingReply};
 
 use async_trait::async_trait;
 use chrono::DateTime;
@@ -181,7 +181,10 @@ impl State {
 
 pub struct IpManager<T> {
     store: T,
-    icmpv4: Arc<IcmpInner>,
+    icmpv4: Arc<IcmpInner<Icmpv4>>,
+    /// best-effort: `None` if the ICMPv6 socket could not be created (some CI /
+    /// container environments), in which case v6 DAD is skipped
+    icmpv6: Option<Arc<IcmpInner<Icmpv6>>>,
     ping_cache: moka::future::Cache<IpAddr, Option<PingReply>>,
 }
 
@@ -200,14 +203,15 @@ impl<T: Clone> Clone for IpManager<T> {
         Self {
             store: self.store.clone(),
             icmpv4: self.icmpv4.clone(),
+            icmpv6: self.icmpv6.clone(),
             ping_cache: self.ping_cache.clone(),
         }
     }
 }
 
-pub(crate) struct IcmpInner {
+pub(crate) struct IcmpInner<P> {
     seq_cnt: AtomicU16,
-    listener: Listener<Icmpv4>,
+    listener: Listener<P>,
 }
 
 impl<T> IpManager<T>
@@ -231,6 +235,18 @@ where
             .ping(seq_cnt)
             .await
         // ping succeeded, meaning addr is in use
+    }
+
+    /// v6 duplicate-address detection: send an ICMPv6 echo request; a reply
+    /// means the address is already in use on the link.
+    async fn addr_in_use_v6(
+        &self,
+        icmpv6: &IcmpInner<Icmpv6>,
+        ip: IpAddr,
+        timeout: Duration,
+    ) -> Result<PingReply, icmp_ping::Error> {
+        let seq_cnt = icmpv6.seq_cnt.fetch_add(1, Ordering::Relaxed);
+        icmpv6.listener.pinger(ip).timeout(timeout).ping(seq_cnt).await
     }
 
     /// used for tests to insert into ping cache
@@ -270,11 +286,27 @@ where
                 }
             }
             IpAddr::V6(_) => {
-                // DHCPv6 DAD is Neighbor-Solicitation based, not ICMP echo; it is
-                // implemented in a later phase. Sending an ICMPv4 echo to a v6
-                // address would be meaningless, so skip the probe for now.
-                trace!(?ip, "v6 DAD not yet implemented; skipping probe");
-                Ok(())
+                // v6 DAD via ICMPv6 echo. If no ICMPv6 socket is available, skip.
+                let Some(icmpv6) = self.icmpv6.clone() else {
+                    trace!(?ip, "no ICMPv6 socket; skipping v6 DAD");
+                    return Ok(());
+                };
+                let fut = async {
+                    match self.addr_in_use_v6(&icmpv6, ip, network.ping_timeout()).await {
+                        Ok(reply) => {
+                            // reply => address is in use; drop our entry for it
+                            if let Err(err) = self.store.delete(ip).await {
+                                error!(?err, "error attempting to delete ip");
+                            }
+                            Some(reply)
+                        }
+                        Err(_) => None,
+                    }
+                };
+                match self.ping_cache.get_with(ip, fut).await {
+                    Some(_reply) => Err(IpError::AddrInUse(ip)),
+                    None => Ok(()),
+                }
             }
         }
     }
@@ -285,11 +317,25 @@ where
     T: Storage,
 {
     pub fn new(store: T) -> Result<Self, icmp_ping::Error> {
-        Ok(Self {
-            icmpv4: Arc::new(IcmpInner {
+        let icmpv4 = Arc::new(IcmpInner {
+            seq_cnt: AtomicU16::new(1),
+            listener: Listener::<Icmpv4>::new()?,
+        });
+        // v6 DAD is best-effort: some CI/container environments can't create an
+        // ICMPv6 socket. Disable v6 probing there rather than failing startup.
+        let icmpv6 = match Listener::<Icmpv6>::new() {
+            Ok(listener) => Some(Arc::new(IcmpInner {
                 seq_cnt: AtomicU16::new(1),
-                listener: Listener::<Icmpv4>::new()?,
-            }),
+                listener,
+            })),
+            Err(err) => {
+                warn!(?err, "could not create ICMPv6 socket; v6 DAD disabled");
+                None
+            }
+        };
+        Ok(Self {
+            icmpv4,
+            icmpv6,
             store,
             ping_cache: moka::future::CacheBuilder::new(1_000)
                 // time_to_idle?
@@ -478,6 +524,25 @@ where
                 Err(IpError::Unreserved)
             }
         }
+    }
+
+    /// Extend an existing, unexpired binding's lease time. Unlike [`try_lease`],
+    /// this never creates a binding: it returns `Ok(Some(ip))` only when a
+    /// binding for `(ip, id)` exists and is unexpired, else `Ok(None)`. Used for
+    /// DHCPv6 Renew/Rebind, where the client claims an address it already holds
+    /// and the server must answer NoBinding if it has no record.
+    ///
+    /// [`try_lease`]: IpManager::try_lease
+    pub async fn renew(
+        &self,
+        ip: IpAddr,
+        id: &[u8],
+        expires_at: SystemTime,
+    ) -> Result<Option<IpAddr>, IpError<T::Error>> {
+        Ok(self
+            .store
+            .update_unexpired(ip, IpState::Lease, id, expires_at, Some(id))
+            .await?)
     }
     /// Sets a reserved ip/id combo to leased state. If no un-expired ip/id pair
     /// found, then if we're authoritative we will just try to insert the IP, and
@@ -1257,6 +1322,34 @@ mod tests {
         // commit the lease (Request/Reply) and confirm it persists as Leased
         mgr.try_lease(a, &[1, 1, 1], exp, net).await?;
         assert!(matches!(mgr.get(a).await?, Some(State::Leased(_))));
+        Ok(())
+    }
+
+    // renew() extends an existing binding but never creates one (Renew/Rebind)
+    #[tokio::test]
+    #[traced_test]
+    async fn test_renew_extends_only_existing() -> Result<()> {
+        use config::DhcpConfig;
+        let cfg =
+            DhcpConfig::parse_str(include_str!("../../config/sample/config_v6_pools.yaml")).unwrap();
+        let (_subnet, net) = cfg.v6().get_first().expect("a v6 network");
+        let range = &net.ranges()[0];
+
+        let mgr = IpManager::new(SqliteDb::new("sqlite::memory:").await?)?;
+        let now = SystemTime::now();
+        let ip = mgr
+            .reserve_first(range, net, &[7, 7, 7], now + Duration::from_secs(60), Some(IpState::Lease))
+            .await?;
+
+        // existing (ip,id) -> extended
+        let later = now + Duration::from_secs(120);
+        assert_eq!(mgr.renew(ip, &[7, 7, 7], later).await?, Some(ip));
+        // wrong id -> no binding created/extended
+        assert_eq!(mgr.renew(ip, &[9, 9, 9], later).await?, None);
+        // address we don't hold -> None (no insert)
+        let other = IpAddr::V6("2001:db8:1::105".parse()?);
+        assert_eq!(mgr.renew(other, &[7, 7, 7], later).await?, None);
+        assert!(mgr.get(other).await?.is_none(), "renew must not create a binding");
         Ok(())
     }
 }

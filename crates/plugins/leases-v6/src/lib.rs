@@ -66,41 +66,28 @@ where
         let meta = ctx.meta();
         let msg_type = ctx.msg().msg_type();
 
-        // whether this exchange commits a lease vs. merely offers one. MsgType
-        // has already set the response type, so a Reply means commit (Request, or
-        // a Rapid-Commit Solicit); a plain Solicit yields an Advertise (offer).
-        let commit = match msg_type {
-            MessageType::Solicit => {
-                matches!(ctx.resp_msg().map(|m| m.msg_type()), Some(MessageType::Reply))
-            }
-            MessageType::Request => true,
-            // InformationRequest is answered by MsgType; Renew/Rebind/Confirm/
-            // Release/Decline are a later phase.
-            _ => return Ok(Action::Continue),
-        };
+        // only the stateful IA_NA exchanges are ours; anything else (e.g.
+        // InformationRequest, answered by MsgType) continues down the chain.
+        if !matches!(
+            msg_type,
+            MessageType::Solicit
+                | MessageType::Request
+                | MessageType::Renew
+                | MessageType::Rebind
+                | MessageType::Confirm
+                | MessageType::Release
+                | MessageType::Decline
+        ) {
+            return Ok(Action::Continue);
+        }
 
-        // pull the client DUID (opt 1, mandatory) and the requested IA_NAs
-        let (duid, ianas) = {
-            let opts = ctx.msg().opts();
-            let duid = match opts.get(OptionCode::ClientId) {
-                Some(DhcpOption::ClientId(d)) => d.clone(),
-                _ => {
-                    debug!("v6 message has no Client Identifier; not responding");
-                    return Ok(Action::NoResponse);
-                }
-            };
-            let ianas: Vec<IANA> = opts
-                .get_all(OptionCode::IANA)
-                .map(|os| {
-                    os.iter()
-                        .filter_map(|o| match o {
-                            DhcpOption::IANA(iana) => Some(iana.clone()),
-                            _ => None,
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
-            (duid, ianas)
+        // client DUID (opt 1, mandatory) + the requested IA_NAs (opt 3)
+        let (duid, ianas) = match extract_client(ctx.msg()) {
+            Some(v) => v,
+            None => {
+                debug!("v6 message has no Client Identifier; not responding");
+                return Ok(Action::NoResponse);
+            }
         };
 
         let network = match self.cfg.v6().get_network(meta.ifindex) {
@@ -111,8 +98,44 @@ where
             }
         };
 
-        let valid = network.valid().determine_lease(None).0;
-        let preferred = network.preferred().determine_lease(None).0;
+        match msg_type {
+            MessageType::Solicit | MessageType::Request => {
+                self.assign(ctx, msg_type, &duid, &ianas, network).await
+            }
+            MessageType::Renew | MessageType::Rebind => {
+                self.renew(ctx, msg_type, &duid, &ianas, network).await
+            }
+            MessageType::Confirm => self.confirm(ctx, &ianas, network).await,
+            MessageType::Release => self.release(ctx, &duid, &ianas, network).await,
+            MessageType::Decline => self.decline(ctx, &duid, &ianas, network).await,
+            _ => Ok(Action::Continue),
+        }
+    }
+}
+
+impl<S> LeasesV6<S>
+where
+    S: Storage + Send + Sync + 'static,
+{
+    /// Solicit -> Advertise (offer) / Request or Rapid-Commit Solicit -> Reply
+    /// (commit): assign an address for each requested IA_NA.
+    async fn assign(
+        &self,
+        ctx: &mut MsgContext<v6::Message>,
+        msg_type: MessageType,
+        duid: &[u8],
+        ianas: &[IANA],
+        network: &Network,
+    ) -> Result<Action> {
+        // MsgType already set the response type: a Reply means commit (Request,
+        // or a Rapid-Commit Solicit); a plain Solicit gives an Advertise (offer).
+        let commit = match msg_type {
+            MessageType::Solicit => {
+                matches!(ctx.resp_msg().map(|m| m.msg_type()), Some(MessageType::Reply))
+            }
+            _ => true,
+        };
+        let (preferred, valid) = lifetimes(network);
         let state = if commit {
             IpState::Lease
         } else {
@@ -120,10 +143,9 @@ where
         };
         let expires_at = SystemTime::now() + valid;
 
-        // allocate an address for each requested IA_NA
         let mut ia_opts = Vec::with_capacity(ianas.len());
-        for iana in &ianas {
-            let id = binding_id(&duid, iana.id);
+        for iana in ianas {
+            let id = binding_id(duid, iana.id);
             match self.allocate(network, &id, expires_at, state).await {
                 Some(addr) => {
                     debug!(?addr, iaid = iana.id, commit, "assigned v6 address");
@@ -135,24 +157,123 @@ where
                 }
             }
         }
-
-        // write the IA_NA options onto the response set up by MsgType
-        let resp = ctx
-            .resp_msg_mut()
-            .context("v6 response must be set by MsgType before leases-v6 runs")?;
-        for opt in ia_opts {
-            resp.opts_mut().insert(opt);
-        }
-        // copy the client id and any ORO-requested options (DNS, etc.)
-        ctx.populate_opts(network.opts());
-        Ok(Action::Respond)
+        self.write_response(ctx, network, ia_opts)
     }
-}
 
-impl<S> LeasesV6<S>
-where
-    S: Storage + Send + Sync + 'static,
-{
+    /// Renew (unicast) / Rebind (any server): extend the client's existing
+    /// bindings. RFC 8415 §18.3.4 / §18.3.5. Unknown bindings get NoBinding;
+    /// a Rebind that matches nothing stays silent.
+    async fn renew(
+        &self,
+        ctx: &mut MsgContext<v6::Message>,
+        msg_type: MessageType,
+        duid: &[u8],
+        ianas: &[IANA],
+        network: &Network,
+    ) -> Result<Action> {
+        let (preferred, valid) = lifetimes(network);
+        let expires_at = SystemTime::now() + valid;
+
+        let mut ia_opts = Vec::with_capacity(ianas.len());
+        let mut any_extended = false;
+        for iana in ianas {
+            let id = binding_id(duid, iana.id);
+            // extend the first of the client's listed addresses that we hold
+            let mut extended = None;
+            for addr in iana_addrs(iana) {
+                if let Ok(Some(IpAddr::V6(ip))) =
+                    self.ip_mgr.renew(IpAddr::V6(addr), &id, expires_at).await
+                {
+                    extended = Some(ip);
+                    break;
+                }
+            }
+            match extended {
+                Some(addr) => {
+                    any_extended = true;
+                    debug!(?addr, iaid = iana.id, "extended v6 lease");
+                    ia_opts.push(iana_with_addr(iana.id, addr, preferred, valid));
+                }
+                None => ia_opts.push(iana_status(
+                    iana.id,
+                    Status::NoBinding,
+                    "no binding for this IA",
+                )),
+            }
+        }
+
+        // A Rebind that matches no binding must not be answered (let another
+        // server reply). Renew always answers.
+        if msg_type == MessageType::Rebind && !any_extended {
+            debug!("Rebind matched no bindings; not responding");
+            return Ok(Action::NoResponse);
+        }
+        self.write_response(ctx, network, ia_opts)
+    }
+
+    /// Confirm: tell the client whether its addresses are still on-link.
+    /// RFC 8415 §18.3.3 — no leases are changed.
+    async fn confirm(
+        &self,
+        ctx: &mut MsgContext<v6::Message>,
+        ianas: &[IANA],
+        network: &Network,
+    ) -> Result<Action> {
+        let addrs: Vec<Ipv6Addr> = ianas.iter().flat_map(iana_addrs).collect();
+        // MUST NOT respond if the client sent no addresses to check
+        if addrs.is_empty() {
+            debug!("Confirm with no addresses; not responding");
+            return Ok(Action::NoResponse);
+        }
+        let subnet = network.full_subnet();
+        let (status, msg) = if addrs.iter().all(|a| subnet.contains(a)) {
+            (Status::Success, "all addresses on-link")
+        } else {
+            (Status::NotOnLink, "address not on-link")
+        };
+        self.write_response(ctx, network, vec![status_code(status, msg)])
+    }
+
+    /// Release: free the client's addresses. RFC 8415 §18.3.7.
+    async fn release(
+        &self,
+        ctx: &mut MsgContext<v6::Message>,
+        duid: &[u8],
+        ianas: &[IANA],
+        network: &Network,
+    ) -> Result<Action> {
+        for iana in ianas {
+            let id = binding_id(duid, iana.id);
+            for addr in iana_addrs(iana) {
+                if let Err(err) = self.ip_mgr.release_ip(IpAddr::V6(addr), &id).await {
+                    debug!(?err, ?addr, "error releasing v6 address");
+                }
+            }
+        }
+        self.write_response(ctx, network, vec![status_code(Status::Success, "released")])
+    }
+
+    /// Decline: the client found an address already in use; put it on probation.
+    /// RFC 8415 §18.3.8.
+    async fn decline(
+        &self,
+        ctx: &mut MsgContext<v6::Message>,
+        duid: &[u8],
+        ianas: &[IANA],
+        network: &Network,
+    ) -> Result<Action> {
+        let expires_at = SystemTime::now() + network.probation_period();
+        for iana in ianas {
+            let id = binding_id(duid, iana.id);
+            for addr in iana_addrs(iana) {
+                if let Err(err) = self.ip_mgr.probate_ip(IpAddr::V6(addr), &id, expires_at).await {
+                    debug!(?err, ?addr, "error probating declined v6 address");
+                }
+            }
+        }
+        self.write_response(ctx, network, vec![status_code(Status::Success, "declined")])
+    }
+
     /// allocate the first available address across the network's IA_NA pools for
     /// this binding id, reusing the client's existing address if it already has
     /// one (reserve_first matches on the id).
@@ -178,6 +299,24 @@ where
             }
         }
         None
+    }
+
+    /// write the built options onto the MsgType-provided response, copy the
+    /// client id + ORO-requested options, and respond.
+    fn write_response(
+        &self,
+        ctx: &mut MsgContext<v6::Message>,
+        network: &Network,
+        opts: Vec<DhcpOption>,
+    ) -> Result<Action> {
+        let resp = ctx
+            .resp_msg_mut()
+            .context("v6 response must be set by MsgType before leases-v6 runs")?;
+        for opt in opts {
+            resp.opts_mut().insert(opt);
+        }
+        ctx.populate_opts(network.opts());
+        Ok(Action::Respond)
     }
 }
 
@@ -206,19 +345,75 @@ fn iana_with_addr(iaid: u32, addr: Ipv6Addr, preferred: Duration, valid: Duratio
     })
 }
 
-/// build an IA_NA (opt 3) carrying a NoAddrsAvail status (RFC 8415 §18.3.1).
-fn iana_no_addrs(iaid: u32) -> DhcpOption {
+/// build an IA_NA (opt 3) carrying only a status code (e.g. NoAddrsAvail,
+/// NoBinding). RFC 8415 §21.13.
+fn iana_status(iaid: u32, status: Status, msg: &str) -> DhcpOption {
     let mut opts = DhcpOptions::new();
-    opts.insert(DhcpOption::StatusCode(StatusCode {
-        status: Status::NoAddrsAvail,
-        msg: "no addresses available".to_owned(),
-    }));
+    opts.insert(status_code(status, msg));
     DhcpOption::IANA(IANA {
         id: iaid,
         t1: 0,
         t2: 0,
         opts,
     })
+}
+
+/// build an IA_NA (opt 3) carrying a NoAddrsAvail status (RFC 8415 §18.3.1).
+fn iana_no_addrs(iaid: u32) -> DhcpOption {
+    iana_status(iaid, Status::NoAddrsAvail, "no addresses available")
+}
+
+/// a top-level Status Code option (opt 13).
+fn status_code(status: Status, msg: &str) -> DhcpOption {
+    DhcpOption::StatusCode(StatusCode {
+        status,
+        msg: msg.to_owned(),
+    })
+}
+
+/// pull the mandatory client DUID (opt 1) and the requested IA_NAs (opt 3) from
+/// a request. Returns `None` if there is no Client Identifier.
+fn extract_client(msg: &v6::Message) -> Option<(Vec<u8>, Vec<IANA>)> {
+    let opts = msg.opts();
+    let duid = match opts.get(OptionCode::ClientId) {
+        Some(DhcpOption::ClientId(d)) => d.clone(),
+        _ => return None,
+    };
+    let ianas = opts
+        .get_all(OptionCode::IANA)
+        .map(|os| {
+            os.iter()
+                .filter_map(|o| match o {
+                    DhcpOption::IANA(iana) => Some(iana.clone()),
+                    _ => None,
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    Some((duid, ianas))
+}
+
+/// the (preferred, valid) lifetimes configured for a network.
+fn lifetimes(network: &Network) -> (Duration, Duration) {
+    (
+        network.preferred().determine_lease(None).0,
+        network.valid().determine_lease(None).0,
+    )
+}
+
+/// the addresses a client listed inside an IA_NA (its IAADDR sub-options).
+fn iana_addrs(iana: &IANA) -> Vec<Ipv6Addr> {
+    iana.opts
+        .get_all(OptionCode::IAAddr)
+        .map(|os| {
+            os.iter()
+                .filter_map(|o| match o {
+                    DhcpOption::IAAddr(a) => Some(a.addr),
+                    _ => None,
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -266,5 +461,36 @@ mod tests {
             panic!("empty IA_NA must carry a StatusCode");
         };
         assert_eq!(sc.status, Status::NoAddrsAvail);
+    }
+
+    #[test]
+    fn test_iana_addrs_round_trips() {
+        // the addresses inside an IA_NA are read back out by iana_addrs
+        let addr: Ipv6Addr = "2001:db8::9".parse().unwrap();
+        let DhcpOption::IANA(iana) =
+            iana_with_addr(1, addr, Duration::from_secs(10), Duration::from_secs(20))
+        else {
+            panic!("expected IANA");
+        };
+        assert_eq!(iana_addrs(&iana), vec![addr]);
+    }
+
+    #[test]
+    fn test_iana_status_carries_nobinding() {
+        let DhcpOption::IANA(iana) = iana_status(3, Status::NoBinding, "gone") else {
+            panic!("expected IANA");
+        };
+        let Some(DhcpOption::StatusCode(sc)) = iana.opts.get(OptionCode::StatusCode) else {
+            panic!("expected StatusCode");
+        };
+        assert_eq!(sc.status, Status::NoBinding);
+    }
+
+    #[test]
+    fn test_status_code_is_top_level() {
+        let DhcpOption::StatusCode(sc) = status_code(Status::Success, "ok") else {
+            panic!("expected StatusCode");
+        };
+        assert_eq!(sc.status, Status::Success);
     }
 }
