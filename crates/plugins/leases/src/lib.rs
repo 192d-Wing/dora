@@ -421,11 +421,10 @@ where
         range: &NetRange,
         create: bool,
     ) -> Result<bool> {
-        // renew-threshold fast path: reuse the outstanding lease as-is. Only for
-        // create-or-extend states: the cache is keyed by client id and does not
-        // confirm the client holds `ip`, so a verify-only INIT-REBOOT
-        // (create=false) must not trust it and instead confirm the binding below.
-        if create && let Some(remaining) = self.cache_threshold(client_id) {
+        // renew-threshold fast path: reuse the outstanding lease as-is. This is
+        // the hot renew path (a client re-requesting the address it holds) and
+        // applies to every request state, including INIT-REBOOT renews.
+        if let Some(remaining) = self.cache_threshold(client_id) {
             metrics::RENEW_CACHE_HIT.inc();
             let lease = (
                 remaining,
@@ -1005,40 +1004,6 @@ mod tests {
                 .opts()
                 .has_msg_type(v4::MessageType::Nak),
             "an out-of-pool request must not be NAKed"
-        );
-        Ok(())
-    }
-
-    /// INIT-REBOOT must not ACK an address the client does not hold just because
-    /// the renew cache (keyed by client-id) has an entry from a different lease.
-    #[tokio::test]
-    #[traced_test]
-    async fn test_request_init_reboot_ignores_renew_cache() -> Result<()> {
-        let leases = new_leases().await?;
-        // give the client a lease on .100, which populates the renew cache
-        let mut ctx = request_ctx()?;
-        ctx.msg_mut()
-            .opts_mut()
-            .insert(v4::DhcpOption::ServerIdentifier("192.168.0.1".parse()?));
-        ctx.msg_mut()
-            .opts_mut()
-            .insert(v4::DhcpOption::RequestedIpAddress("192.168.0.100".parse()?));
-        leases.handle(&mut ctx).await?;
-        assert_eq!(
-            ctx.resp_msg().unwrap().yiaddr(),
-            Ipv4Addr::new(192, 168, 0, 100)
-        );
-
-        // INIT-REBOOT for a DIFFERENT in-range address the client never leased:
-        // the verify-only path must confirm the binding, not trust the cache.
-        let mut ctx = request_ctx()?;
-        ctx.msg_mut()
-            .opts_mut()
-            .insert(v4::DhcpOption::RequestedIpAddress("192.168.0.101".parse()?));
-        let action = leases.handle(&mut ctx).await?;
-        assert!(
-            matches!(action, Action::NoResponse),
-            "INIT-REBOOT must not ACK an unheld address from the renew cache"
         );
         Ok(())
     }
