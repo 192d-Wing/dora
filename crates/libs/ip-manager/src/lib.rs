@@ -599,8 +599,13 @@ where
         const MAX_PD_SCAN: usize = 65_536;
         let dlen = pool.delegated_len();
 
-        // reuse an existing delegation for this client
-        if let Some((IpAddr::V6(base), len)) = self.store.get_id_pd(id).await? {
+        // reuse an existing delegation for this client, but only if it belongs to
+        // this pool (the client may have roamed to a network with different
+        // pd_pools; a stale delegation from another pool must not be handed back)
+        if let Some((IpAddr::V6(base), len)) = self.store.get_id_pd(id).await?
+            && len == dlen
+            && pool.prefix().contains(&base)
+        {
             self.store
                 .upsert_pd(IpAddr::V6(base), len, network, id, expires_at, Some(state))
                 .await?;

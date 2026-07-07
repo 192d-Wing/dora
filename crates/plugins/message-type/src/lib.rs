@@ -442,6 +442,12 @@ impl Plugin<v6::Message> for MsgType {
             debug!(?server_id, "server identifier in msg doesn't match");
             return Ok(Action::NoResponse);
         }
+        // Confirm and Rebind MUST NOT carry a Server Identifier; discard if they
+        // do (RFC 8415 §16.5 / §16.9)
+        if matches!(msg_type, MessageType::Confirm | MessageType::Rebind) && req_sid.is_some() {
+            debug!(?msg_type, "discarding Confirm/Rebind that carries a Server Identifier");
+            return Ok(Action::NoResponse);
+        }
         // add server id to response
         resp.opts_mut()
             .insert(v6::DhcpOption::ServerId(server_id.to_vec()));

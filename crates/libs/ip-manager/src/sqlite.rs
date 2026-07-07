@@ -373,7 +373,9 @@ impl Storage for SqliteDb {
                 )
                 .await
             }
-            _ => panic!("IA_PD requires v6 prefix and network"),
+            // IA_PD is v6-only; a mismatched family is a no-op (like the other
+            // v6 arms returning Ok(None)) rather than a panic
+            _ => Ok(()),
         }
     }
 

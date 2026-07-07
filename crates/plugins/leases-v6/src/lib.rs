@@ -310,25 +310,40 @@ where
         iapds: &[IAPD],
         network: &Network,
     ) -> Result<Action> {
-        // free addresses
+        // For each IA the server has no binding for, the Reply must include that
+        // IA with a NoBinding status; the Reply also carries a top-level Success
+        // (RFC 8415 §18.3.7).
+        let mut ia_opts = Vec::new();
         for iana in ianas {
             let id = binding_id(duid, iana.id);
+            let mut released = false;
             for addr in iana_addrs(iana) {
-                if let Err(err) = self.ip_mgr.release_ip(IpAddr::V6(addr), &id).await {
-                    debug!(?err, ?addr, "error releasing v6 address");
+                match self.ip_mgr.release_ip(IpAddr::V6(addr), &id).await {
+                    Ok(Some(_)) => released = true,
+                    Ok(None) => {}
+                    Err(err) => debug!(?err, ?addr, "error releasing v6 address"),
                 }
             }
+            if !released {
+                ia_opts.push(iana_status(iana.id, Status::NoBinding, "no binding for this IA"));
+            }
         }
-        // free delegated prefixes
         for iapd in iapds {
             let id = binding_id(duid, iapd.id);
+            let mut released = false;
             for (prefix, plen) in iapd_prefixes(iapd) {
-                if let Err(err) = self.ip_mgr.release_pd(IpAddr::V6(prefix), plen, &id).await {
-                    debug!(?err, ?prefix, "error releasing v6 prefix");
+                match self.ip_mgr.release_pd(IpAddr::V6(prefix), plen, &id).await {
+                    Ok(Some(_)) => released = true,
+                    Ok(None) => {}
+                    Err(err) => debug!(?err, ?prefix, "error releasing v6 prefix"),
                 }
             }
+            if !released {
+                ia_opts.push(iapd_status(iapd.id, Status::NoBinding, "no binding for this IA_PD"));
+            }
         }
-        self.write_response(ctx, network, vec![status_code(Status::Success, "released")])
+        ia_opts.push(status_code(Status::Success, "released"));
+        self.write_response(ctx, network, ia_opts)
     }
 
     /// Decline: the client found an address already in use; put it on probation.
@@ -341,15 +356,24 @@ where
         network: &Network,
     ) -> Result<Action> {
         let expires_at = SystemTime::now() + network.probation_period();
+        // per-IA NoBinding for IAs with no binding, plus a top-level Success
+        // (RFC 8415 §18.3.8)
+        let mut ia_opts = Vec::new();
         for iana in ianas {
             let id = binding_id(duid, iana.id);
+            let mut declined = false;
             for addr in iana_addrs(iana) {
-                if let Err(err) = self.ip_mgr.probate_ip(IpAddr::V6(addr), &id, expires_at).await {
-                    debug!(?err, ?addr, "error probating declined v6 address");
+                match self.ip_mgr.probate_ip(IpAddr::V6(addr), &id, expires_at).await {
+                    Ok(()) => declined = true,
+                    Err(err) => debug!(?err, ?addr, "error probating declined v6 address"),
                 }
             }
+            if !declined {
+                ia_opts.push(iana_status(iana.id, Status::NoBinding, "no binding for this IA"));
+            }
         }
-        self.write_response(ctx, network, vec![status_code(Status::Success, "declined")])
+        ia_opts.push(status_code(Status::Success, "declined"));
+        self.write_response(ctx, network, ia_opts)
     }
 
     /// allocate the first available address across the network's IA_NA pools for
@@ -362,6 +386,32 @@ where
         id: &[u8],
         state: IpState,
     ) -> Option<(Ipv6Addr, Duration, Duration)> {
+        // Reuse an existing binding anywhere in this network first. The per-range
+        // reserve loop below matches the client id globally, so on a multi-range
+        // network it would find (and then delete) a lease held in a *different*
+        // range; reusing up front keeps the client's address stable.
+        if let Ok(IpAddr::V6(existing)) = self.ip_mgr.lookup_id_v6(id).await
+            && let Some(range) = network.range(existing)
+        {
+            let preferred = range.preferred().determine_lease(None).0;
+            let valid = range.valid().determine_lease(None).0;
+            let expires_at = SystemTime::now() + db_ttl(state, valid);
+            if self
+                .ip_mgr
+                .try_ip(
+                    IpAddr::V6(existing),
+                    IpAddr::V6(network.subnet()),
+                    id,
+                    expires_at,
+                    network,
+                    Some(state),
+                )
+                .await
+                .is_ok()
+            {
+                return Some((existing, preferred, valid));
+            }
+        }
         for range in network.ranges() {
             let preferred = range.preferred().determine_lease(None).0;
             let valid = range.valid().determine_lease(None).0;
