@@ -103,8 +103,10 @@ impl StaticAddr {
         Ok(Action::Continue)
     }
 
-    /// populate BOOTP response. Some clients only accept messages with a min size of 300 bytes,
-    /// that is not handled here. We would need to insert PAD opts until the byte size is reached.
+    /// populate BOOTP response. The 300-byte minimum packet size (RFC 1542)
+    /// some clients/relays require is handled centrally when the response is
+    /// serialized (see `encode_v4_response` in `dora-core`), so no padding is
+    /// needed here.
     fn bootp(
         &self,
         ctx: &mut MsgContext<Message>,

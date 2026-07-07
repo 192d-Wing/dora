@@ -3,7 +3,7 @@
 //! Contains the main server code which handles reading from TCP/UDP and driving
 //! the handlers/plugins to completion
 use anyhow::{Context, Result};
-use dhcproto::{Decodable, Encodable, v4, v6};
+use dhcproto::{Decodable, Encodable, Encoder, v4, v6};
 use pnet::datalink::NetworkInterface;
 use tokio::{sync::mpsc, time};
 use tokio_stream::StreamExt;
@@ -219,6 +219,41 @@ struct RunInner<T> {
     udpstate: Arc<unix_udp_sock::UdpState>,
 }
 
+/// Serialize a v4 response for the wire.
+///
+/// When the client advertised a Maximum DHCP Message Size (option 57, passed as
+/// `max_len`), options that don't fit within it are spilled into the `sname` and
+/// `file` header fields via option overload (RFC 2131 §4.1 / RFC 2132 §9.3); if
+/// the message still doesn't fit we fall back to an un-overloaded encode as a
+/// best effort rather than dropping the reply. The result is then padded to the
+/// 300-byte BOOTP minimum (RFC 1542 §2.1) so legacy relays/clients accept it.
+fn encode_v4_response(resp: &v4::Message, max_len: Option<usize>) -> Result<Vec<u8>> {
+    let mut buf = Vec::new();
+    let fit = {
+        let mut enc = Encoder::new(&mut buf);
+        // clamp the overload budget to the 300-byte floor we pad up to anyway
+        let res = match max_len {
+            Some(max) => resp.encode_overloaded(&mut enc, max.max(v4::MIN_PACKET_SIZE)),
+            None => resp.encode(&mut enc),
+        };
+        if res.is_ok() {
+            // pad on the same encoder — pad_to tracks its own write offset
+            enc.pad_to(v4::MIN_PACKET_SIZE)?;
+            true
+        } else {
+            false
+        }
+    };
+    if !fit {
+        // didn't fit even with overload; send it un-overloaded (best effort)
+        buf.clear();
+        let mut enc = Encoder::new(&mut buf);
+        resp.encode(&mut enc)?;
+        enc.pad_to(v4::MIN_PACKET_SIZE)?;
+    }
+    Ok(buf)
+}
+
 impl RunInner<v4::Message> {
     /// Process handlers
     #[instrument(name = "v4", level = "debug", skip_all)]
@@ -265,27 +300,35 @@ impl RunInner<v4::Message> {
 
                 if let Some(resp) = self.ctx.resp_msg() {
                     let msg_type = resp.opts().msg_type();
-                    if let Ok(msg) = SerialMsg::from_msg(resp, dst_addr) {
-                        // https://github.com/imp/dnsmasq/blob/master/src/forward.c#L70
-                        // set source IP to the same IP that was used in recv'd destination (ipi_spec_dst)
-                        // otherwise use iface idx
-                        let packet_src =
-                            source.map(Source::Ip).unwrap_or(Source::Interface(ifindex));
-                        metrics::DHCPV4_BYTES_SENT.inc_by(msg.bytes().len() as u64);
-                        let transmit = Transmit::new(dst_addr, msg.msg()).src_ip(packet_src);
+                    // honor the client's max message size (opt 57) via option
+                    // overload, and pad to the 300-byte BOOTP minimum
+                    let max_len = self.ctx.max_message_size();
+                    match encode_v4_response(resp, max_len) {
+                        Ok(bytes) => {
+                            let msg = SerialMsg::new(bytes.into(), dst_addr);
+                            // https://github.com/imp/dnsmasq/blob/master/src/forward.c#L70
+                            // set source IP to the same IP that was used in recv'd destination (ipi_spec_dst)
+                            // otherwise use iface idx
+                            let packet_src =
+                                source.map(Source::Ip).unwrap_or(Source::Interface(ifindex));
+                            metrics::DHCPV4_BYTES_SENT.inc_by(msg.bytes().len() as u64);
+                            let transmit = Transmit::new(dst_addr, msg.msg()).src_ip(packet_src);
 
-                        debug!(
-                            opcode = ?resp.opcode(),
-                            msg_type = ?msg_type,
-                            ?dst_addr,
-                            ?iname,
-                            source = ?packet_src,
-                            %resp,
-                        );
-                        self.ctx.set_dst_addr(dst_addr);
-                        if let Err(err) = self.soc.send_msg(&self.udpstate, transmit).await {
-                            error!(?err);
+                            debug!(
+                                opcode = ?resp.opcode(),
+                                msg_type = ?msg_type,
+                                ?dst_addr,
+                                ?iname,
+                                source = ?packet_src,
+                                len = msg.bytes().len(),
+                                %resp,
+                            );
+                            self.ctx.set_dst_addr(dst_addr);
+                            if let Err(err) = self.soc.send_msg(&self.udpstate, transmit).await {
+                                error!(?err);
+                            }
                         }
+                        Err(err) => error!(?err, "failed to encode v4 response"),
                     }
                 }
                 Ok(())
@@ -611,5 +654,81 @@ impl Service<v6::Message> {
         Ok(unix_udp_sock::UdpSocket::from_std(unsafe {
             std::net::UdpSocket::from_raw_fd(socket.into_raw_fd())
         })?)
+    }
+}
+
+#[cfg(test)]
+mod encode_tests {
+    use super::*;
+    use dhcproto::v4::{DhcpOption, Message, MessageType, OptionCode};
+    use std::net::Ipv4Addr;
+
+    fn ack_with(opts: Vec<DhcpOption>) -> Message {
+        let mut msg = Message::default();
+        msg.opts_mut()
+            .insert(DhcpOption::MessageType(MessageType::Ack));
+        for o in opts {
+            msg.opts_mut().insert(o);
+        }
+        msg
+    }
+
+    /// A short response is padded up to the 300-byte BOOTP minimum (RFC 1542).
+    #[test]
+    fn pads_short_response_to_min() {
+        let msg = ack_with(vec![]);
+        let bytes = encode_v4_response(&msg, None).unwrap();
+        assert_eq!(bytes.len(), v4::MIN_PACKET_SIZE);
+        // trailing pad bytes don't disturb decoding
+        let decoded = Message::from_bytes(&bytes).unwrap();
+        assert_eq!(decoded.opts().msg_type(), Some(MessageType::Ack));
+    }
+
+    /// A response whose options exceed 300 bytes is not truncated when the
+    /// client set no size limit.
+    #[test]
+    fn does_not_truncate_large_response() {
+        let msg = ack_with(vec![DhcpOption::DomainNameServer(vec![
+            Ipv4Addr::new(
+                10, 0, 0, 1
+            );
+            30
+        ])]);
+        let bytes = encode_v4_response(&msg, None).unwrap();
+        assert!(bytes.len() > v4::MIN_PACKET_SIZE);
+        let decoded = Message::from_bytes(&bytes).unwrap();
+        assert_eq!(
+            decoded.opts().get(OptionCode::DomainNameServer),
+            msg.opts().get(OptionCode::DomainNameServer)
+        );
+    }
+
+    /// When the client's max message size (opt 57) can't hold the options in the
+    /// main field, they spill into sname/file (option overload) and round-trip.
+    #[test]
+    fn overloads_to_fit_max_message_size() {
+        // 30 DNS servers = 120 bytes of data, too big for the ~56-byte main area
+        // under a 300-byte cap, but it fits once spilled into the file field.
+        let msg = ack_with(vec![DhcpOption::DomainNameServer(vec![
+            Ipv4Addr::new(
+                10, 0, 0, 1
+            );
+            30
+        ])]);
+        // a plain encode would blow past the client's 300-byte limit
+        assert!(encode_v4_response(&msg, None).unwrap().len() > 300);
+
+        let bytes = encode_v4_response(&msg, Some(300)).unwrap();
+        assert!(
+            bytes.len() <= 300,
+            "overloaded response honors the client max"
+        );
+        let decoded = Message::from_bytes(&bytes).unwrap();
+        assert_eq!(decoded.opts().msg_type(), Some(MessageType::Ack));
+        assert_eq!(
+            decoded.opts().get(OptionCode::DomainNameServer),
+            msg.opts().get(OptionCode::DomainNameServer),
+            "DNS option recovered from the overloaded sname/file fields"
+        );
     }
 }
