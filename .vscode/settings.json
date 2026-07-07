@@ -18,5 +18,11 @@
     "spellright.documentTypes": [
         "markdown",
         "latex"
-    ]
+    ],
+    "yaml.schemas": {
+        "./config_schema.json": [
+            "**/*.yml",
+            "**/*.yaml"
+        ]
+    }
 }
