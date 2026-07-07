@@ -583,6 +583,19 @@ impl MsgContext<v4::Message> {
             None
         }
     }
+
+    /// The Maximum DHCP Message Size (option 57) the client advertised, if any.
+    /// Used to bound the encoded response — options that don't fit are spilled
+    /// into the `sname`/`file` header fields via option overload. RFC 2132 §9.10.
+    pub fn max_message_size(&self) -> Option<usize> {
+        if let Some(v4::DhcpOption::MaxMessageSize(sz)) =
+            self.msg().opts().get(v4::OptionCode::MaxMessageSize)
+        {
+            Some(*sz as usize)
+        } else {
+            None
+        }
+    }
     /// Determine what the requested IP is
     /// If `ciaddr` is not unspecified, return it
     /// else if opts has `RequestedIpAddress`, return it,

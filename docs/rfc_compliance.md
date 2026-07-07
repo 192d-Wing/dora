@@ -38,7 +38,7 @@ remaining gaps, in order of impact, are:
 | DHCPRELEASE (no reply) | ✅ | `Leases::release` returns `NoResponse` |
 | DHCPINFORM | ✅ | Authoritative networks answer with local config regardless of pool coverage; yiaddr 0, no lease time (§4.3.5) |
 | Rapid Commit (option 80, RFC 4039) | ✅ | `rapid_commit` config flag; DISCOVER answered with ACK |
-| BOOTP (RFC 951 / 1542) | 🟡 | Supported when `bootp_enabled`; 300-byte min packet padding **not** implemented |
+| BOOTP (RFC 951 / 1542) | ✅ | Supported when `bootp_enabled`; responses padded to the 300-byte minimum (`encode_v4_response`) |
 | Address probing before OFFER (§3.1) | ✅ | ICMP ping / DAD via `libs/icmp-ping`, per-network `ping_check` |
 | Lease time, T1/T2 (§4.4.5) | ✅ | T1 ≈ 0.5·lease, T2 ≈ 0.875·lease; honors requested lease time (opt 51) |
 | Server identifier (opt 54) in OFFER/ACK/NAK | ✅ | Set in `message-type`; re-added on NAK |
@@ -87,8 +87,8 @@ non-authoritative network still ignores INFORM (intentional, for coexistence).
 | RFC | Feature | Status | Notes |
 | --- | --- | --- | --- |
 | 2132 | Standard options, Parameter Request List (opt 55) | ✅ | `populate_opts` honors the PRL |
-| 2132 | Option Overload (opt 52) | ❌ | `sname`/`file` written, but an incoming overload option is not parsed |
-| 2132 | Maximum DHCP Message Size (opt 57) | ❌ | Ignored; no response-size clamping |
+| 2132 | Option Overload (opt 52) | ✅ | Incoming `sname`/`file` overload decoded (dhcproto); outgoing options spill into `sname`/`file` when needed (`encode_v4_response`) |
+| 2132 | Maximum DHCP Message Size (opt 57) | ✅ | Response bounded by the client's opt 57, using option overload to fit (`encode_v4_response`) |
 | 1497 | BOOTP vendor extensions | ✅ | |
 | 3046 | Relay Agent Information (opt 82) echo | ✅ | Echoed into response in `populate_opts` |
 | 3011 | Subnet Selection option | ✅ | `relay_subnet` |
@@ -152,11 +152,11 @@ with the full Solicit/Request/Renew/Rebind/Confirm/Release/Decline lifecycle
 3. ~~**Relax DHCPINFORM gating**~~ — **done** (RFC 2131 §4.3.5,
    `plugins/message-type`): authoritative servers answer INFORM regardless of
    pool coverage.
-4. **BOOTP 300-byte packet padding** for legacy clients (RFC 951 / 1542).
-5. **Parse Option Overload (52)** and honor Maximum Message Size (57).
-6. **DHCPv6 follow-ups** — Neighbor-Solicitation DAD, IA_TA, Reconfigure; publish
-   the `usg-dhcproto` relay API additions; and end-to-end packet-level v6
-   integration tests (incl. the relay path).
+4. ~~**BOOTP 300-byte packet padding**~~ and ~~**Option Overload (52) /
+   Maximum Message Size (57)**~~ — **done** (RFC 951 / 1542 / 2132,
+   `encode_v4_response` in `dora-core`): responses are padded to 300 bytes and,
+   when the client advertises opt 57, options spill into `sname`/`file`.
+5. **DHCPv6 follow-ups** — Neighbor-Solicitation DAD, IA_TA, Reconfigure.
 
 ---
 
