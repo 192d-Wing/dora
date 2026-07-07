@@ -3985,6 +3985,8 @@ dependencies = [
 [[package]]
 name = "usg-dhcproto"
 version = "0.18.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ed712af62863a29bb1c6208cb50fc988aa1d0617a69d38dc482f02fff3e62fb6"
 dependencies = [
  "hickory-proto",
  "ipnet",
@@ -3996,6 +3998,8 @@ dependencies = [
 [[package]]
 name = "usg-dhcproto-macros"
 version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "af1180740ff674f6d68d24047ad4bbec7b98946618a025ab9a179ad507a3a85a"
 dependencies = [
  "proc-macro2",
  "quote",
