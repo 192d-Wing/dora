@@ -725,28 +725,6 @@ where
         }
     }
 
-    /// Extend an existing, unexpired lease for the `(ip, id)` pair WITHOUT
-    /// creating a new one. Unlike [`try_lease`], this never inserts: it is for
-    /// DHCPREQUEST states that only *verify/extend* an existing binding
-    /// (INIT-REBOOT, RENEWING, REBINDING) rather than commit a fresh offer.
-    ///
-    /// Returns `Ok(true)` if a matching lease was found and its expiry extended,
-    /// `Ok(false)` if there is no such lease (the caller decides silence vs NAK).
-    ///
-    /// [`try_lease`]: Self::try_lease
-    pub async fn renew_existing(
-        &self,
-        ip: IpAddr,
-        id: &[u8],
-        expires_at: SystemTime,
-    ) -> Result<bool, IpError<T::Error>> {
-        Ok(self
-            .store
-            .update_unexpired(ip, IpState::Lease, id, expires_at, Some(id))
-            .await?
-            .is_some())
-    }
-
     /// release the requested ip if the (ip, id) pair matches
     /// Returns
     ///     Ok(None) if ip did not exist in storage

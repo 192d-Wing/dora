@@ -311,7 +311,7 @@ where
             // Responding to our DHCPOFFER: commit the offered address (creating
             // the lease if needed), or NAK if we can't honor it.
             RequestState::Selecting { requested } => {
-                self.request_lease(ctx, client_id, network, classes, requested, true)
+                self.request_lease(ctx, client_id, network, classes, requested)
                     .await
             }
             // Extending a lease (unicast renew or broadcast rebind): extend an
@@ -319,7 +319,7 @@ where
             // servers still (re)create the lease so clients survive a server
             // restart, matching prior behavior.
             RequestState::Renewing { ciaddr } | RequestState::Rebinding { ciaddr } => {
-                self.request_lease(ctx, client_id, network, classes, ciaddr, true)
+                self.request_lease(ctx, client_id, network, classes, ciaddr)
                     .await
             }
             // Verifying a cached address after reboot. Wrong network -> NAK;
@@ -335,10 +335,14 @@ where
         }
     }
 
-    /// SELECTING / RENEWING / REBINDING: commit or extend the lease for `ip`.
-    /// `create` allows inserting a fresh lease when none exists (authoritative).
-    /// NAKs (or stays silent, per `authoritative`) when the address is out of
-    /// range or cannot be leased.
+    /// SELECTING / RENEWING / REBINDING: commit or extend the lease for `ip`,
+    /// creating a fresh binding when authoritative.
+    ///
+    /// - no pool serves `ip` -> stay silent. We can't build a proper ACK without
+    ///   a range, and a client renewing a still-valid address that now falls
+    ///   outside the configured pools (a shrunk or class-scoped range) must not
+    ///   be actively NAKed off it; it keeps the lease until T2 and rebinds.
+    /// - in a pool but unleasable -> NAK (or silent, per `authoritative`).
     async fn request_lease(
         &self,
         ctx: &mut MsgContext<Message>,
@@ -346,13 +350,13 @@ where
         network: &Network,
         classes: Option<&[String]>,
         ip: Ipv4Addr,
-        create: bool,
     ) -> Result<Action> {
         let Some(range) = network.range(ip, classes) else {
-            return self.nak_or_silent(ctx, network, "requested IP is not in any range");
+            debug!(?ip, "requested IP is not in any range; no response");
+            return Ok(Action::NoResponse);
         };
         if self
-            .commit_lease(ctx, client_id, network, classes, ip, range, create)
+            .commit_lease(ctx, client_id, network, classes, ip, range, true)
             .await?
         {
             Ok(Action::Continue)
@@ -401,12 +405,12 @@ where
 
     /// Commit (or extend) the lease for `ip`, which is known to be in `range`,
     /// and populate the response. `create` selects create-or-extend
-    /// ([`IpManager::try_lease`]) vs extend-only ([`IpManager::renew_existing`]).
+    /// ([`IpManager::try_lease`]) vs extend-only ([`IpManager::renew`]).
     /// Returns whether the lease was granted; `false` means the caller should
     /// NAK or stay silent.
     ///
     /// [`IpManager::try_lease`]: ip_manager::IpManager::try_lease
-    /// [`IpManager::renew_existing`]: ip_manager::IpManager::renew_existing
+    /// [`IpManager::renew`]: ip_manager::IpManager::renew
     async fn commit_lease(
         &self,
         ctx: &mut MsgContext<Message>,
@@ -417,8 +421,11 @@ where
         range: &NetRange,
         create: bool,
     ) -> Result<bool> {
-        // renew-threshold fast path: reuse the outstanding lease as-is
-        if let Some(remaining) = self.cache_threshold(client_id) {
+        // renew-threshold fast path: reuse the outstanding lease as-is. Only for
+        // create-or-extend states: the cache is keyed by client id and does not
+        // confirm the client holds `ip`, so a verify-only INIT-REBOOT
+        // (create=false) must not trust it and instead confirm the binding below.
+        if create && let Some(remaining) = self.cache_threshold(client_id) {
             metrics::RENEW_CACHE_HIT.inc();
             let lease = (
                 remaining,
@@ -453,11 +460,12 @@ where
                 }
             }
         } else {
-            // extend-only: never insert a new binding
+            // extend-only: confirm an existing binding without inserting one
             self.ip_mgr
-                .renew_existing(ip.into(), client_id, expires_at)
+                .renew(ip.into(), client_id, expires_at)
                 .await
                 .context("failed to look up lease for renewal")?
+                .is_some()
         };
         if !granted {
             return Ok(false);
@@ -941,6 +949,96 @@ mod tests {
         assert_eq!(
             ctx.resp_msg().unwrap().yiaddr(),
             Ipv4Addr::new(192, 168, 0, 100)
+        );
+        Ok(())
+    }
+
+    /// A REQUEST carrying a server-id is SELECTING even if it (non-conformantly)
+    /// also left a stale ciaddr set: the requested address must come from opt 50,
+    /// not ciaddr.
+    #[tokio::test]
+    #[traced_test]
+    async fn test_request_server_id_is_selecting_despite_ciaddr() -> Result<()> {
+        let leases = new_leases().await?;
+        let mut ctx = request_ctx()?;
+        ctx.msg_mut()
+            .opts_mut()
+            .insert(v4::DhcpOption::ServerIdentifier("192.168.0.1".parse()?));
+        // the address we actually offered
+        ctx.msg_mut()
+            .opts_mut()
+            .insert(v4::DhcpOption::RequestedIpAddress("192.168.0.100".parse()?));
+        // a stale ciaddr that is out of any pool; must be ignored for SELECTING
+        ctx.msg_mut().set_ciaddr(Ipv4Addr::new(192, 168, 0, 77));
+
+        leases.handle(&mut ctx).await?;
+        assert!(
+            ctx.resp_msg()
+                .unwrap()
+                .opts()
+                .has_msg_type(v4::MessageType::Ack)
+        );
+        assert_eq!(
+            ctx.resp_msg().unwrap().yiaddr(),
+            Ipv4Addr::new(192, 168, 0, 100),
+            "SELECTING must commit the opt-50 address, not ciaddr"
+        );
+        Ok(())
+    }
+
+    /// A REQUEST for an address in no configured pool (e.g. a shrunk or
+    /// class-scoped range) stays silent rather than actively NAKing a client
+    /// that may still hold a valid lease.
+    #[tokio::test]
+    #[traced_test]
+    async fn test_request_out_of_range_is_silent() -> Result<()> {
+        let leases = new_leases().await?;
+        let mut ctx = request_ctx()?;
+        // .60 is on-link (192.168.0.0/24) but outside the .100-.150 pool
+        ctx.msg_mut().set_ciaddr(Ipv4Addr::new(192, 168, 0, 60));
+
+        let action = leases.handle(&mut ctx).await?;
+        assert!(matches!(action, Action::NoResponse));
+        assert!(
+            !ctx.resp_msg()
+                .unwrap()
+                .opts()
+                .has_msg_type(v4::MessageType::Nak),
+            "an out-of-pool request must not be NAKed"
+        );
+        Ok(())
+    }
+
+    /// INIT-REBOOT must not ACK an address the client does not hold just because
+    /// the renew cache (keyed by client-id) has an entry from a different lease.
+    #[tokio::test]
+    #[traced_test]
+    async fn test_request_init_reboot_ignores_renew_cache() -> Result<()> {
+        let leases = new_leases().await?;
+        // give the client a lease on .100, which populates the renew cache
+        let mut ctx = request_ctx()?;
+        ctx.msg_mut()
+            .opts_mut()
+            .insert(v4::DhcpOption::ServerIdentifier("192.168.0.1".parse()?));
+        ctx.msg_mut()
+            .opts_mut()
+            .insert(v4::DhcpOption::RequestedIpAddress("192.168.0.100".parse()?));
+        leases.handle(&mut ctx).await?;
+        assert_eq!(
+            ctx.resp_msg().unwrap().yiaddr(),
+            Ipv4Addr::new(192, 168, 0, 100)
+        );
+
+        // INIT-REBOOT for a DIFFERENT in-range address the client never leased:
+        // the verify-only path must confirm the binding, not trust the cache.
+        let mut ctx = request_ctx()?;
+        ctx.msg_mut()
+            .opts_mut()
+            .insert(v4::DhcpOption::RequestedIpAddress("192.168.0.101".parse()?));
+        let action = leases.handle(&mut ctx).await?;
+        assert!(
+            matches!(action, Action::NoResponse),
+            "INIT-REBOOT must not ACK an unheld address from the renew cache"
         );
         Ok(())
     }

@@ -608,16 +608,33 @@ impl MsgContext<v4::Message> {
     /// can apply the per-state response rules. Distinguished by the server-id
     /// (opt 54) and requested-ip (opt 50) options and `ciaddr`:
     ///
-    /// - `ciaddr` set                         -> RENEWING / REBINDING
-    /// - `ciaddr` zero, requested-ip, server-id -> SELECTING
-    /// - `ciaddr` zero, requested-ip, no server-id -> INIT-REBOOT
-    /// - otherwise                            -> Unknown (malformed)
+    /// - server-id present            -> SELECTING (requested address in opt 50)
+    /// - no server-id, `ciaddr` set   -> RENEWING / REBINDING (address in ciaddr)
+    /// - no server-id, opt 50, ciaddr 0 -> INIT-REBOOT
+    /// - otherwise                    -> Unknown (malformed)
+    ///
+    /// The server-identifier is checked first: it definitively marks a client
+    /// responding to a specific server's OFFER (SELECTING), even if a
+    /// non-conformant client also left a stale `ciaddr` set.
     ///
     /// RENEWING vs REBINDING is a best-effort split on the datagram's destination
     /// (a broadcast destination implies REBINDING); the two are handled the same,
     /// so the distinction is informational.
     pub fn request_state(&self) -> RequestState {
         let req = self.msg();
+        let opt50 = match req.opts().get(v4::OptionCode::RequestedIpAddress) {
+            Some(v4::DhcpOption::RequestedIpAddress(ip)) => Some(*ip),
+            _ => None,
+        };
+        // A server-id means the client is responding to a specific OFFER
+        // (SELECTING); the requested address is in opt 50 and ciaddr is (per RFC)
+        // zero.
+        if req.opts().get(v4::OptionCode::ServerIdentifier).is_some() {
+            return match opt50 {
+                Some(requested) => RequestState::Selecting { requested },
+                None => RequestState::Unknown,
+            };
+        }
         if !req.ciaddr().is_unspecified() {
             let ciaddr = req.ciaddr();
             if self.recvd_broadcast() {
@@ -625,15 +642,8 @@ impl MsgContext<v4::Message> {
             } else {
                 RequestState::Renewing { ciaddr }
             }
-        } else if let Some(v4::DhcpOption::RequestedIpAddress(ip)) =
-            req.opts().get(v4::OptionCode::RequestedIpAddress)
-        {
-            let has_server_id = req.opts().get(v4::OptionCode::ServerIdentifier).is_some();
-            if has_server_id {
-                RequestState::Selecting { requested: *ip }
-            } else {
-                RequestState::InitReboot { requested: *ip }
-            }
+        } else if let Some(requested) = opt50 {
+            RequestState::InitReboot { requested }
         } else {
             RequestState::Unknown
         }

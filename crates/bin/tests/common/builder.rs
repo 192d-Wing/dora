@@ -116,9 +116,6 @@ pub struct Request {
     /// address for client [default: None]
     #[builder(setter(strip_option), default)]
     yiaddr: Option<Ipv4Addr>,
-    /// ciaddr — the client's current address, set for RENEWING/REBINDING [default: None]
-    #[builder(setter(strip_option), default)]
-    ciaddr: Option<Ipv4Addr>,
     /// server identifier [default: None]
     #[builder(setter(strip_option), default)]
     sident: Option<Ipv4Addr>,
@@ -139,7 +136,7 @@ pub struct Request {
 impl Request {
     pub fn build(&self) -> v4::Message {
         let mut msg = v4::Message::new(
-            self.ciaddr.unwrap_or(Ipv4Addr::UNSPECIFIED),
+            Ipv4Addr::UNSPECIFIED,
             self.yiaddr.unwrap_or(Ipv4Addr::UNSPECIFIED),
             Ipv4Addr::UNSPECIFIED,
             self.giaddr.unwrap_or(Ipv4Addr::UNSPECIFIED),
