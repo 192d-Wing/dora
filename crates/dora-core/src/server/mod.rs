@@ -223,18 +223,29 @@ struct RunInner<T> {
 ///
 /// When the client advertised a Maximum DHCP Message Size (option 57, passed as
 /// `max_len`), options that don't fit within it are spilled into the `sname` and
-/// `file` header fields via option overload (RFC 2131 §4.1 / RFC 2132 §9.3); if
-/// the message still doesn't fit we fall back to an un-overloaded encode as a
-/// best effort rather than dropping the reply. The result is then padded to the
-/// 300-byte BOOTP minimum (RFC 1542 §2.1) so legacy relays/clients accept it.
+/// `file` header fields via option overload (RFC 2131 §4.1 / RFC 2132 §9.3) —
+/// unless those fields carry boot-server/boot-file names, which overload would
+/// clobber. If the message still doesn't fit we fall back to an un-overloaded
+/// encode as a best effort rather than dropping the reply. The result is then
+/// padded to the 300-byte BOOTP minimum (RFC 1542 §2.1) so legacy relays/clients
+/// accept it.
 fn encode_v4_response(resp: &v4::Message, max_len: Option<usize>) -> Result<Vec<u8>> {
+    // Option overload reuses the `sname`/`file` header fields to carry options,
+    // which would clobber the boot-server / boot-file names when those are in
+    // use (e.g. PXE). In that case prefer preserving the boot fields over
+    // honoring the client's max size (best effort), i.e. don't overload.
+    let boot_fields_used =
+        resp.sname().is_some_and(|s| !s.is_empty()) || resp.fname().is_some_and(|f| !f.is_empty());
+
     let mut buf = Vec::new();
     let fit = {
         let mut enc = Encoder::new(&mut buf);
         // clamp the overload budget to the 300-byte floor we pad up to anyway
         let res = match max_len {
-            Some(max) => resp.encode_overloaded(&mut enc, max.max(v4::MIN_PACKET_SIZE)),
-            None => resp.encode(&mut enc),
+            Some(max) if !boot_fields_used => {
+                resp.encode_overloaded(&mut enc, max.max(v4::MIN_PACKET_SIZE))
+            }
+            _ => resp.encode(&mut enc),
         };
         if res.is_ok() {
             // pad on the same encoder — pad_to tracks its own write offset
@@ -729,6 +740,33 @@ mod encode_tests {
             decoded.opts().get(OptionCode::DomainNameServer),
             msg.opts().get(OptionCode::DomainNameServer),
             "DNS option recovered from the overloaded sname/file fields"
+        );
+    }
+
+    /// A response carrying boot-server/boot-file names must NOT be overloaded,
+    /// even under a tight client max — overloading would clobber those fields
+    /// (e.g. PXE). We preserve them, accepting a possibly oversized packet.
+    #[test]
+    fn does_not_overload_over_boot_fields() {
+        let mut msg = ack_with(vec![DhcpOption::DomainNameServer(vec![
+            Ipv4Addr::new(
+                10, 0, 0, 1
+            );
+            30
+        ])]);
+        msg.set_sname_str("boot.example.com");
+        msg.set_fname_str("pxelinux.0");
+
+        let bytes = encode_v4_response(&msg, Some(300)).unwrap();
+        let decoded = Message::from_bytes(&bytes).unwrap();
+        // no overload marker -> the boot fields were left intact
+        assert!(decoded.opts().get(OptionCode::OptionOverload).is_none());
+        assert!(decoded.sname().unwrap().starts_with(b"boot.example.com"));
+        assert!(decoded.fname().unwrap().starts_with(b"pxelinux.0"));
+        // and the options are still present in the main field
+        assert_eq!(
+            decoded.opts().get(OptionCode::DomainNameServer),
+            msg.opts().get(OptionCode::DomainNameServer)
         );
     }
 }
