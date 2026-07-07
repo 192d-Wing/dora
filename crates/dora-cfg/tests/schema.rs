@@ -88,21 +88,21 @@ fn all_sample_configs_match_schema() {
         .compile(&schema_json)
         .expect("config_schema.json compiles as a Draft7 schema");
 
-    // every real-world / sample config we ship should validate against the schema
+    // every real-world / sample config we ship should validate against the schema.
+    // glob the sample dir (plus the root example) so new samples are covered
+    // automatically rather than needing to be added to a hand-maintained list.
+    let mut samples = vec![root.join("example.yaml")];
     let sample_dir = root.join("crates/libs/config/sample");
-    let samples = [
-        root.join("example.yaml"),
-        sample_dir.join("config.yaml"),
-        sample_dir.join("long_opts.yaml"),
-        sample_dir.join("config_v4.json"),
-        sample_dir.join("config_v4_simple.json"),
-        sample_dir.join("config_v6.yaml"),
-        sample_dir.join("config_v6_LL.yaml"),
-        sample_dir.join("config_v6_EN.yaml"),
-        sample_dir.join("config_v6_UUID.yaml"),
-        sample_dir.join("config_v6_no_persist.yaml"),
-        sample_dir.join("config_v6_pools.yaml"),
-    ];
+    for entry in std::fs::read_dir(&sample_dir).expect("read sample dir") {
+        let path = entry.expect("sample dir entry").path();
+        if matches!(
+            path.extension().and_then(|e| e.to_str()),
+            Some("yaml") | Some("json")
+        ) {
+            samples.push(path);
+        }
+    }
+    samples.sort();
 
     let mut failures = Vec::new();
     for sample in &samples {

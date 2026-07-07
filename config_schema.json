@@ -5,8 +5,11 @@
     "description": "dora DHCP server configuration schema (v4 + v6)",
     "definitions": {
         "duration": {
-            "description": "seconds as an integer, or a duration string with a unit (e.g. \"3600s\", \"60m\", \"24h\")",
-            "type": ["integer", "string"]
+            "description": "seconds as a positive integer, or a duration string with a unit (e.g. \"3600s\", \"60m\", \"24h\")",
+            "oneOf": [
+                { "type": "integer", "minimum": 1 },
+                { "type": "string" }
+            ]
         },
         "min_max": {
             "description": "a lifetime with a required default and optional min/max clamps",
@@ -170,6 +173,7 @@
         "options": {
             "description": "an options map. keys are option codes (e.g. \"3\") or known names (e.g. \"routers\")",
             "type": "object",
+            "required": ["values"],
             "properties": {
                 "values": {
                     "type": "object",
@@ -259,6 +263,7 @@
         "client_classes": {
             "description": "client classification (v4 only)",
             "type": "object",
+            "required": ["v4"],
             "properties": {
                 "v4": {
                     "type": "array",
@@ -420,12 +425,15 @@
         },
         "v6_options": {
             "type": "object",
+            "required": ["values"],
             "properties": {
                 "values": {
+                    "description": "v6 option keys are numeric option codes only (no name aliases)",
                     "type": "object",
                     "patternProperties": {
                         "^[0-9]+$": { "$ref": "#/definitions/v6_option" }
-                    }
+                    },
+                    "additionalProperties": false
                 }
             }
         },
