@@ -20,9 +20,9 @@ good coverage of the relay, subnet-selection, and DDNS extension RFCs, plus
 **stateful DHCPv6** (RFC 8415: IA_NA + IA_PD, see `plugins/leases-v6`). The main
 remaining gaps, in order of impact, are:
 
-1. **DHCPv6 IA_TA and Reconfigure** are not implemented; v6 DAD uses ICMPv6 echo
-   rather than Neighbor-Solicitation. (Relay — RelayForw/RelayRepl — is now
-   supported.)
+1. **DHCPv6 IA_TA and Reconfigure** are not implemented (both niche — SLAAC
+   privacy addresses dominate over IA_TA, and Reconfigure needs the §20 key
+   auth). (Relay and Neighbor-Solicitation DAD are now supported.)
 2. **A few §4.1 / §4.3 edge behaviors are simplified** — notably the broadcast
    flag on replies to DHCPREQUEST.
 
@@ -126,7 +126,7 @@ See [ddns.md](./ddns.md) for configuration and details.
 | Release / Decline (IA) | ✅ | Release frees; Decline → probation |
 | Rapid Commit (option 14) | ✅ | v6 `rapid_commit` flag (default off) |
 | Status Codes (option 13) | ✅ | NoAddrsAvail / NoPrefixAvail / NoBinding / NotOnLink |
-| Duplicate Address Detection | 🟡 | ICMPv6 echo probe (not Neighbor-Solicitation DAD) |
+| Duplicate Address Detection | ✅ | Neighbor Solicitation (RFC 4861) when a raw socket + interface are available, else ICMPv6 echo; per-network `ping_check` |
 | RelayForw / RelayRepl (§19) | ✅ | `dora-core/server/relay.rs`; nested relays, link-address subnet select, Interface-ID echo |
 | IA_TA (temporary addresses) | ❌ | rarely used; out of scope |
 | Reconfigure | ❌ | requires Reconfigure Key auth; out of scope |
@@ -156,7 +156,9 @@ with the full Solicit/Request/Renew/Rebind/Confirm/Release/Decline lifecycle
    Maximum Message Size (57)**~~ — **done** (RFC 951 / 1542 / 2132,
    `encode_v4_response` in `dora-core`): responses are padded to 300 bytes and,
    when the client advertises opt 57, options spill into `sname`/`file`.
-5. **DHCPv6 follow-ups** — Neighbor-Solicitation DAD, IA_TA, Reconfigure.
+5. **DHCPv6 follow-ups** — IA_TA and Reconfigure (both niche; likely won't-do
+   unless a deployment needs them). ~~Neighbor-Solicitation DAD~~ — **done**
+   (RFC 4861, `libs/icmp-ping` + `ip-manager`): prefers NS, falls back to echo.
 
 ---
 

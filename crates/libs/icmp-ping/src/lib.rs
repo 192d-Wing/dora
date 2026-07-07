@@ -1,10 +1,12 @@
 mod errors;
 mod icmp;
+pub mod ndp;
 mod shutdown;
 mod socket;
 
 pub use crate::errors::Error;
 pub use crate::icmp::{Decode, EchoReply, EchoRequest, Encode, ICMP_HEADER_SIZE, Icmpv4, Icmpv6};
+pub use crate::ndp::NeighborSolicitor;
 use crate::{icmp::Proto, socket::Socket};
 
 use dora_core::metrics;

@@ -31,6 +31,12 @@ pub trait NetworkParams {
     fn ping_timeout(&self) -> Duration;
     /// how long a declined / in-use address is kept out of rotation
     fn probation_period(&self) -> Duration;
+    /// index of the interface this network is bound to, if known. Used to scope
+    /// a link-local Neighbor Solicitation for v6 DAD; `None` disables NS probing
+    /// for this network (falling back to echo).
+    fn iface_index(&self) -> Option<u32> {
+        None
+    }
 }
 
 impl Pool for config::v4::NetRange {
@@ -102,5 +108,8 @@ impl NetworkParams for config::v6::Network {
     }
     fn probation_period(&self) -> Duration {
         config::v6::Network::probation_period(self)
+    }
+    fn iface_index(&self) -> Option<u32> {
+        config::v6::Network::iface_index(self)
     }
 }

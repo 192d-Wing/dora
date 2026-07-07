@@ -170,6 +170,11 @@ impl Network {
     pub fn authoritative(&self) -> bool {
         self.authoritative
     }
+    /// index of the first interface explicitly bound to this network, if any.
+    /// Used to scope a link-local Neighbor Solicitation for v6 DAD.
+    pub fn iface_index(&self) -> Option<u32> {
+        self.interfaces.as_ref()?.first().map(|i| i.index)
+    }
     /// address pools available for IA_NA assignment
     pub fn ranges(&self) -> &[NetRange] {
         &self.ranges
