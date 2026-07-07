@@ -12,7 +12,7 @@
 use client_protection::FloodCache;
 use dora_core::{
     dhcproto::{
-        v4::{DhcpOption, Message, MessageType, Opcode, OptionCode},
+        v4::{DhcpOption, DhcpOptions, Message, MessageType, Opcode, OptionCode},
         v6,
     },
     metrics,
@@ -156,22 +156,32 @@ impl Plugin<Message> for MsgType {
                 resp.opts_mut()
                     .insert(DhcpOption::MessageType(MessageType::Ack));
             }
-            // got INFORM & we are authoritative, give a response
+            // INFORM & we are authoritative: answer with the client's local
+            // configuration regardless of pool coverage (RFC 2131 §4.3.5). The
+            // client already holds an address, so yiaddr stays 0 and no lease
+            // time is added (populate_opts, not populate_opts_lease). Options
+            // come from the range containing the client's address if there is
+            // one, otherwise from class / interface-derived local config.
             Some(MessageType::Inform) if matches!(network, Some(net) if net.authoritative()) => {
                 resp.opts_mut()
                     .insert(DhcpOption::MessageType(MessageType::Ack));
-
-                if let Some(range) = self.cfg.v4().range(addr, addr, matched.as_deref()) {
-                    ctx.set_resp_msg(resp);
-                    ctx.populate_opts(
-                        &self.cfg.v4().collect_opts(range.opts(), matched.as_deref()),
-                    );
-                    if let Some(classes) = matched {
-                        ctx.set_local(MatchedClasses(classes));
+                ctx.set_resp_msg(resp);
+                let opts = match self.cfg.v4().range(addr, addr, matched.as_deref()) {
+                    Some(range) => self.cfg.v4().collect_opts(range.opts(), matched.as_deref()),
+                    None => {
+                        debug!(
+                            "INFORM address not in any configured range; answering with local config"
+                        );
+                        self.cfg
+                            .v4()
+                            .collect_opts(&DhcpOptions::default(), matched.as_deref())
                     }
-                    return Ok(Action::Respond);
+                };
+                ctx.populate_opts(&opts);
+                if let Some(classes) = matched {
+                    ctx.set_local(MatchedClasses(classes));
                 }
-                warn!(msg_type = ?MessageType::Inform, "couldn't match appropriate range with INFORM message");
+                return Ok(Action::Respond);
             }
             Some(MessageType::Decline) => {
                 if let Some(DhcpOption::RequestedIpAddress(ip)) =
@@ -591,6 +601,91 @@ mod tests {
         plugin.handle(&mut ctx).await?;
 
         assert!(ctx.resp_msg().unwrap().opts().msg_type().is_none());
+        Ok(())
+    }
+
+    /// build an INFORM context: the client already holds `ciaddr` and asks for
+    /// local config on the 192.168.0.0/24 link.
+    fn inform_ctx(ciaddr: &str) -> Result<MsgContext<Message>> {
+        let mut ctx = util::blank_ctx(
+            "192.168.0.1:67".parse()?,
+            "192.168.0.1".parse()?,
+            "192.168.0.1".parse()?,
+            v4::MessageType::Inform,
+        )?;
+        ctx.msg_mut().set_ciaddr(ciaddr.parse::<Ipv4Addr>()?);
+        Ok(ctx)
+    }
+
+    /// INFORM whose address falls in a configured range -> ACK with local
+    /// config, yiaddr 0, and no lease time (RFC 2131 §4.3.5).
+    #[tokio::test]
+    #[traced_test]
+    async fn test_inform_in_range_acks() -> Result<()> {
+        let cfg = DhcpConfig::parse_str(SAMPLE_YAML).unwrap();
+        let plugin = MsgType::new(Arc::new(cfg))?;
+        let mut ctx = inform_ctx("192.168.0.100")?;
+
+        let action = plugin.handle(&mut ctx).await?;
+        assert!(matches!(action, Action::Respond));
+        let resp = ctx.resp_msg().unwrap();
+        assert!(resp.opts().has_msg_type(v4::MessageType::Ack));
+        assert_eq!(resp.yiaddr(), Ipv4Addr::UNSPECIFIED, "INFORM sets yiaddr 0");
+        assert!(
+            resp.opts().get(v4::OptionCode::AddressLeaseTime).is_none(),
+            "INFORM must not return a lease time"
+        );
+        Ok(())
+    }
+
+    /// INFORM whose address is on-link but not in any pool is still answered
+    /// with local config (the relaxed gating -- previously suppressed).
+    #[tokio::test]
+    #[traced_test]
+    async fn test_inform_out_of_range_still_acks() -> Result<()> {
+        let cfg = DhcpConfig::parse_str(SAMPLE_YAML).unwrap();
+        let plugin = MsgType::new(Arc::new(cfg))?;
+        // 192.168.0.60 is inside 192.168.0.0/24 but outside the .100-.150 range
+        let mut ctx = inform_ctx("192.168.0.60")?;
+
+        let action = plugin.handle(&mut ctx).await?;
+        assert!(
+            matches!(action, Action::Respond),
+            "authoritative INFORM must answer regardless of pools"
+        );
+        let resp = ctx.resp_msg().unwrap();
+        assert!(resp.opts().has_msg_type(v4::MessageType::Ack));
+        assert_eq!(resp.yiaddr(), Ipv4Addr::UNSPECIFIED);
+        assert!(resp.opts().get(v4::OptionCode::AddressLeaseTime).is_none());
+        Ok(())
+    }
+
+    /// A non-authoritative network still ignores INFORM (unchanged gating).
+    #[tokio::test]
+    #[traced_test]
+    async fn test_inform_non_authoritative_ignored() -> Result<()> {
+        static NONAUTH_YAML: &str = r#"
+networks:
+    192.168.0.0/24:
+        authoritative: false
+        ranges:
+            - start: 192.168.0.100
+              end: 192.168.0.150
+              config:
+                  lease_time:
+                      default: 3600
+              options:
+                  values: {}
+"#;
+        let cfg = DhcpConfig::parse_str(NONAUTH_YAML).unwrap();
+        let plugin = MsgType::new(Arc::new(cfg))?;
+        let mut ctx = inform_ctx("192.168.0.100")?;
+
+        let action = plugin.handle(&mut ctx).await?;
+        assert!(
+            matches!(action, Action::NoResponse),
+            "non-authoritative network must ignore INFORM"
+        );
         Ok(())
     }
 
