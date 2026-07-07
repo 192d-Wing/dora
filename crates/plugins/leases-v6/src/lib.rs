@@ -29,7 +29,10 @@ use dora_core::{
     tracing::warn,
 };
 
-use config::{DhcpConfig, v6::Network};
+use config::{
+    DhcpConfig,
+    v6::{NetRange, Network, PdPool},
+};
 use ip_manager::{IpManager, IpState, Storage};
 use message_type::MsgType;
 use register_derive::Register;
@@ -407,8 +410,7 @@ where
         if let Ok(IpAddr::V6(existing)) = self.ip_mgr.lookup_id_v6(id).await
             && let Some(range) = network.range(existing)
         {
-            let preferred = range.preferred().determine_lease(None).0;
-            let valid = range.valid().determine_lease(None).0;
+            let (preferred, valid) = range_lifetimes(range);
             if state == IpState::Lease {
                 // Request / Rapid-Commit: commit to a full-lifetime lease.
                 let expires_at = SystemTime::now() + valid;
@@ -434,8 +436,7 @@ where
             }
         }
         for range in network.ranges() {
-            let preferred = range.preferred().determine_lease(None).0;
-            let valid = range.valid().determine_lease(None).0;
+            let (preferred, valid) = range_lifetimes(range);
             let expires_at = SystemTime::now() + db_ttl(state, valid);
             match self
                 .ip_mgr
@@ -471,8 +472,7 @@ where
                 .iter()
                 .find(|p| p.delegated_len() == len && p.prefix().contains(&existing))
         {
-            let preferred = pool.preferred().determine_lease(None).0;
-            let valid = pool.valid().determine_lease(None).0;
+            let (preferred, valid) = pool_lifetimes(pool);
             if state == IpState::Lease {
                 // commit the existing prefix to a full-lifetime lease
                 let expires_at = SystemTime::now() + valid;
@@ -489,8 +489,7 @@ where
             }
         }
         for pool in network.pd_pools() {
-            let preferred = pool.preferred().determine_lease(None).0;
-            let valid = pool.valid().determine_lease(None).0;
+            let (preferred, valid) = pool_lifetimes(pool);
             let expires_at = SystemTime::now() + db_ttl(state, valid);
             match self
                 .ip_mgr
@@ -622,6 +621,22 @@ fn lifetimes(network: &Network) -> (Duration, Duration) {
     )
 }
 
+/// the (preferred, valid) lifetimes for an IA_NA address pool.
+fn range_lifetimes(range: &NetRange) -> (Duration, Duration) {
+    (
+        range.preferred().determine_lease(None).0,
+        range.valid().determine_lease(None).0,
+    )
+}
+
+/// the (preferred, valid) lifetimes for an IA_PD prefix pool.
+fn pool_lifetimes(pool: &PdPool) -> (Duration, Duration) {
+    (
+        pool.preferred().determine_lease(None).0,
+        pool.valid().determine_lease(None).0,
+    )
+}
+
 /// DB reservation time-to-live: the full valid lifetime for a committed lease,
 /// but only a short offer window (capped at valid) for an offered reservation so
 /// an un-Requested address is reclaimed quickly.
@@ -637,10 +652,7 @@ fn db_ttl(state: IpState, valid: Duration) -> Duration {
 /// the address falls in a configured range, else the network default.
 fn na_lifetimes(network: &Network, addr: Ipv6Addr) -> (Duration, Duration) {
     match network.range(addr) {
-        Some(r) => (
-            r.preferred().determine_lease(None).0,
-            r.valid().determine_lease(None).0,
-        ),
+        Some(r) => range_lifetimes(r),
         None => lifetimes(network),
     }
 }
@@ -650,10 +662,7 @@ fn na_lifetimes(network: &Network, addr: Ipv6Addr) -> (Duration, Duration) {
 fn pd_lifetimes(network: &Network, prefix: Ipv6Addr) -> (Duration, Duration) {
     for pool in network.pd_pools() {
         if pool.prefix().contains(&prefix) {
-            return (
-                pool.preferred().determine_lease(None).0,
-                pool.valid().determine_lease(None).0,
-            );
+            return pool_lifetimes(pool);
         }
     }
     lifetimes(network)
