@@ -106,6 +106,15 @@ impl Config {
         })
     }
 
+    /// find the network whose subnet contains `addr`. Used for relayed messages,
+    /// where the relay's link-address identifies the client's link/subnet
+    /// (RFC 8415 §13.1) rather than the interface the packet was received on.
+    pub fn get_network_by_addr(&self, addr: Ipv6Addr) -> Option<&Network> {
+        self.networks
+            .iter()
+            .find_map(|(subnet, net)| subnet.contains(&addr).then_some(net))
+    }
+
     /// gets options (which have been already merged with global opts) for the network of `iface_index` or the global options
     pub fn get_opts(&self, iface_index: u32) -> Option<&DhcpOptions> {
         self.get_network(iface_index)
@@ -642,6 +651,19 @@ mod tests {
         // /56 parent delegating /64s -> 2^(64-56) = 256 prefixes
         assert_eq!(pd.total_prefixes(), 256);
         assert_eq!(pd.valid().get_default(), Duration::from_secs(3600));
+    }
+
+    /// get_network_by_addr selects the network whose subnet contains the link addr
+    #[test]
+    fn test_v6_get_network_by_addr() {
+        use std::net::Ipv6Addr;
+        let cfg = Config::new(CONFIG_V6_POOLS_YAML).unwrap();
+        let v6 = cfg.v6().expect("expected v6 config");
+        // network is 2001:db8:1::/64
+        let inside: Ipv6Addr = "2001:db8:1::1".parse().unwrap();
+        let outside: Ipv6Addr = "2001:db8:99::1".parse().unwrap();
+        assert!(v6.get_network_by_addr(inside).is_some());
+        assert!(v6.get_network_by_addr(outside).is_none());
     }
 
     /// an invalid pd_pool (delegated_len <= parent prefix length) must error

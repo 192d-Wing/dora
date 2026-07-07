@@ -91,10 +91,21 @@ where
             }
         };
 
-        let network = match self.cfg.v6().get_network(meta.ifindex) {
+        // relayed messages select the subnet by the relay's link-address; direct
+        // messages use the receiving interface (RFC 8415 §13.1).
+        let client_link = ctx.relay().and_then(|c| c.client_link());
+        let network = match client_link {
+            Some(link) => self.cfg.v6().get_network_by_addr(link),
+            None => self.cfg.v6().get_network(meta.ifindex),
+        };
+        let network = match network {
             Some(net) => net,
             None => {
-                warn!(ifindex = meta.ifindex, "no v6 network configured for interface");
+                warn!(
+                    ifindex = meta.ifindex,
+                    ?client_link,
+                    "no v6 network for interface / relay link"
+                );
                 return Ok(Action::NoResponse);
             }
         };

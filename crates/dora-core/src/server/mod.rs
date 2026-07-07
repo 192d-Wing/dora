@@ -24,6 +24,7 @@ use std::{
 pub mod context;
 pub mod ioctl;
 pub mod msg;
+pub mod relay;
 pub mod state;
 pub mod typemap;
 pub(crate) mod udp;
@@ -364,21 +365,42 @@ impl RunInner<v6::Message> {
             // WARNING: any use of `?` inside this block will return early and stop post_response from running
             Ok(Some(())) => {
                 let iname = interface.name.as_str();
-                let dst_addr = self.ctx.resp_addr(self.service.config.is_default_port_v6());
+                // client-facing destination (unicast to src by default); a relayed
+                // reply instead goes back to the relay agent that sent the request.
+                let client_dst = self.ctx.resp_addr(self.service.config.is_default_port_v6());
+                let relay_dst = self.ctx.src_addr();
 
                 if let Some(resp) = self.ctx.resp_msg() {
                     let msg_type = resp.msg_type();
-                    if let Ok(msg) = SerialMsg::from_msg(resp, dst_addr) {
+                    // if the request was relayed, wrap the response in a matching
+                    // Relay-reply chain; otherwise encode the message directly.
+                    let (dst_addr, body) = match self.ctx.relay() {
+                        Some(chain) => match relay::wrap(resp, chain) {
+                            Some(bytes) => (relay_dst, Some(bytes)),
+                            None => {
+                                error!("failed to build relay-reply");
+                                (relay_dst, None)
+                            }
+                        },
+                        None => (
+                            client_dst,
+                            SerialMsg::from_msg(resp, client_dst)
+                                .ok()
+                                .map(|m| m.bytes().to_vec()),
+                        ),
+                    };
+                    if let Some(body) = body {
                         debug!(
                             ?msg_type,
                             ?dst_addr,
                             ?iname,
+                            relayed = self.ctx.relay().is_some(),
                             %resp,
                             "message created"
                         );
-                        metrics::DHCPV6_BYTES_SENT.inc_by(msg.bytes().len() as u64);
+                        metrics::DHCPV6_BYTES_SENT.inc_by(body.len() as u64);
                         self.ctx.set_dst_addr(dst_addr);
-                        if let Err(err) = self.soc.send_to(msg.bytes(), dst_addr).await {
+                        if let Err(err) = self.soc.send_to(&body, dst_addr).await {
                             error!(?err);
                         }
                     }
