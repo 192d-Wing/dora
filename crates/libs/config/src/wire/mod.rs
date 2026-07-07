@@ -1,33 +1,25 @@
-use std::{collections::HashMap, net::IpAddr, num::NonZeroU32, time::Duration};
+use std::{net::IpAddr, num::NonZeroU32, time::Duration};
 
 use anyhow::{Context, Result};
-use ipnet::Ipv4Net;
 use serde::{Deserialize, Deserializer, Serialize, de};
 
-use crate::{LeaseTime, wire::client_classes::ClientClasses};
+use crate::LeaseTime;
 
 pub mod client_classes;
 pub mod v4;
 pub mod v6;
 
-/// top-level config type
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+/// top-level config type: DHCP settings are split into a `v4` and a `v6`
+/// section. `deny_unknown_fields` makes a pre-nesting config (v4 keys at the top
+/// level) fail loudly rather than be silently ignored.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
-    pub interfaces: Option<Vec<Interface>>,
-    #[serde(default = "default_chaddr_only")]
-    pub chaddr_only: bool,
-    pub flood_protection_threshold: Option<FloodThreshold>,
-    #[serde(default = "default_cache_threshold")]
-    pub cache_threshold: u32,
-    #[serde(default = "default_bootp_enable")]
-    pub bootp_enable: bool,
-    #[serde(default = "default_rapid_commit")]
-    pub rapid_commit: bool,
+    /// DHCPv4 configuration
     #[serde(default)]
-    pub networks: HashMap<Ipv4Net, v4::Net>,
+    pub v4: v4::Config,
+    /// DHCPv6 configuration
     pub v6: Option<v6::Config>,
-    pub client_classes: Option<ClientClasses>,
-    pub ddns: Option<v4::ddns::Ddns>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

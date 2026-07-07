@@ -53,11 +53,13 @@ pub struct Config {
 impl TryFrom<wire::Config> for Config {
     type Error = anyhow::Error;
     fn try_from(cfg: wire::Config) -> Result<Self> {
-        let interfaces = crate::v4_find_interfaces(cfg.interfaces.as_deref())?;
+        // v4 settings now live under the `v4` section; v6 is a sibling section
+        let v4 = cfg.v4;
+        let interfaces = crate::v4_find_interfaces(v4.interfaces.as_deref())?;
 
         debug!(?interfaces, "using v4 interfaces");
-        // transform wire::Config into a more optimized format
-        let networks = cfg
+        // transform wire::v4::Config into a more optimized format
+        let networks = v4
             .networks
             .into_iter()
             .map(|(subnet, net)| {
@@ -72,16 +74,16 @@ impl TryFrom<wire::Config> for Config {
         Ok(Self {
             interfaces,
             networks,
-            chaddr_only: cfg.chaddr_only,
-            bootp_enable: cfg.bootp_enable,
-            rapid_commit: cfg.rapid_commit,
-            flood_threshold: cfg.flood_protection_threshold.map(|f| FloodThreshold {
+            chaddr_only: v4.chaddr_only,
+            bootp_enable: v4.bootp_enable,
+            rapid_commit: v4.rapid_commit,
+            flood_threshold: v4.flood_protection_threshold.map(|f| FloodThreshold {
                 packets: f.packets.get(),
                 period: Duration::from_secs(f.secs.get() as u64),
             }),
             // error if threshold exists and > 100
             cache_threshold: {
-                let threshold = cfg.cache_threshold;
+                let threshold = v4.cache_threshold;
                 if threshold > 100 {
                     Some(Err(anyhow::anyhow!(
                         "cache_threshold must be between 0 and 100"
@@ -98,12 +100,12 @@ impl TryFrom<wire::Config> for Config {
                 .map(crate::v6::Config::try_from)
                 .transpose()
                 .context("unable to parse v6 config")?,
-            client_classes: cfg
+            client_classes: v4
                 .client_classes
                 .map(ClientClasses::try_from)
                 .transpose()
                 .context("unable to parse client_classes config")?,
-            ddns: cfg.ddns,
+            ddns: v4.ddns,
         })
     }
 }

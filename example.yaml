@@ -1,197 +1,351 @@
-# (default false) Normally, client id is determined by (opt 61) client identifier option,
-# or the DHCP header field `chaddr`. Sometimes, we want to configure
-# the server to only look at the `chaddr` field. Setting `chaddr_only` to true
-# will do that.
-#
-# chaddr_only: false
-#
-# (default true) enable/disable BOOTP support. Dora supports only RFC1497. BOOTP clients
-# will be assigned an IP based on their chaddr, they don't have client-ids.
-# The `lease_time` property of a reservation will be ignored
-#
-# bootp_enable: true
-#
-# (default false) enable/disable rapid commit RFC4093. If enabled, and a message is received with the
-# rapid commit option, then dora will attempt a 1-step lease instead of 2.
-#
-# rapid_commit: false
-#
-# (default off) The DHCP flood attack protection enables the DHCP device to detect DHCP
-# flood attacks according to the DHCP packet rate threshold on a per-MAC basis.
-# By default this section is not enabled.
-#
-# flood_protection_threshold:
-#       packets: 6
-#       secs: 5
-#
-# (default 0) The cache_threshold statement takes one integer parameter with
-# allowed values between 0 (disabled) and 100. This parameter expresses the
-# percentage of the total lease time, measured from the beginning,
-# during which a client's attempt to renew its lease will result
-# in getting the already assigned lease, rather than an extended lease.
-#
-# cache_threshold: 0
-#
-# Dora binds to inaddr_any, if an interface is specified dora will filter
-# all traffic not from this interface.
-# If no interface is specified, we will listen on inaddr_any (0.0.0.0) and send
-# each response on the same interface we recv'd it on.
-#
-# interfaces:
-#   - enp6s0
-#
-networks:
-    192.168.5.0/24:
-        # Authoritative:
-        # When the DHCP server is configured as authoritative, the server will respond with
-        # ACK or NACK as appropriate for all the received REQUEST and INFORM messages
-        # belonging to the subnet. If non-authoritative, INFORM will be ignored on this network
+# dora configuration. DHCPv4 settings live under "v4:" and DHCPv6 under "v6:".
+
+v4:
+    # (default false) Normally, client id is determined by (opt 61) client identifier option,
+    # or the DHCP header field `chaddr`. Sometimes, we want to configure
+    # the server to only look at the `chaddr` field. Setting `chaddr_only` to true
+    # will do that.
+    #
+    # chaddr_only: false
+    #
+    # (default true) enable/disable BOOTP support. Dora supports only RFC1497. BOOTP clients
+    # will be assigned an IP based on their chaddr, they don't have client-ids.
+    # The `lease_time` property of a reservation will be ignored
+    #
+    # bootp_enable: true
+    #
+    # (default false) enable/disable rapid commit RFC4093. If enabled, and a message is received with the
+    # rapid commit option, then dora will attempt a 1-step lease instead of 2.
+    #
+    # rapid_commit: false
+    #
+    # (default off) The DHCP flood attack protection enables the DHCP device to detect DHCP
+    # flood attacks according to the DHCP packet rate threshold on a per-MAC basis.
+    # By default this section is not enabled.
+    #
+    # flood_protection_threshold:
+    #       packets: 6
+    #       secs: 5
+    #
+    # (default 0) The cache_threshold statement takes one integer parameter with
+    # allowed values between 0 (disabled) and 100. This parameter expresses the
+    # percentage of the total lease time, measured from the beginning,
+    # during which a client's attempt to renew its lease will result
+    # in getting the already assigned lease, rather than an extended lease.
+    #
+    # cache_threshold: 0
+    #
+    # Dora binds to inaddr_any, if an interface is specified dora will filter
+    # all traffic not from this interface.
+    # If no interface is specified, we will listen on inaddr_any (0.0.0.0) and send
+    # each response on the same interface we recv'd it on.
+    #
+    # interfaces:
+    #   - enp6s0
+    #
+    networks:
+        192.168.5.0/24:
+            # Authoritative:
+            # When the DHCP server is configured as authoritative, the server will respond with
+            # ACK or NACK as appropriate for all the received REQUEST and INFORM messages
+            # belonging to the subnet. If non-authoritative, INFORM will be ignored on this network
+            #
+            # authoritative: true
+            #
+            # `ping_check` (default false) set to true will ping before assigning an IP
+            #
+            # ping_check: false
+            #
+            # adjust the default ping timeout (default: 500ms)
+            #
+            # ping_timeout_ms: 500
+            #
+            # Decline & Duplicate Address Detection:
+            # `probation_period` (seconds) is defined per-network. If any DHCP messages are received from
+            # this network with a message type of DECLINE, or if a ping check is successful
+            # (meaning the address is in use), dora will not attempt to lease the IP inside of
+            # the probation period.
+            #
+            probation_period: 86400
+            # (optional)
+            # `server_id` _must_ be an IP that dora is reachable on.
+            # OR IF IT IS NOT specified, dora will use the IP of the interface we recv'd the message on.
+            # OR we will just use the first non-loopback interface IP
+            server_id: 192.168.5.1
+            # (optional) this will replace the `sname` field in the DHCP header
+            # server_name: "example.org"
+            #
+            # (optional) this will replace the `fname` field in the DHCP header
+            # file_name: "bootfile.efi"
+            ranges:
+                -
+                    # (optional) specifies the class name that must have been matched on
+                    class: "my_class"
+                    # start of your range
+                    start: 192.168.5.2
+                    # end of your range
+                    end: 192.168.5.250
+                    # configured lease time:
+                    # Values can be specified as:
+                    #   - Plain numbers (assumed to be seconds): 3600, 86400
+                    #   - Strings with time units: 1h, 60m, 3600s, 24h
+                    # Supported units: h (hours), m (minutes), s (seconds)
+                    # Defaults: default=24h (86400s), min=20m (1200s), max=7d (604800s)
+                    config:
+                        lease_time:
+                            default: 3600    # or 1h
+                            min: 1200        # or 20m
+                            max: 4800        # or 80m
+                    # Both reservations & ranges can include an options map, if an incoming dhcp msg gets
+                    # an IP from that reservation or range, it will also use the corresponding `options`
+                    # to respond to any parameter request list values.
+                    options:
+                        values:
+                            # each option has a `type`/`value`. the 'value' field can implicitly be a list (all types except b64/hex/sub_option).
+                            # valid types are:
+                            #   ip          ex. 1.2.3.4 or [1.2.3.4, 1.2.3.4]
+                            #   domain      (encodes list of domains in compressed DNS format) ex. ["foobar.com.", "apple.marketing.com."] or a single domain ex. "foobar.com."
+                            #   str         ex. "foobar" or ["foo", "bar"]
+                            #   u8          ex. 1 or [1, 2, 3]
+                            #   u16         ex. 1 or [1, 2, 3]
+                            #   u32         ex. 1 or [1, 2, 3]
+                            #   i32         ex. -1 or [-1, 2, 3]
+                            #   b64         ex. "Zm9vYmFy"
+                            #   hex         ex. "DEADBEEF"
+                            #   sub_option
+                            # Look at: https://docs.rs/dhcproto/latest/dhcproto/v4/enum.DhcpOption.html for available opts and their corresponding type.
+                            #
+                            # For specifying options, use the number code or the name, for example
+                            #   1:
+                            #       type: ip
+                            #       value: 255.255.255.0
+                            # is equivalent to
+                            #   subnet_mask:
+                            #       type: ip
+                            #       value: 255.255.255.0
+                            # only some options have support for the string name identifier.
+                            1: # subnet mask (if not specified, comes from `interfaces`)
+                                type: ip
+                                value: 255.255.255.0
+                            3: # router (if not specified, will come from `interfaces`)
+                                type: ip
+                                value:
+                                    - 192.168.5.1
+                            6: # domain name (if running a DNS server like dnsmasq also, use its IP)
+                                type: ip
+                                value:
+                                    - 8.8.8.8
+                            28: # broadcast addr (if not specified, comes from `interfaces`)
+                               type: ip
+                               value: 192.168.5.255
+                    # you can add exceptions each range
+                    #
+                    # except:
+                    #     - 192.168.0.123
+                    #     - 192.168.0.124
+            # each network block can have reservations
+            reservations:
+                -
+                    ip: 192.168.5.166
+                    config:
+                        lease_time:
+                            default: 3600
+                    options:
+                        values:
+                            1:
+                                type: ip
+                                value: 255.255.255.0
+                            3:
+                                type: ip
+                                value:
+                                    - 192.168.5.1
+                            6:
+                                type: ip
+                                value:
+                                    - 8.8.8.8
+                            28:
+                               type: ip
+                               value: 192.168.5.255
+                            43:
+                                type: sub_option
+                                value:
+                                    1:
+                                        type: str
+                                        value: "foobar"
+                                    2:
+                                        type: ip
+                                        value: 1.2.3.4
+    
+    
+                    # Reservations are supported based on `chaddr`, or `options`. Currently, only a single
+                    # options may be specified for a match. There is no AND/OR logic for matching on options.
+                    match:
+                        chaddr: f8:1a:67:1f:c9:7d
+                        # OR match using an option
+                        # options:
+                        #   values:
+                        #       x:
+                        #           type: ip
+                        #           value: x.x.x.x
         #
-        # authoritative: true
+        # You can have as many networks as you want
         #
-        # `ping_check` (default false) set to true will ping before assigning an IP
-        #
-        # ping_check: false
-        #
-        # adjust the default ping timeout (default: 500ms)
-        #
-        # ping_timeout_ms: 500
-        #
-        # Decline & Duplicate Address Detection:
-        # `probation_period` (seconds) is defined per-network. If any DHCP messages are received from
-        # this network with a message type of DECLINE, or if a ping check is successful
-        # (meaning the address is in use), dora will not attempt to lease the IP inside of
-        # the probation period.
-        #
-        probation_period: 86400
-        # (optional)
-        # `server_id` _must_ be an IP that dora is reachable on.
-        # OR IF IT IS NOT specified, dora will use the IP of the interface we recv'd the message on.
-        # OR we will just use the first non-loopback interface IP
-        server_id: 192.168.5.1
-        # (optional) this will replace the `sname` field in the DHCP header
-        # server_name: "example.org"
-        #
-        # (optional) this will replace the `fname` field in the DHCP header
-        # file_name: "bootfile.efi"
-        ranges:
+        # 192.168.0.0/24:
+        #     ping_check: false
+        #     probation_period: 86400
+        #     server_id: 192.168.0.1
+    #
+    # Example Client Classifier
+    #
+    # We define in the dora config a client_classes section, where each class has a predicate whose syntax
+    # is identical to Kea's expression syntax. At least initially, all client classes will be evaluated when a packet is received.
+    # The classes will be evaluated in topological order, according to their dependencies. Option precedence will still be
+    # given by the order in the config.
+    # A range/reservation can then define a client_class field with the name of a class that will restrict
+    # that range/reservation to only allow packets that have evaluated the associated client class predicate to true.
+    #
+    # Ex.
+    # ```
+    # client_classes:
+    #   v4:
+    #     -   name: my_class
+    #         assert: <some expression that evaluates to true/false>
+    #         options:
+    #           <options data>
+    # networks:
+    #     192.168.1.100/30:
+    #         ranges:
+    #             -
+    #                 class: my_class
+    #                 ...
+    # ```
+    #
+    # Dora does not allow the same level of configuration as Kea (right now).
+    # We will not allow classes to be set on subnets, only ranges/reservations.
+    # This follows with dora’s generally ‘flattened’ config structure.
+    # This doesn’t close the door on adding those features in the future, just defines a minimum set of functionality.
+    # DHCP message flow:
+    #
+    #    - Dora receives a DHCP packet, it evaluates any globally defined client classes.
+    #       Dora attaches matching classes to the currently processing message
+    #    - Dora uses subnet selection logic to determine which top level network
+    #       a given message should get its IP from (giaddr/ iaddr and opts like subnet select & relay agent info).
+    #    - Dora checks to see if any static IP reservations exist with matching client classes, if so it uses that reservation,
+    #       potentially with option/config data from the client class. Precedence for option data goes to the reservation
+    #       over any client class data.
+    #    - Dora iterates ranges in the network and if any client class is defined for the range, it checks
+    #       to see that the packet evaluated a match for that client class-- i.e. the packet’s matching classes
+    #       must contain the range’s class if it exists. Range precedence is set by index in the range list.
+    #       Precedence for option data goes to the range over any client class option data.
+    #    - If, during iterating through ranges, there are classless ranges, we attempt to assign an IP
+    #       from the classless range. If the packet has classes associated with it, it may get
+    #       option data from those classes, but it can still have an IP assigned from a classless range.
+    #    - Continue normal execution
+    #
+    # Note on precedence: If multiple client classes are applied to an incoming message,
+    # the options given to the client will be the union of all matching client classes.
+    # Where there is a duplicate, precedence will be given in the order it was evaluated.
+    #
+    # Predicate evaluation:
+    # see: https://kea.readthedocs.io/en/kea-2.2.0/arm/classify.html#using-expressions-in-classification
+    # and if anything you want isn't supported yet file a ticket asking us to work on it!
+    #
+    # Currently supports all grammar defined in the `grammar.pest` file in libs/client-classification:
+    #
+    #   primitives: integer (123), 'string', ip (1.2.3.4), 0xhex, true/false
+    #
+    #   prefix: not (`not false`)
+    #
+    #   infix: == != or and (`1 == 1 and 2 != 3 or true`)
+    #
+    #   options: option[12]
+    #    option[xx].hex: gets the data as a byte string.
+    #       You can still compare with 'strings' as long as the byte representation matches (`option[12].hex == 'hostname'` or `option[244].hex == 0x1234`)
+    #    option[xx].text: gets the data as a utf-8 encoded string (`option[12].text == 'hostname'`)
+    #    option[xx].exists: returns true/false if the option exists (`option[12].exists`)
+    #
+    #   pkt header:
+    #       pkt4.mac: chaddr in DHCP message header (`pkt4.mac == 0xDEADBEEF`)
+    #
+    #   substring(expr, start, len): substring function (`substring('foobar', 0, 3) == 'foo'`)
+    #
+    #   concat(expr, concat): concat function (`concat('foo', 'bar') == 'foobar')
+    #
+    #   ifelse(expr, expr_a, expr_b): if else control flow, first expression must evaluate to true/false
+    #                       and if true expr_a will return else expr_b
+    #
+    #   hexstring(pkt4.mac, ':'): turns bytes into a string separated by the separator string
+    #                       ex. hexstring(pkt4.mac, ':') == '66:6f:6f'
+    #                        (if pkt4.mac is '0x666f6f')
+    #
+    #   member('classname'): reference another class using the `member('my_class')` function. Dependency
+    #                   cycles will fail to parse the config.
+    #
+    # example:
+    #
+    #       `substring(option[61].hex, 0, 3) == 'foo'`
+    #
+    #  Vendor classes:
+    #
+    #   To match on the standard option 60 vendor class identifier, use `option[60].hex` or `option[60].text`
+    #   in your assertion— depending if you want a byte string or utf-8 string representation.
+    #   You can then specify options for the class providing option 43, for the encapsulated vendor options.
+    #   example.
+    #       name: my_vendor_class
+    #       assert: "option[60].hex == 'MSFT5.0'"
+    #       options:
+    #           values:
+    #              43:
+    #                  type: sub_option
+    #                  value:
+    #                      1:
+    #                          type: str
+    #                          value: "foobar"
+    #                      2:
+    #                          type: ip
+    #                          value: 1.2.3.4
+    #
+    #   Attaching `my_vendor_class` to a range/reservation will provide the defined opt 43 vendor options.
+    client_classes:
+        # only v4 supported at the moment
+        v4:
             -
-                # (optional) specifies the class name that must have been matched on
-                class: "my_class"
-                # start of your range
-                start: 192.168.5.2
-                # end of your range
-                end: 192.168.5.250
-                # configured lease time:
-                # Values can be specified as:
-                #   - Plain numbers (assumed to be seconds): 3600, 86400
-                #   - Strings with time units: 1h, 60m, 3600s, 24h
-                # Supported units: h (hours), m (minutes), s (seconds)
-                # Defaults: default=24h (86400s), min=20m (1200s), max=7d (604800s)
-                config:
-                    lease_time:
-                        default: 3600    # or 1h
-                        min: 1200        # or 20m
-                        max: 4800        # or 80m
-                # Both reservations & ranges can include an options map, if an incoming dhcp msg gets
-                # an IP from that reservation or range, it will also use the corresponding `options`
-                # to respond to any parameter request list values.
-                options:
+              # class name
+              name: my_class
+              # assertion will be run for each class defined
+              assert: "option[60].text == 'foobar'"
+              # any options defined here will be provided to the message
+              options:
                     values:
-                        # each option has a `type`/`value`. the 'value' field can implicitly be a list (all types except b64/hex/sub_option).
-                        # valid types are:
-                        #   ip          ex. 1.2.3.4 or [1.2.3.4, 1.2.3.4]
-                        #   domain      (encodes list of domains in compressed DNS format) ex. ["foobar.com.", "apple.marketing.com."] or a single domain ex. "foobar.com."
-                        #   str         ex. "foobar" or ["foo", "bar"]
-                        #   u8          ex. 1 or [1, 2, 3]
-                        #   u16         ex. 1 or [1, 2, 3]
-                        #   u32         ex. 1 or [1, 2, 3]
-                        #   i32         ex. -1 or [-1, 2, 3]
-                        #   b64         ex. "Zm9vYmFy"
-                        #   hex         ex. "DEADBEEF"
-                        #   sub_option
-                        # Look at: https://docs.rs/dhcproto/latest/dhcproto/v4/enum.DhcpOption.html for available opts and their corresponding type.
-                        #
-                        # For specifying options, use the number code or the name, for example
-                        #   1:
-                        #       type: ip
-                        #       value: 255.255.255.0
-                        # is equivalent to
-                        #   subnet_mask:
-                        #       type: ip
-                        #       value: 255.255.255.0
-                        # only some options have support for the string name identifier.
-                        1: # subnet mask (if not specified, comes from `interfaces`)
-                            type: ip
-                            value: 255.255.255.0
-                        3: # router (if not specified, will come from `interfaces`)
-                            type: ip
-                            value:
-                                - 192.168.5.1
-                        6: # domain name (if running a DNS server like dnsmasq also, use its IP)
-                            type: ip
-                            value:
-                                - 8.8.8.8
-                        28: # broadcast addr (if not specified, comes from `interfaces`)
-                           type: ip
-                           value: 192.168.5.255
-                # you can add exceptions each range
-                #
-                # except:
-                #     - 192.168.0.123
-                #     - 192.168.0.124
-        # each network block can have reservations
-        reservations:
-            -
-                ip: 192.168.5.166
-                config:
-                    lease_time:
-                        default: 3600
-                options:
-                    values:
-                        1:
-                            type: ip
-                            value: 255.255.255.0
-                        3:
-                            type: ip
-                            value:
-                                - 192.168.5.1
                         6:
                             type: ip
-                            value:
-                                - 8.8.8.8
-                        28:
-                           type: ip
-                           value: 192.168.5.255
-                        43:
-                            type: sub_option
-                            value:
-                                1:
-                                    type: str
-                                    value: "foobar"
-                                2:
-                                    type: ip
-                                    value: 1.2.3.4
+                            value: [ 1.1.1.1 ]
+    # DDNS config (see docs/ddns.md for more information)
+    # This section is optional, if not included, no DDNS updates will
+    # be sent
+    ddns:
+        # send updates. If the ddns section header is defined, enable_updates defaults to true
+        enable_updates: true
+        # default false. whether to override the client update FQDN flags
+        override_client_updates: false
+        # default false. whether to override the no update FQDN flags
+        override_no_updates: false
+        # list of forward DNS servers
+        # selects based on FQDN longest match
+        forward:
+           - name: "example.com."
+             # key: (optional) "key_foo"
+             ip: 192.168.3.111:53
+        reverse:
+           - name: "168.192.in-addr.arpa."
+             ip: 192.168.3.111:53
+        # map of tsig keys. DNS servers reference these by name
+        tsig_keys:
+            key_foo:
+              algorithm: "hmac-sha1"
+              # b64 key data
+              data: "<keydata>"
 
-
-                # Reservations are supported based on `chaddr`, or `options`. Currently, only a single
-                # options may be specified for a match. There is no AND/OR logic for matching on options.
-                match:
-                    chaddr: f8:1a:67:1f:c9:7d
-                    # OR match using an option
-                    # options:
-                    #   values:
-                    #       x:
-                    #           type: ip
-                    #           value: x.x.x.x
-    #
-    # You can have as many networks as you want
-    #
-    # 192.168.0.0/24:
-    #     ping_check: false
-    #     probation_period: 86400
-    #     server_id: 192.168.0.1
-#
 # DHCPv6
 # v6 support is largely experimental and unfinished. There is some early support for
 # responding to INFOREQ.
@@ -276,155 +430,3 @@ v6:
                           default: 3600
                       preferred_time:
                           default: 3600
-
-# Example Client Classifier
-#
-# We define in the dora config a client_classes section, where each class has a predicate whose syntax
-# is identical to Kea's expression syntax. At least initially, all client classes will be evaluated when a packet is received.
-# The classes will be evaluated in topological order, according to their dependencies. Option precedence will still be
-# given by the order in the config.
-# A range/reservation can then define a client_class field with the name of a class that will restrict
-# that range/reservation to only allow packets that have evaluated the associated client class predicate to true.
-#
-# Ex.
-# ```
-# client_classes:
-#   v4:
-#     -   name: my_class
-#         assert: <some expression that evaluates to true/false>
-#         options:
-#           <options data>
-# networks:
-#     192.168.1.100/30:
-#         ranges:
-#             -
-#                 class: my_class
-#                 ...
-# ```
-#
-# Dora does not allow the same level of configuration as Kea (right now).
-# We will not allow classes to be set on subnets, only ranges/reservations.
-# This follows with dora’s generally ‘flattened’ config structure.
-# This doesn’t close the door on adding those features in the future, just defines a minimum set of functionality.
-# DHCP message flow:
-#
-#    - Dora receives a DHCP packet, it evaluates any globally defined client classes.
-#       Dora attaches matching classes to the currently processing message
-#    - Dora uses subnet selection logic to determine which top level network
-#       a given message should get its IP from (giaddr/ iaddr and opts like subnet select & relay agent info).
-#    - Dora checks to see if any static IP reservations exist with matching client classes, if so it uses that reservation,
-#       potentially with option/config data from the client class. Precedence for option data goes to the reservation
-#       over any client class data.
-#    - Dora iterates ranges in the network and if any client class is defined for the range, it checks
-#       to see that the packet evaluated a match for that client class-- i.e. the packet’s matching classes
-#       must contain the range’s class if it exists. Range precedence is set by index in the range list.
-#       Precedence for option data goes to the range over any client class option data.
-#    - If, during iterating through ranges, there are classless ranges, we attempt to assign an IP
-#       from the classless range. If the packet has classes associated with it, it may get
-#       option data from those classes, but it can still have an IP assigned from a classless range.
-#    - Continue normal execution
-#
-# Note on precedence: If multiple client classes are applied to an incoming message,
-# the options given to the client will be the union of all matching client classes.
-# Where there is a duplicate, precedence will be given in the order it was evaluated.
-#
-# Predicate evaluation:
-# see: https://kea.readthedocs.io/en/kea-2.2.0/arm/classify.html#using-expressions-in-classification
-# and if anything you want isn't supported yet file a ticket asking us to work on it!
-#
-# Currently supports all grammar defined in the `grammar.pest` file in libs/client-classification:
-#
-#   primitives: integer (123), 'string', ip (1.2.3.4), 0xhex, true/false
-#
-#   prefix: not (`not false`)
-#
-#   infix: == != or and (`1 == 1 and 2 != 3 or true`)
-#
-#   options: option[12]
-#    option[xx].hex: gets the data as a byte string.
-#       You can still compare with 'strings' as long as the byte representation matches (`option[12].hex == 'hostname'` or `option[244].hex == 0x1234`)
-#    option[xx].text: gets the data as a utf-8 encoded string (`option[12].text == 'hostname'`)
-#    option[xx].exists: returns true/false if the option exists (`option[12].exists`)
-#
-#   pkt header:
-#       pkt4.mac: chaddr in DHCP message header (`pkt4.mac == 0xDEADBEEF`)
-#
-#   substring(expr, start, len): substring function (`substring('foobar', 0, 3) == 'foo'`)
-#
-#   concat(expr, concat): concat function (`concat('foo', 'bar') == 'foobar')
-#
-#   ifelse(expr, expr_a, expr_b): if else control flow, first expression must evaluate to true/false
-#                       and if true expr_a will return else expr_b
-#
-#   hexstring(pkt4.mac, ':'): turns bytes into a string separated by the separator string
-#                       ex. hexstring(pkt4.mac, ':') == '66:6f:6f'
-#                        (if pkt4.mac is '0x666f6f')
-#
-#   member('classname'): reference another class using the `member('my_class')` function. Dependency
-#                   cycles will fail to parse the config.
-#
-# example:
-#
-#       `substring(option[61].hex, 0, 3) == 'foo'`
-#
-#  Vendor classes:
-#
-#   To match on the standard option 60 vendor class identifier, use `option[60].hex` or `option[60].text`
-#   in your assertion— depending if you want a byte string or utf-8 string representation.
-#   You can then specify options for the class providing option 43, for the encapsulated vendor options.
-#   example.
-#       name: my_vendor_class
-#       assert: "option[60].hex == 'MSFT5.0'"
-#       options:
-#           values:
-#              43:
-#                  type: sub_option
-#                  value:
-#                      1:
-#                          type: str
-#                          value: "foobar"
-#                      2:
-#                          type: ip
-#                          value: 1.2.3.4
-#
-#   Attaching `my_vendor_class` to a range/reservation will provide the defined opt 43 vendor options.
-client_classes:
-    # only v4 supported at the moment
-    v4:
-        -
-          # class name
-          name: my_class
-          # assertion will be run for each class defined
-          assert: "option[60].text == 'foobar'"
-          # any options defined here will be provided to the message
-          options:
-                values:
-                    6:
-                        type: ip
-                        value: [ 1.1.1.1 ]
-
-# DDNS config (see docs/ddns.md for more information)
-# This section is optional, if not included, no DDNS updates will
-# be sent
-ddns:
-    # send updates. If the ddns section header is defined, enable_updates defaults to true
-    enable_updates: true
-    # default false. whether to override the client update FQDN flags
-    override_client_updates: false
-    # default false. whether to override the no update FQDN flags
-    override_no_updates: false
-    # list of forward DNS servers
-    # selects based on FQDN longest match
-    forward:
-       - name: "example.com."
-         # key: (optional) "key_foo"
-         ip: 192.168.3.111:53
-    reverse:
-       - name: "168.192.in-addr.arpa."
-         ip: 192.168.3.111:53
-    # map of tsig keys. DNS servers reference these by name
-    tsig_keys:
-        key_foo:
-          algorithm: "hmac-sha1"
-          # b64 key data
-          data: "<keydata>"
