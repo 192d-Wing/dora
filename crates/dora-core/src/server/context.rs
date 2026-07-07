@@ -2,7 +2,7 @@
 use std::{
     fmt,
     io::{self, Error, ErrorKind},
-    net::{Ipv4Addr, SocketAddr},
+    net::{IpAddr, Ipv4Addr, SocketAddr},
     sync::Arc,
     time::Duration,
 };
@@ -49,6 +49,39 @@ impl ServerDecode for v6::Message {
             .map_err(|op| Error::new(ErrorKind::InvalidData, op))?;
         Ok((msg, None))
     }
+}
+
+/// The RFC 2131 §4.3.2 client state a DHCPREQUEST was generated in. The state is
+/// inferred from the presence of the server-identifier (opt 54) and requested-ip
+/// (opt 50) options and `ciaddr`, and determines how the server must respond
+/// (notably: an INIT-REBOOT for an unknown client MUST be answered with silence,
+/// not a NAK).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RequestState {
+    /// Responding to our DHCPOFFER. server-id present (and, validated earlier,
+    /// names us), requested-ip set, `ciaddr` zero.
+    Selecting {
+        /// the address from the requested-ip option (opt 50)
+        requested: Ipv4Addr,
+    },
+    /// Verifying a cached address after a reboot. No server-id, requested-ip set,
+    /// `ciaddr` zero.
+    InitReboot {
+        /// the address from the requested-ip option (opt 50)
+        requested: Ipv4Addr,
+    },
+    /// Extending a lease, unicast to the leasing server. No server-id, `ciaddr` set.
+    Renewing {
+        /// the client's current address, from `ciaddr`
+        ciaddr: Ipv4Addr,
+    },
+    /// Extending a lease, broadcast to any server. No server-id, `ciaddr` set.
+    Rebinding {
+        /// the client's current address, from `ciaddr`
+        ciaddr: Ipv4Addr,
+    },
+    /// A DHCPREQUEST with no determinable requested address (malformed).
+    Unknown,
 }
 
 /// Context is what will be passed to the [handler] traits and mutated by
@@ -569,6 +602,58 @@ impl MsgContext<v4::Message> {
         } else {
             None
         }
+    }
+
+    /// Classify a DHCPREQUEST into its RFC 2131 §4.3.2 client state so the server
+    /// can apply the per-state response rules. Distinguished by the server-id
+    /// (opt 54) and requested-ip (opt 50) options and `ciaddr`:
+    ///
+    /// - server-id present            -> SELECTING (requested address in opt 50)
+    /// - no server-id, `ciaddr` set   -> RENEWING / REBINDING (address in ciaddr)
+    /// - no server-id, opt 50, ciaddr 0 -> INIT-REBOOT
+    /// - otherwise                    -> Unknown (malformed)
+    ///
+    /// The server-identifier is checked first: it definitively marks a client
+    /// responding to a specific server's OFFER (SELECTING), even if a
+    /// non-conformant client also left a stale `ciaddr` set.
+    ///
+    /// RENEWING vs REBINDING is a best-effort split on the datagram's destination
+    /// (a broadcast destination implies REBINDING); the two are handled the same,
+    /// so the distinction is informational.
+    pub fn request_state(&self) -> RequestState {
+        let req = self.msg();
+        let opt50 = match req.opts().get(v4::OptionCode::RequestedIpAddress) {
+            Some(v4::DhcpOption::RequestedIpAddress(ip)) => Some(*ip),
+            _ => None,
+        };
+        // A server-id means the client is responding to a specific OFFER
+        // (SELECTING); the requested address is in opt 50 and ciaddr is (per RFC)
+        // zero.
+        if req.opts().get(v4::OptionCode::ServerIdentifier).is_some() {
+            return match opt50 {
+                Some(requested) => RequestState::Selecting { requested },
+                None => RequestState::Unknown,
+            };
+        }
+        if !req.ciaddr().is_unspecified() {
+            let ciaddr = req.ciaddr();
+            if self.recvd_broadcast() {
+                RequestState::Rebinding { ciaddr }
+            } else {
+                RequestState::Renewing { ciaddr }
+            }
+        } else if let Some(requested) = opt50 {
+            RequestState::InitReboot { requested }
+        } else {
+            RequestState::Unknown
+        }
+    }
+
+    /// Whether the datagram was received to a broadcast destination (used to
+    /// distinguish REBINDING from RENEWING). Best-effort: relies on the recv
+    /// destination being reported by the platform, defaulting to `false`.
+    fn recvd_broadcast(&self) -> bool {
+        matches!(self.meta.dst_ip, Some(IpAddr::V4(ip)) if ip.is_broadcast())
     }
 
     /// determine the correct subnet of a DHCP message
