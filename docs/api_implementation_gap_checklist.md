@@ -44,7 +44,7 @@ items annotated `— partial:` are started but incomplete.
 - [x] Add pagination with `limit` and `offset`.
 - [x] Add response metadata: `limit`, `offset`, `total`, `count`, `filters`, and `sort`.
 - [x] Add broad filters: `state`, `network`, `ip`, `client_id`, `expires_from`, and `expires_to`.
-- [ ] Add flexible sorting such as `sort=state,-expires_at,ip`. — partial: `sort` is parsed and echoed in `meta`, but results are only sorted by `ip`.
+- [x] Add flexible sorting such as `sort=state,-expires_at,ip`. — multi-field, `-` for descending.
 - [x] Implement DHCPv6 lease listing, including IA_NA and IA_PD where available.
 
 ## Reservations

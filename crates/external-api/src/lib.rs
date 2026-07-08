@@ -276,6 +276,7 @@ mod handlers {
     use ipnet::Ipv4Net;
     use prometheus::{Encoder, ProtobufEncoder, TextEncoder};
     use serde::Deserialize;
+    use subtle::ConstantTimeEq;
     use tracing::{error, warn};
 
     use crate::models::{
@@ -433,7 +434,9 @@ mod handlers {
             ));
         };
 
-        if actual == expected {
+        // constant-time comparison so response timing can't be used as an oracle
+        // to recover the token byte-by-byte
+        if bool::from(actual.as_bytes().ct_eq(expected.as_bytes())) {
             Ok(())
         } else {
             Err(crate::models::ServerError::unauthorized(
@@ -785,7 +788,7 @@ mod handlers {
             .collect::<Result<Vec<_>, _>>()?;
 
         add_v4_config_reservations(&cfg, &mut items);
-        items.sort_by(|a, b| a.ip.cmp(&b.ip));
+        let items = filter_and_sort(items, &query)?;
 
         let (meta, items) = paginate(items, &query);
         Ok(axum::Json(V4LeaseListResponse { meta, items }))
@@ -800,13 +803,13 @@ mod handlers {
     ) -> ServerResult<impl IntoResponse> {
         authorize(&headers, &auth)?;
         let cfg = (*cfg).clone();
-        let mut items = ip_mgr
+        let items = ip_mgr
             .select_all()
             .await?
             .into_iter()
             .filter_map(|lease| v6_lease_from_state(&cfg, lease).transpose())
             .collect::<Result<Vec<_>, _>>()?;
-        items.sort_by(|a, b| a.ip.cmp(&b.ip));
+        let items = filter_and_sort(items, &query)?;
 
         let (meta, items) = paginate(items, &query);
         Ok(axum::Json(V6LeaseListResponse { meta, items }))
@@ -814,15 +817,15 @@ mod handlers {
 
     #[derive(Debug, Default, Deserialize)]
     pub(crate) struct LeaseListQuery {
-        limit: Option<usize>,
-        offset: Option<usize>,
-        state: Option<String>,
-        network: Option<String>,
-        ip: Option<String>,
-        client_id: Option<String>,
-        expires_from: Option<String>,
-        expires_to: Option<String>,
-        sort: Option<String>,
+        pub(crate) limit: Option<usize>,
+        pub(crate) offset: Option<usize>,
+        pub(crate) state: Option<String>,
+        pub(crate) network: Option<String>,
+        pub(crate) ip: Option<String>,
+        pub(crate) client_id: Option<String>,
+        pub(crate) expires_from: Option<String>,
+        pub(crate) expires_to: Option<String>,
+        pub(crate) sort: Option<String>,
     }
 
     fn v4_lease_from_state(
@@ -916,6 +919,161 @@ mod handlers {
         DateTime::<Utc>::from_timestamp(secs, 0)
             .context("failed to create UTC datetime")
             .map(|dt| dt.to_rfc3339())
+    }
+
+    /// Fields a lease row exposes for filtering and sorting. Implemented for
+    /// both `V4Lease` and `V6Lease` so the query logic is shared.
+    pub(crate) trait LeaseRow {
+        fn state(&self) -> &str;
+        fn ip(&self) -> Option<&str>;
+        fn network(&self) -> &str;
+        fn client_id(&self) -> Option<&str>;
+        fn expires_at(&self) -> Option<&str>;
+    }
+
+    impl LeaseRow for V4Lease {
+        fn state(&self) -> &str {
+            &self.state
+        }
+        fn ip(&self) -> Option<&str> {
+            Some(&self.ip)
+        }
+        fn network(&self) -> &str {
+            &self.network
+        }
+        fn client_id(&self) -> Option<&str> {
+            self.client_id.as_deref()
+        }
+        fn expires_at(&self) -> Option<&str> {
+            self.expires_at.as_deref()
+        }
+    }
+
+    impl LeaseRow for V6Lease {
+        fn state(&self) -> &str {
+            &self.state
+        }
+        fn ip(&self) -> Option<&str> {
+            self.ip.as_deref()
+        }
+        fn network(&self) -> &str {
+            &self.network
+        }
+        fn client_id(&self) -> Option<&str> {
+            self.client_id.as_deref()
+        }
+        fn expires_at(&self) -> Option<&str> {
+            self.expires_at.as_deref()
+        }
+    }
+
+    /// A parsed sort key: field name plus direction.
+    struct SortKey {
+        field: String,
+        desc: bool,
+    }
+
+    fn parse_sort(sort: Option<&str>) -> Vec<SortKey> {
+        sort.unwrap_or("ip")
+            .split(',')
+            .map(str::trim)
+            .filter(|f| !f.is_empty())
+            .map(|f| match f.strip_prefix('-') {
+                Some(rest) => SortKey {
+                    field: rest.to_string(),
+                    desc: true,
+                },
+                None => SortKey {
+                    field: f.to_string(),
+                    desc: false,
+                },
+            })
+            .collect()
+    }
+
+    /// Apply the query's filters and multi-field sort to a list of lease rows.
+    /// A bad `expires_from`/`expires_to` date yields a 400 rather than being
+    /// silently ignored.
+    pub(crate) fn filter_and_sort<T: LeaseRow>(
+        mut items: Vec<T>,
+        query: &LeaseListQuery,
+    ) -> ServerResult<Vec<T>> {
+        let parse_bound =
+            |name: &str, value: &Option<String>| -> ServerResult<Option<DateTime<Utc>>> {
+                value
+                    .as_deref()
+                    .map(|raw| {
+                        DateTime::parse_from_rfc3339(raw)
+                            .map(|dt| dt.with_timezone(&Utc))
+                            .map_err(|err| {
+                                crate::models::ServerError::bad_request(format!(
+                                    "invalid `{name}` timestamp (RFC 3339 expected): {err}"
+                                ))
+                            })
+                    })
+                    .transpose()
+            };
+        let expires_from = parse_bound("expires_from", &query.expires_from)?;
+        let expires_to = parse_bound("expires_to", &query.expires_to)?;
+
+        items.retain(|row| {
+            if let Some(state) = query.state.as_deref()
+                && !row.state().eq_ignore_ascii_case(state)
+            {
+                return false;
+            }
+            if let Some(ip) = query.ip.as_deref()
+                && row.ip() != Some(ip)
+            {
+                return false;
+            }
+            if let Some(network) = query.network.as_deref()
+                && row.network() != network
+            {
+                return false;
+            }
+            if let Some(client_id) = query.client_id.as_deref()
+                && row.client_id() != Some(client_id)
+            {
+                return false;
+            }
+            if expires_from.is_some() || expires_to.is_some() {
+                // rows with no expiry (config reservations) can't match a time window
+                let Some(exp) = row
+                    .expires_at()
+                    .and_then(|raw| DateTime::parse_from_rfc3339(raw).ok())
+                    .map(|dt| dt.with_timezone(&Utc))
+                else {
+                    return false;
+                };
+                if expires_from.is_some_and(|from| exp < from) {
+                    return false;
+                }
+                if expires_to.is_some_and(|to| exp > to) {
+                    return false;
+                }
+            }
+            true
+        });
+
+        let keys = parse_sort(query.sort.as_deref());
+        items.sort_by(|a, b| {
+            for key in &keys {
+                let ord = match key.field.as_str() {
+                    "state" => a.state().cmp(b.state()),
+                    "expires_at" => a.expires_at().cmp(&b.expires_at()),
+                    "ip" => a.ip().cmp(&b.ip()),
+                    _ => std::cmp::Ordering::Equal,
+                };
+                let ord = if key.desc { ord.reverse() } else { ord };
+                if ord != std::cmp::Ordering::Equal {
+                    return ord;
+                }
+            }
+            std::cmp::Ordering::Equal
+        });
+
+        Ok(items)
     }
 
     fn paginate<T>(items: Vec<T>, query: &LeaseListQuery) -> (PaginationMeta, Vec<T>) {
@@ -1012,7 +1170,11 @@ mod handlers {
         Ok(cfg)
     }
 
-    pub(crate) async fn metrics() -> ServerResult<impl IntoResponse> {
+    pub(crate) async fn metrics(
+        headers: HeaderMap,
+        Extension(auth): Extension<crate::ApiAuth>,
+    ) -> ServerResult<impl IntoResponse> {
+        authorize(&headers, &auth)?;
         UPTIME.set(START_TIME.elapsed().as_secs() as i64);
         let encoder = ProtobufEncoder::new();
         let mut buf = Vec::new();
@@ -1030,7 +1192,11 @@ mod handlers {
         }
     }
 
-    pub(crate) async fn metrics_text() -> ServerResult<impl IntoResponse> {
+    pub(crate) async fn metrics_text(
+        headers: HeaderMap,
+        Extension(auth): Extension<crate::ApiAuth>,
+    ) -> ServerResult<impl IntoResponse> {
+        authorize(&headers, &auth)?;
         UPTIME.set(START_TIME.elapsed().as_secs() as i64);
         let encoder = TextEncoder::new();
         let mut buf = String::new();
@@ -1450,6 +1616,13 @@ pub mod models {
                 axum::http::StatusCode::UNAUTHORIZED,
                 "unauthorized",
                 anyhow::anyhow!(message),
+            )
+        }
+        pub(crate) fn bad_request(message: impl Into<String>) -> Self {
+            Self::new(
+                axum::http::StatusCode::BAD_REQUEST,
+                "bad_request",
+                anyhow::anyhow!(message.into()),
             )
         }
     }
@@ -1932,6 +2105,64 @@ v4:
 
         token.cancel();
         Ok(())
+    }
+
+    // lease query filters and multi-field sort are actually applied (not just
+    // echoed into meta).
+    #[test]
+    fn test_lease_filter_and_sort() {
+        use crate::handlers::{LeaseListQuery, filter_and_sort};
+        use crate::models::V4Lease;
+
+        let mk = |ip: &str, state: &str, cid: &str, exp: &str| V4Lease {
+            family: "v4".to_string(),
+            state: state.to_string(),
+            ip: ip.to_string(),
+            network: "10.0.0.0/24".to_string(),
+            client_id: Some(cid.to_string()),
+            expires_at: Some(exp.to_string()),
+            source: Some("database".to_string()),
+        };
+        let items = vec![
+            mk("10.0.0.3", "leased", "aa", "2030-01-01T00:00:00+00:00"),
+            mk("10.0.0.1", "probated", "bb", "2020-01-01T00:00:00+00:00"),
+            mk("10.0.0.2", "leased", "cc", "2025-01-01T00:00:00+00:00"),
+        ];
+
+        // filter: only leased
+        let q = LeaseListQuery {
+            state: Some("leased".to_string()),
+            ..Default::default()
+        };
+        let out = filter_and_sort(items.clone(), &q).unwrap();
+        assert_eq!(out.len(), 2);
+        assert!(out.iter().all(|l| l.state == "leased"));
+
+        // sort: descending by expiry
+        let q = LeaseListQuery {
+            sort: Some("-expires_at".to_string()),
+            ..Default::default()
+        };
+        let out = filter_and_sort(items.clone(), &q).unwrap();
+        assert_eq!(out.first().unwrap().ip, "10.0.0.3");
+        assert_eq!(out.last().unwrap().ip, "10.0.0.1");
+
+        // filter: time window excludes the 2020 and 2030 rows
+        let q = LeaseListQuery {
+            expires_from: Some("2024-01-01T00:00:00Z".to_string()),
+            expires_to: Some("2026-01-01T00:00:00Z".to_string()),
+            ..Default::default()
+        };
+        let out = filter_and_sort(items.clone(), &q).unwrap();
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].ip, "10.0.0.2");
+
+        // a malformed date is a 400, not silently ignored
+        let q = LeaseListQuery {
+            expires_from: Some("not-a-date".to_string()),
+            ..Default::default()
+        };
+        assert!(filter_and_sort(items, &q).is_err());
     }
 
     // an error response uses the standard envelope { error: { code, message,

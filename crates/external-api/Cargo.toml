@@ -28,6 +28,7 @@ serde_json = { workspace = true }
 yaml_serde = { workspace = true }
 prometheus = { workspace = true }
 ipnet = { workspace = true }
+subtle = "2.6"
 
 
 [dev-dependencies]
