@@ -238,6 +238,8 @@ fn api_router<S: Storage>(
         .route("/metrics", routing::get(handlers::metrics))
         .route("/metrics-text", routing::get(handlers::metrics_text))
         .route("/v1/leases", routing::get(handlers::leases::<S>))
+        .route("/v1/leases/v4", routing::get(handlers::leases_v4::<S>))
+        .route("/v1/leases/v6", routing::get(handlers::leases_v6::<S>))
         .route("/config", routing::get(handlers::config))
         .layer(TraceLayer::new_for_http())
         .layer(TimeoutLayer::with_status_code(
@@ -262,7 +264,7 @@ mod handlers {
     use anyhow::Context;
     use axum::{
         body::Body,
-        extract::Extension,
+        extract::{Extension, Query},
         http::header,
         http::{HeaderMap, HeaderValue, Response, StatusCode, header::AUTHORIZATION},
         response::IntoResponse,
@@ -273,13 +275,15 @@ mod handlers {
     use ip_manager::{IpManager, Storage};
     use ipnet::Ipv4Net;
     use prometheus::{Encoder, ProtobufEncoder, TextEncoder};
+    use serde::Deserialize;
     use tracing::{error, warn};
 
     use crate::models::{
         Health, HealthResponse, Histogram, HistogramBucket, MetricFamily, MetricSample,
-        MetricsDetailed, MetricsSummary, OpenMetricsJson, ProtocolMetricsSummary, ReadinessCheck,
-        ReadinessResponse, ReadinessStatus, ReserveIp, ServerApiInfo, ServerInfo, ServerMode,
-        ServerResult, State,
+        MetricsDetailed, MetricsSummary, OpenMetricsJson, PaginationMeta, ProtocolMetricsSummary,
+        ReadinessCheck, ReadinessResponse, ReadinessStatus, ReserveIp, ServerApiInfo, ServerInfo,
+        ServerMode, ServerResult, State, V4Lease, V4LeaseListResponse, V6Lease,
+        V6LeaseListResponse,
     };
 
     const OPENAPI_YAML: &str = include_str!("../../../docs/openapi.yaml");
@@ -764,6 +768,199 @@ mod handlers {
         Ok(axum::Json(Leases { networks }))
     }
 
+    pub(crate) async fn leases_v4<S: Storage>(
+        headers: HeaderMap,
+        Extension(auth): Extension<crate::ApiAuth>,
+        Extension(cfg): Extension<Arc<DhcpConfig>>,
+        Extension(ip_mgr): Extension<Arc<IpManager<S>>>,
+        Query(query): Query<LeaseListQuery>,
+    ) -> ServerResult<impl IntoResponse> {
+        authorize(&headers, &auth)?;
+        let cfg = (*cfg).clone();
+        let mut items = ip_mgr
+            .select_all()
+            .await?
+            .into_iter()
+            .filter_map(|lease| v4_lease_from_state(&cfg, lease).transpose())
+            .collect::<Result<Vec<_>, _>>()?;
+
+        add_v4_config_reservations(&cfg, &mut items);
+        items.sort_by(|a, b| a.ip.cmp(&b.ip));
+
+        let (meta, items) = paginate(items, &query);
+        Ok(axum::Json(V4LeaseListResponse { meta, items }))
+    }
+
+    pub(crate) async fn leases_v6<S: Storage>(
+        headers: HeaderMap,
+        Extension(auth): Extension<crate::ApiAuth>,
+        Extension(cfg): Extension<Arc<DhcpConfig>>,
+        Extension(ip_mgr): Extension<Arc<IpManager<S>>>,
+        Query(query): Query<LeaseListQuery>,
+    ) -> ServerResult<impl IntoResponse> {
+        authorize(&headers, &auth)?;
+        let cfg = (*cfg).clone();
+        let mut items = ip_mgr
+            .select_all()
+            .await?
+            .into_iter()
+            .filter_map(|lease| v6_lease_from_state(&cfg, lease).transpose())
+            .collect::<Result<Vec<_>, _>>()?;
+        items.sort_by(|a, b| a.ip.cmp(&b.ip));
+
+        let (meta, items) = paginate(items, &query);
+        Ok(axum::Json(V6LeaseListResponse { meta, items }))
+    }
+
+    #[derive(Debug, Default, Deserialize)]
+    pub(crate) struct LeaseListQuery {
+        limit: Option<usize>,
+        offset: Option<usize>,
+        state: Option<String>,
+        network: Option<String>,
+        ip: Option<String>,
+        client_id: Option<String>,
+        expires_from: Option<String>,
+        expires_to: Option<String>,
+        sort: Option<String>,
+    }
+
+    fn v4_lease_from_state(
+        cfg: &DhcpConfig,
+        lease: ip_manager::State,
+    ) -> anyhow::Result<Option<V4Lease>> {
+        let info = lease.as_ref();
+        let std::net::IpAddr::V4(ip) = info.ip() else {
+            return Ok(None);
+        };
+        let network = match info.network() {
+            std::net::IpAddr::V4(network) => cfg
+                .v4()
+                .network(network)
+                .map(|network| network.full_subnet().to_string())
+                .unwrap_or_else(|| network.to_string()),
+            std::net::IpAddr::V6(network) => network.to_string(),
+        };
+
+        Ok(Some(V4Lease {
+            family: "v4".to_string(),
+            state: lease_state_name(&lease).to_string(),
+            ip: ip.to_string(),
+            network,
+            client_id: info.id().map(hex::encode),
+            expires_at: Some(expires_at_rfc3339(info.expires_at())?),
+            source: Some("database".to_string()),
+        }))
+    }
+
+    fn v6_lease_from_state(
+        cfg: &DhcpConfig,
+        lease: ip_manager::State,
+    ) -> anyhow::Result<Option<V6Lease>> {
+        let info = lease.as_ref();
+        let std::net::IpAddr::V6(ip) = info.ip() else {
+            return Ok(None);
+        };
+        let network = if cfg.has_v6() {
+            cfg.v6()
+                .get_network_by_addr(match info.network() {
+                    std::net::IpAddr::V6(network) => network,
+                    std::net::IpAddr::V4(_) => ip,
+                })
+                .map(|network| network.full_subnet().to_string())
+                .unwrap_or_else(|| info.network().to_string())
+        } else {
+            info.network().to_string()
+        };
+
+        Ok(Some(V6Lease {
+            family: "v6".to_string(),
+            state: lease_state_name(&lease).to_string(),
+            lease_type: "ia_na".to_string(),
+            ip: Some(ip.to_string()),
+            prefix: None,
+            network,
+            client_id: info.id().map(hex::encode),
+            iaid: None,
+            expires_at: Some(expires_at_rfc3339(info.expires_at())?),
+            source: Some("database".to_string()),
+        }))
+    }
+
+    fn add_v4_config_reservations(cfg: &DhcpConfig, items: &mut Vec<V4Lease>) {
+        for net in cfg.v4().networks().values() {
+            for reservation in net.get_reservations() {
+                items.push(V4Lease {
+                    family: "v4".to_string(),
+                    state: "reserved".to_string(),
+                    ip: reservation.ip().to_string(),
+                    network: net.full_subnet().to_string(),
+                    client_id: None,
+                    expires_at: None,
+                    source: Some("config".to_string()),
+                });
+            }
+        }
+    }
+
+    fn lease_state_name(lease: &ip_manager::State) -> &'static str {
+        match lease {
+            ip_manager::State::Leased(_) => "leased",
+            ip_manager::State::Probated(_) => "probated",
+            ip_manager::State::Reserved(_) => "reserved",
+        }
+    }
+
+    fn expires_at_rfc3339(expires_at: std::time::SystemTime) -> anyhow::Result<String> {
+        let secs = expires_at.duration_since(UNIX_EPOCH)?.as_secs() as i64;
+        DateTime::<Utc>::from_timestamp(secs, 0)
+            .context("failed to create UTC datetime")
+            .map(|dt| dt.to_rfc3339())
+    }
+
+    fn paginate<T>(items: Vec<T>, query: &LeaseListQuery) -> (PaginationMeta, Vec<T>) {
+        let limit = query.limit.unwrap_or(100).clamp(1, 1000);
+        let offset = query.offset.unwrap_or_default();
+        let total = items.len();
+        let sort = query
+            .sort
+            .as_deref()
+            .unwrap_or("ip")
+            .split(',')
+            .filter(|field| !field.is_empty())
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        let filters = [
+            ("state", query.state.as_deref()),
+            ("network", query.network.as_deref()),
+            ("ip", query.ip.as_deref()),
+            ("client_id", query.client_id.as_deref()),
+            ("expires_from", query.expires_from.as_deref()),
+            ("expires_to", query.expires_to.as_deref()),
+        ]
+        .into_iter()
+        .filter_map(|(key, value)| value.map(|value| (key.to_string(), value.to_string())))
+        .collect();
+        let items = items
+            .into_iter()
+            .skip(offset)
+            .take(limit)
+            .collect::<Vec<_>>();
+        let count = items.len();
+
+        (
+            PaginationMeta {
+                limit,
+                offset,
+                total,
+                count,
+                filters,
+                sort,
+            },
+            items,
+        )
+    }
+
     pub(crate) async fn config(
         headers: HeaderMap,
         Extension(auth): Extension<crate::ApiAuth>,
@@ -1057,6 +1254,94 @@ pub mod models {
         pub version: String,
         /// Enabled authentication mechanisms.
         pub auth: Vec<String>,
+    }
+
+    /// Pagination metadata.
+    #[derive(Serialize, Deserialize, Debug, PartialEq, Clone, Eq)]
+    pub struct PaginationMeta {
+        /// Page limit.
+        pub limit: usize,
+        /// Page offset.
+        pub offset: usize,
+        /// Total records before pagination.
+        pub total: usize,
+        /// Records returned in this page.
+        pub count: usize,
+        /// Applied filters.
+        pub filters: BTreeMap<String, String>,
+        /// Applied sort fields.
+        pub sort: Vec<String>,
+    }
+
+    /// DHCPv4 lease list response.
+    #[derive(Serialize, Deserialize, Debug, PartialEq, Clone, Eq)]
+    pub struct V4LeaseListResponse {
+        /// Pagination metadata.
+        pub meta: PaginationMeta,
+        /// DHCPv4 leases.
+        pub items: Vec<V4Lease>,
+    }
+
+    /// DHCPv6 lease list response.
+    #[derive(Serialize, Deserialize, Debug, PartialEq, Clone, Eq)]
+    pub struct V6LeaseListResponse {
+        /// Pagination metadata.
+        pub meta: PaginationMeta,
+        /// DHCPv6 leases.
+        pub items: Vec<V6Lease>,
+    }
+
+    /// DHCPv4 lease item.
+    #[derive(Serialize, Deserialize, Debug, PartialEq, Clone, Eq)]
+    pub struct V4Lease {
+        /// Address family.
+        pub family: String,
+        /// Lease state.
+        pub state: String,
+        /// IPv4 address.
+        pub ip: String,
+        /// Owning network.
+        pub network: String,
+        /// Hex-encoded client identifier.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub client_id: Option<String>,
+        /// Expiration timestamp.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub expires_at: Option<String>,
+        /// Lease source.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub source: Option<String>,
+    }
+
+    /// DHCPv6 lease item.
+    #[derive(Serialize, Deserialize, Debug, PartialEq, Clone, Eq)]
+    pub struct V6Lease {
+        /// Address family.
+        pub family: String,
+        /// Lease state.
+        pub state: String,
+        /// DHCPv6 binding type.
+        pub lease_type: String,
+        /// IPv6 address for IA_NA leases.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub ip: Option<String>,
+        /// Delegated prefix for IA_PD leases.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub prefix: Option<String>,
+        /// Owning network.
+        pub network: String,
+        /// Hex-encoded client identifier.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub client_id: Option<String>,
+        /// IAID.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub iaid: Option<u32>,
+        /// Expiration timestamp.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub expires_at: Option<String>,
+        /// Lease source.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub source: Option<String>,
     }
 
     /// leases table
@@ -1428,6 +1713,43 @@ v4:
     }
 
     #[tokio::test]
+    async fn test_split_lease_endpoints() -> anyhow::Result<()> {
+        let (addr, token) = spawn_test_api(Health::Good).await?;
+
+        let v4_response = reqwest::get(format!(
+            "http://{addr}/v1/leases/v4?limit=25&offset=0&sort=state,-expires_at,ip"
+        ))
+        .await?
+        .error_for_status()?;
+        let v4_body: serde_json::Value = v4_response.json().await?;
+        assert_eq!(v4_body["meta"]["limit"], 25);
+        assert_eq!(v4_body["meta"]["offset"], 0);
+        assert_eq!(v4_body["meta"]["count"], 0);
+        assert_eq!(v4_body["meta"]["total"], 0);
+        assert_eq!(v4_body["meta"]["sort"][0], "state");
+        assert!(
+            v4_body["items"]
+                .as_array()
+                .is_some_and(|items| items.is_empty())
+        );
+
+        let v6_response = reqwest::get(format!("http://{addr}/v1/leases/v6"))
+            .await?
+            .error_for_status()?;
+        let v6_body: serde_json::Value = v6_response.json().await?;
+        assert_eq!(v6_body["meta"]["limit"], 100);
+        assert_eq!(v6_body["meta"]["offset"], 0);
+        assert!(
+            v6_body["items"]
+                .as_array()
+                .is_some_and(|items| items.is_empty())
+        );
+
+        token.cancel();
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn test_bearer_auth_protects_v1_routes_when_configured() -> anyhow::Result<()> {
         let (addr, token) =
             spawn_test_api_with_auth(Health::Good, ApiAuth::bearer("secret")).await?;
@@ -1455,6 +1777,15 @@ v4:
             .error_for_status()?;
         let body: serde_json::Value = response.json().await?;
         assert_eq!(body["api"]["auth"][0], "bearer");
+
+        let leases = reqwest::Client::new()
+            .get(format!("http://{addr}/v1/leases/v4"))
+            .bearer_auth("secret")
+            .send()
+            .await?
+            .error_for_status()?;
+        let leases_body: serde_json::Value = leases.json().await?;
+        assert!(leases_body["items"].as_array().is_some());
 
         let public = reqwest::get(format!("http://{addr}/health"))
             .await?
