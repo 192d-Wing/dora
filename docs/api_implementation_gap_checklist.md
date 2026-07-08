@@ -8,10 +8,10 @@ items annotated `— partial:` are started but incomplete.
 
 ## Contract And Serving
 
-- [ ] Add `docs/openapi.yaml` validation in CI.
+- [x] Add `docs/openapi.yaml` validation in CI. — `openapi-spec-validator` job.
 - [x] Serve the OpenAPI document as unauthenticated JSON at `GET /openapi.json`.
-- [ ] Ensure every API response uses `application/json`. — partial: JSON endpoints done, but `/metrics` / `/metrics-text` still serve text.
-- [ ] Remove or intentionally replace legacy unversioned routes as part of the breaking API cleanup. — partial: `/config` → `/v1/config` done; `/metrics`, `/metrics-text`, `/ping`, and the old combined `/v1/leases` remain.
+- [x] Ensure every API response uses `application/json`. — the v1 API is JSON; `/metrics`/`/metrics-text` intentionally keep the Prometheus wire formats.
+- [ ] Remove or intentionally replace legacy unversioned routes as part of the breaking API cleanup. — partial: `/config` → `/v1/config` and `/ping` removed; `/metrics`/`/metrics-text` kept (authenticated) as a Prometheus scrape surface; old combined `/v1/leases` still present.
 - [x] Generate and return `X-Request-ID` on every response. — on success and error responses.
 - [x] Include the generated `request_id` in all error bodies.
 
@@ -50,10 +50,10 @@ items annotated `— partial:` are started but incomplete.
 ## Reservations
 
 - [ ] Add runtime reservation storage.
-- [ ] Preserve config reservations. — config reservations appear in lease listings, but there is no reservations API.
+- [x] Preserve config reservations. — surfaced via `GET /v1/reservations/v4` with `source: config`.
 - [ ] Define and enforce precedence: runtime API reservations override config reservations.
-- [ ] Add `GET /v1/reservations/v4`.
-- [ ] Add `GET /v1/reservations/v6`.
+- [x] Add `GET /v1/reservations/v4`. — config reservations, pagination + network/ip/client_id filters.
+- [x] Add `GET /v1/reservations/v6`. — empty until runtime v6 reservations exist.
 - [ ] Add action endpoints for create, update, and delete reservation.
 - [ ] Add conflict and precedence tests.
 
@@ -99,8 +99,8 @@ items annotated `— partial:` are started but incomplete.
 
 ## Documentation
 
-- [ ] Update README to remove stale `0.0.0.0:3333` external API default.
-- [ ] Update `crates/bin/README.md` to show `127.0.0.1:3333`.
+- [x] Update README to remove stale `0.0.0.0:3333` external API default. — now documents `127.0.0.1:3333` and the v1 endpoint surface.
+- [x] Update `crates/bin/README.md` to show `127.0.0.1:3333`. — and fixed the `--external-api` help text (was mislabeled "the v6 address").
 - [ ] Document the breaking cleanup from legacy routes to the OAS v1 API.
 - [ ] Document auth deployment patterns for Bearer token and mTLS.
 - [ ] Document operational risk for config, reservations, drain, and shutdown actions.

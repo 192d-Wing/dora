@@ -13,7 +13,7 @@ Options:
   -c, --config-path <CONFIG_PATH>      path to dora's config [env: CONFIG_PATH=] [default: /var/lib/dora/config.yaml]
       --v4-addr <V4_ADDR>              the v4 address to listen on [env: V4_ADDR=] [default: 0.0.0.0:67]
       --v6-addr <V6_ADDR>              the v6 address to listen on [env: V6_ADDR=] [default: [::]:547]
-      --external-api <EXTERNAL_API>    the v6 address to listen on [env: EXTERNAL_API=] [default: [::]:3333]
+      --external-api <EXTERNAL_API>    the management HTTP API address to listen on [env: EXTERNAL_API=] [default: 127.0.0.1:3333]
       --timeout <TIMEOUT>              default timeout, dora will respond within this window or drop [env: TIMEOUT=] [default: 3]
       --max-live-msgs <MAX_LIVE_MSGS>  max live messages before new messages will begin to be dropped [env: MAX_LIVE_MSGS=] [default: 1000]
       --channel-size <CHANNEL_SIZE>    channel size for various mpsc chans [env: CHANNEL_SIZE=] [default: 10000]
