@@ -240,7 +240,7 @@ fn api_router<S: Storage>(
         .route("/v1/leases", routing::get(handlers::leases::<S>))
         .route("/v1/leases/v4", routing::get(handlers::leases_v4::<S>))
         .route("/v1/leases/v6", routing::get(handlers::leases_v6::<S>))
-        .route("/config", routing::get(handlers::config))
+        .route("/v1/config", routing::get(handlers::config))
         .layer(TraceLayer::new_for_http())
         .layer(TimeoutLayer::with_status_code(
             axum::http::StatusCode::REQUEST_TIMEOUT,
@@ -279,11 +279,11 @@ mod handlers {
     use tracing::{error, warn};
 
     use crate::models::{
-        Health, HealthResponse, Histogram, HistogramBucket, MetricFamily, MetricSample,
-        MetricsDetailed, MetricsSummary, OpenMetricsJson, PaginationMeta, ProtocolMetricsSummary,
-        ReadinessCheck, ReadinessResponse, ReadinessStatus, ReserveIp, ServerApiInfo, ServerInfo,
-        ServerMode, ServerResult, State, V4Lease, V4LeaseListResponse, V6Lease,
-        V6LeaseListResponse,
+        ConfigDocument, Health, HealthResponse, Histogram, HistogramBucket, MetricFamily,
+        MetricSample, MetricsDetailed, MetricsSummary, OpenMetricsJson, PaginationMeta,
+        ProtocolMetricsSummary, ReadinessCheck, ReadinessResponse, ReadinessStatus, ReserveIp,
+        ServerApiInfo, ServerInfo, ServerMode, ServerResult, State, V4Lease, V4LeaseListResponse,
+        V6Lease, V6LeaseListResponse,
     };
 
     const OPENAPI_YAML: &str = include_str!("../../../docs/openapi.yaml");
@@ -967,6 +967,7 @@ mod handlers {
         Extension(cfg): Extension<Arc<DhcpConfig>>,
     ) -> ServerResult<impl IntoResponse> {
         authorize(&headers, &auth)?;
+        let request_id = request_id();
         // TODO: if serializing worked we could get DhcpConfig back into JSON/YAML but there's
         // a lot of logic left to make that particular transform. So just read from disk
         let path = cfg.path().context("no path specified for config")?;
@@ -974,21 +975,28 @@ mod handlers {
             .await
             .with_context(|| format!("failed to find config at {}", path.display()))?;
         // SECURITY: the config file contains DDNS TSIG key material. This endpoint
-        // is unauthenticated, so the raw file must never be returned. Parse it into
-        // the typed wire config, blank out every secret, and re-serialize. If it
-        // cannot be parsed we return an error rather than risk leaking secrets.
+        // may be unauthenticated, so the raw file must never be returned. Parse it
+        // into the typed wire config, blank out every secret, and re-serialize. If
+        // it cannot be parsed we return an error rather than risk leaking secrets.
         let redacted = redact_config(&raw).context("failed to render config for display")?;
-        Ok(axum::Json(redacted))
+        Ok((
+            request_id_header(&request_id)?,
+            axum::Json(ConfigDocument {
+                version: "v1".to_string(),
+                redacted: true,
+                document: serde_json::to_value(redacted)?,
+            }),
+        ))
     }
 
     /// Value substituted for any secret we strip out of the config before display.
     const REDACTED: &str = "**REDACTED**";
 
     /// Parse `raw` (YAML or JSON) into the typed wire config, replace all TSIG key
-    /// material with [`REDACTED`], and re-serialize to YAML. Returns `Err` if the
-    /// config cannot be parsed/serialized so a failure can never fall back to
-    /// echoing the raw (secret-bearing) file.
-    pub(crate) fn redact_config(raw: &str) -> anyhow::Result<String> {
+    /// material with [`REDACTED`], and return the typed config.
+    /// Returns `Err` if the config cannot be parsed so a failure can never fall
+    /// back to echoing the raw (secret-bearing) file.
+    pub(crate) fn redact_config(raw: &str) -> anyhow::Result<config::wire::Config> {
         // Mirror the server's own loader (config::DhcpConfig::new), which tries
         // JSON first and then YAML. yaml_serde alone is not enough: it rejects
         // some inputs serde_json accepts (e.g. tab-indented JSON), which would
@@ -1001,7 +1009,7 @@ mod handlers {
                 key.data = REDACTED.to_string();
             }
         }
-        yaml_serde::to_string(&cfg).context("could not serialize redacted config")
+        Ok(cfg)
     }
 
     pub(crate) async fn metrics() -> ServerResult<impl IntoResponse> {
@@ -1256,6 +1264,17 @@ pub mod models {
         pub auth: Vec<String>,
     }
 
+    /// Active redacted configuration document.
+    #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
+    pub struct ConfigDocument {
+        /// Document version.
+        pub version: String,
+        /// Whether the document has been redacted.
+        pub redacted: bool,
+        /// Redacted configuration payload.
+        pub document: serde_json::Value,
+    }
+
     /// Pagination metadata.
     #[derive(Serialize, Deserialize, Debug, PartialEq, Clone, Eq)]
     pub struct PaginationMeta {
@@ -1453,6 +1472,7 @@ pub mod models {
 mod tests {
     use std::{
         net::SocketAddr,
+        path::PathBuf,
         sync::Arc,
         time::{Duration, SystemTime},
     };
@@ -1472,6 +1492,43 @@ mod tests {
     ) -> anyhow::Result<(SocketAddr, CancellationToken)> {
         let mgr = Arc::new(IpManager::new(SqliteDb::new("sqlite::memory:").await?)?);
         let cfg = Arc::new(DhcpConfig::default());
+        let state = models::blank_health();
+        *state.lock() = health;
+        let token = CancellationToken::new();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let addr = listener.local_addr()?;
+        let app = api_router::<SqliteDb>(
+            state,
+            ApiState {
+                started_at: SystemTime::now(),
+            },
+            auth,
+            cfg,
+            mgr,
+            Duration::from_secs(30),
+        );
+        let shutdown = token.clone();
+
+        tokio::spawn(async move {
+            if let Err(err) = axum::serve(listener, app)
+                .with_graceful_shutdown(async move {
+                    shutdown.cancelled().await;
+                })
+                .await
+            {
+                tracing::error!(?err, "test external API task returned error");
+            }
+        });
+
+        Ok((addr, token))
+    }
+
+    async fn spawn_test_api_with_config(
+        health: Health,
+        auth: ApiAuth,
+        cfg: Arc<DhcpConfig>,
+    ) -> anyhow::Result<(SocketAddr, CancellationToken)> {
+        let mgr = Arc::new(IpManager::new(SqliteDb::new("sqlite::memory:").await?)?);
         let state = models::blank_health();
         *state.lock() = health;
         let token = CancellationToken::new();
@@ -1536,15 +1593,15 @@ v4:
             values: {}
 "#;
         let out = crate::handlers::redact_config(raw).expect("redact should succeed");
+        let out = serde_json::to_value(out).expect("serialize redacted config");
         assert!(
-            !out.contains("SUPERSECRETKEYMATERIAL"),
+            !out.to_string().contains("SUPERSECRETKEYMATERIAL"),
             "TSIG secret leaked into /config output:\n{out}"
         );
-        assert!(out.contains("**REDACTED**"), "expected redaction marker");
-        // the redacted output must still be a valid config (reservation match
-        // map form preserved, not converted to a `!chaddr` tag)
-        yaml_serde::from_str::<config::wire::Config>(&out)
-            .expect("redacted config should re-parse");
+        assert!(
+            out.to_string().contains("**REDACTED**"),
+            "expected redaction marker"
+        );
     }
 
     // The server accepts JSON configs (and tries JSON before YAML at startup),
@@ -1554,11 +1611,12 @@ v4:
     fn test_redact_config_accepts_json() {
         let raw = "{\n\t\"v4\": {\n\t\t\"ddns\": {\n\t\t\t\"enable_updates\": true,\n\t\t\t\"forward\": [],\n\t\t\t\"reverse\": [],\n\t\t\t\"tsig_keys\": {\n\t\t\t\t\"key_foo\": { \"algorithm\": \"hmac-sha256\", \"data\": \"SUPERSECRETKEYMATERIAL==\" }\n\t\t\t}\n\t\t}\n\t}\n}";
         let out = crate::handlers::redact_config(raw).expect("json redact should succeed");
+        let out = serde_json::to_value(out).expect("serialize redacted config");
         assert!(
-            !out.contains("SUPERSECRETKEYMATERIAL"),
+            !out.to_string().contains("SUPERSECRETKEYMATERIAL"),
             "secret leaked:\n{out}"
         );
-        assert!(out.contains("**REDACTED**"));
+        assert!(out.to_string().contains("**REDACTED**"));
     }
 
     #[test]
@@ -1707,6 +1765,39 @@ v4:
         assert!(body["api"]["auth"].as_array().is_some());
         assert!(body["started_at"].as_str().is_some_and(|v| !v.is_empty()));
         assert_eq!(body["request_id"], header_request_id);
+
+        token.cancel();
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_config_returns_redacted_json() -> anyhow::Result<()> {
+        let cfg_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../example.yaml")
+            .canonicalize()?;
+        let cfg = Arc::new(DhcpConfig::parse(&cfg_path)?);
+        let (addr, token) =
+            spawn_test_api_with_config(Health::Good, ApiAuth::disabled(), cfg).await?;
+
+        let response = reqwest::get(format!("http://{addr}/v1/config"))
+            .await?
+            .error_for_status()?;
+        let header_request_id = response
+            .headers()
+            .get("x-request-id")
+            .expect("x-request-id header")
+            .to_str()?
+            .to_string();
+        assert!(
+            !header_request_id.is_empty(),
+            "x-request-id must be non-empty"
+        );
+        let body: serde_json::Value = response.json().await?;
+
+        assert_eq!(body["version"], "v1");
+        assert_eq!(body["redacted"], true);
+        assert!(body["document"].is_object());
+        assert!(body.to_string().contains("**REDACTED**"));
 
         token.cancel();
         Ok(())
