@@ -8,17 +8,35 @@
 # The runtime base is the Iron Bank hardened UBI 10 image, which requires
 # authenticating to registry1.dso.mil first (see the CI `docker` job).
 
-# ---- builder ----
+# ---- builder (cargo-chef) ----
 # The Rust image is multi-arch, so under `buildx --platform` it builds natively
 # for each target architecture.
-FROM rust:1 AS builder
+#
+# cargo-chef caches dependency compilation as its own layer so a source-only
+# change doesn't recompile every crate. Installed before any source is copied,
+# so this base layer stays cached until the rust image itself changes.
+FROM rust:1 AS chef
+RUN cargo install cargo-chef --locked
 WORKDIR /usr/src/dora
+
+# Produce a recipe describing only the dependency graph. First-party source
+# edits don't change the recipe, so the `cook` layer below stays cached.
+FROM chef AS planner
 COPY . .
-# sqlx-cli creates the db + applies migrations so the sqlx query macros can run.
-RUN cargo install sqlx-cli
-RUN sqlx database create
-RUN sqlx migrate run
+RUN cargo chef prepare --recipe-path recipe.json
+
+FROM chef AS builder
+# Build against sqlx's offline query cache (crates/libs/ip-manager/sqlx-data.json)
+# — the same thing the rest of CI uses — so no sqlx-cli, database, or migrations
+# are needed at image-build time.
+ENV SQLX_OFFLINE=true
 ARG BUILD_MODE=release
+# Compile dependencies from the recipe. This layer is cached and only re-runs
+# when Cargo.lock / the dependency set changes, not on ordinary code edits.
+COPY --from=planner /usr/src/dora/recipe.json recipe.json
+RUN cargo chef cook --${BUILD_MODE} --recipe-path recipe.json
+# Now the source; only first-party crates recompile on a source change.
+COPY . .
 RUN cargo build --${BUILD_MODE} --bin dora
 
 # ---- runtime ----
