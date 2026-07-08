@@ -4,7 +4,9 @@
 
 *.db
 
-docs/
+# ignore docs, except the OpenAPI contract which external-api embeds via include_str!
+docs/*
+!docs/openapi.yaml
 data/
 # build directories
 target/
