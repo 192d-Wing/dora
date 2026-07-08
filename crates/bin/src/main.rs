@@ -1,5 +1,4 @@
 #![allow(clippy::cognitive_complexity)]
-// (ci) source-only touch to measure the warm-cache container build speedup.
 use std::sync::Arc;
 
 use anyhow::{Context, Result, anyhow};
