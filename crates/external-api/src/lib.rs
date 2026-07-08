@@ -103,28 +103,7 @@ impl<S: Storage> ExternalApi<S> {
         token: CancellationToken,
     ) -> Result<()> {
         const TIMEOUT: u64 = 30;
-        use tower_http::{timeout::TimeoutLayer, trace::TraceLayer};
-        // Provides:
-        // /health
-        // /ping
-        // /metrics
-        // /metrics-text
-        // /leases
-        let service = Router::new()
-            .route("/health", routing::get(handlers::ok))
-            .route("/ping", routing::get(handlers::ping))
-            .route("/metrics", routing::get(handlers::metrics))
-            .route("/metrics-text", routing::get(handlers::metrics_text))
-            .route("/v1/leases", routing::get(handlers::leases::<S>))
-            .route("/config", routing::get(handlers::config))
-            .layer(TraceLayer::new_for_http())
-            .layer(TimeoutLayer::with_status_code(
-                axum::http::StatusCode::REQUEST_TIMEOUT,
-                Duration::from_secs(TIMEOUT),
-            ))
-            .layer(Extension(state))
-            .layer(Extension(ip_mgr))
-            .layer(Extension(cfg));
+        let service = api_router::<S>(state, cfg, ip_mgr, Duration::from_secs(TIMEOUT));
 
         let tcp = TcpListener::bind(&addr).await?;
         tracing::debug!(%addr, "external API listening");
@@ -168,16 +147,56 @@ impl<S: Storage> ExternalApi<S> {
     }
 }
 
+fn api_router<S: Storage>(
+    state: State,
+    cfg: Arc<DhcpConfig>,
+    ip_mgr: Arc<IpManager<S>>,
+    timeout: Duration,
+) -> Router {
+    use tower_http::{timeout::TimeoutLayer, trace::TraceLayer};
+
+    Router::new()
+        .route("/health", routing::get(handlers::health))
+        .route("/ready", routing::get(handlers::ready))
+        .route("/openapi.json", routing::get(handlers::openapi_json))
+        .route("/ping", routing::get(handlers::ping))
+        .route(
+            "/v1/metrics/summary",
+            routing::get(handlers::metrics_summary),
+        )
+        .route("/v1/metrics", routing::get(handlers::metrics_json))
+        .route(
+            "/v1/metrics/prometheus",
+            routing::get(handlers::metrics_prometheus_json),
+        )
+        .route("/metrics", routing::get(handlers::metrics))
+        .route("/metrics-text", routing::get(handlers::metrics_text))
+        .route("/v1/leases", routing::get(handlers::leases::<S>))
+        .route("/config", routing::get(handlers::config))
+        .layer(TraceLayer::new_for_http())
+        .layer(TimeoutLayer::with_status_code(
+            axum::http::StatusCode::REQUEST_TIMEOUT,
+            timeout,
+        ))
+        .layer(Extension(state))
+        .layer(Extension(ip_mgr))
+        .layer(Extension(cfg))
+}
+
 mod handlers {
 
-    use std::{collections::HashMap, sync::Arc, time::UNIX_EPOCH};
+    use std::{
+        collections::{BTreeMap, HashMap},
+        sync::Arc,
+        time::{SystemTime, UNIX_EPOCH},
+    };
 
     use anyhow::Context;
     use axum::{
         body::Body,
         extract::Extension,
         http::header,
-        http::{Response, StatusCode},
+        http::{HeaderMap, HeaderValue, Response, StatusCode},
         response::IntoResponse,
     };
     use chrono::{DateTime, Utc};
@@ -188,13 +207,347 @@ mod handlers {
     use prometheus::{Encoder, ProtobufEncoder, TextEncoder};
     use tracing::{error, warn};
 
-    use crate::models::{Health, ReserveIp, ServerResult, State};
+    use crate::models::{
+        Health, HealthResponse, Histogram, HistogramBucket, MetricFamily, MetricSample,
+        MetricsDetailed, MetricsSummary, OpenMetricsJson, ProtocolMetricsSummary, ReadinessCheck,
+        ReadinessResponse, ReadinessStatus, ReserveIp, ServerResult, State,
+    };
 
-    pub(crate) async fn ok(Extension(state): Extension<State>) -> ServerResult<impl IntoResponse> {
-        Ok(match *state.lock() {
-            Health::Good => StatusCode::OK,
-            Health::Bad => StatusCode::INTERNAL_SERVER_ERROR,
-        })
+    const OPENAPI_YAML: &str = include_str!("../../../docs/openapi.yaml");
+
+    pub(crate) async fn health() -> ServerResult<impl IntoResponse> {
+        let request_id = request_id();
+        Ok((
+            request_id_header(&request_id)?,
+            axum::Json(HealthResponse {
+                status: "alive".to_string(),
+                request_id,
+            }),
+        ))
+    }
+
+    pub(crate) async fn ready(
+        Extension(state): Extension<State>,
+    ) -> ServerResult<impl IntoResponse> {
+        let health = *state.lock();
+        let ready = health == Health::Good;
+        let request_id = request_id();
+        let body = ReadinessResponse {
+            status: if ready {
+                ReadinessStatus::Ready
+            } else {
+                ReadinessStatus::NotReady
+            },
+            checks: vec![ReadinessCheck {
+                name: "health".to_string(),
+                status: if ready { "pass" } else { "fail" }.to_string(),
+                message: None,
+            }],
+            request_id: request_id.clone(),
+        };
+        let status = if ready {
+            StatusCode::OK
+        } else {
+            StatusCode::SERVICE_UNAVAILABLE
+        };
+
+        Ok((status, request_id_header(&request_id)?, axum::Json(body)))
+    }
+
+    pub(crate) async fn openapi_json() -> ServerResult<impl IntoResponse> {
+        let request_id = request_id();
+        let yaml: yaml_serde::Value =
+            yaml_serde::from_str(OPENAPI_YAML).context("failed to parse embedded OpenAPI")?;
+        Ok((
+            request_id_header(&request_id)?,
+            axum::Json(yaml_to_json(yaml)),
+        ))
+    }
+
+    pub(crate) async fn metrics_summary() -> ServerResult<impl IntoResponse> {
+        let request_id = request_id();
+        Ok((
+            request_id_header(&request_id)?,
+            axum::Json(build_metrics_summary(&prometheus::gather())),
+        ))
+    }
+
+    pub(crate) async fn metrics_json() -> ServerResult<impl IntoResponse> {
+        let request_id = request_id();
+        let families = prometheus::gather();
+        Ok((
+            request_id_header(&request_id)?,
+            axum::Json(build_metrics_detailed(&families)),
+        ))
+    }
+
+    pub(crate) async fn metrics_prometheus_json() -> ServerResult<impl IntoResponse> {
+        let request_id = request_id();
+        Ok((
+            request_id_header(&request_id)?,
+            axum::Json(OpenMetricsJson {
+                families: prometheus::gather()
+                    .into_iter()
+                    .map(metric_family_to_json)
+                    .collect(),
+            }),
+        ))
+    }
+
+    fn request_id() -> String {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_nanos())
+            .unwrap_or_default();
+        format!("{nanos:x}")
+    }
+
+    fn request_id_header(request_id: &str) -> anyhow::Result<HeaderMap> {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-request-id", HeaderValue::from_str(request_id)?);
+        Ok(headers)
+    }
+
+    fn yaml_to_json(yaml: yaml_serde::Value) -> serde_json::Value {
+        use serde_json::Value as Json;
+        use yaml_serde::Value as Yaml;
+
+        match yaml {
+            Yaml::Null => Json::Null,
+            Yaml::Bool(value) => Json::Bool(value),
+            Yaml::Number(value) => {
+                if let Some(value) = value.as_i64() {
+                    Json::from(value)
+                } else if let Some(value) = value.as_u64() {
+                    Json::from(value)
+                } else if let Some(value) = value.as_f64() {
+                    serde_json::Number::from_f64(value)
+                        .map(Json::Number)
+                        .unwrap_or(Json::Null)
+                } else {
+                    Json::Null
+                }
+            }
+            Yaml::String(value) => Json::String(value),
+            Yaml::Sequence(values) => Json::Array(values.into_iter().map(yaml_to_json).collect()),
+            Yaml::Mapping(values) => {
+                let mut object = serde_json::Map::new();
+                for (key, value) in values {
+                    let key = match key {
+                        Yaml::String(value) => value,
+                        Yaml::Number(value) => value.to_string(),
+                        Yaml::Bool(value) => value.to_string(),
+                        other => yaml_to_json(other).to_string(),
+                    };
+                    object.insert(key, yaml_to_json(value));
+                }
+                Json::Object(object)
+            }
+            Yaml::Tagged(value) => yaml_to_json(value.value),
+        }
+    }
+
+    fn build_metrics_detailed(families: &[prometheus::proto::MetricFamily]) -> MetricsDetailed {
+        let mut counters = BTreeMap::new();
+        let mut gauges = BTreeMap::new();
+        let mut histograms = BTreeMap::new();
+
+        for family in families {
+            let name = family.name().to_string();
+            match family.get_field_type() {
+                prometheus::proto::MetricType::COUNTER => {
+                    counters.insert(name, metric_family_total(family));
+                }
+                prometheus::proto::MetricType::GAUGE => {
+                    gauges.insert(name, metric_family_total(family));
+                }
+                prometheus::proto::MetricType::HISTOGRAM => {
+                    histograms.insert(name, histogram_family_to_json(family));
+                }
+                _ => {}
+            }
+        }
+
+        MetricsDetailed {
+            summary: build_metrics_summary(families),
+            counters,
+            gauges,
+            histograms,
+        }
+    }
+
+    fn build_metrics_summary(families: &[prometheus::proto::MetricFamily]) -> MetricsSummary {
+        UPTIME.set(START_TIME.elapsed().as_secs() as i64);
+        MetricsSummary {
+            uptime_seconds: metric_family_total_by_name(families, "uptime") as u64,
+            in_flight: metric_family_total_by_name(families, "in_flight") as u64,
+            dhcpv4: ProtocolMetricsSummary {
+                messages_received: metric_family_total_by_name(families, "recv_type_counts") as u64,
+                messages_sent: metric_family_total_by_name(families, "sent_type_counts") as u64,
+                errors: 0,
+            },
+            dhcpv6: ProtocolMetricsSummary {
+                messages_received: metric_family_total_by_name(families, "v6_recv_type_counts")
+                    as u64,
+                messages_sent: metric_family_total_by_name(families, "v6_sent_type_counts") as u64,
+                errors: 0,
+            },
+        }
+    }
+
+    fn metric_family_total_by_name(
+        families: &[prometheus::proto::MetricFamily],
+        name: &str,
+    ) -> f64 {
+        families
+            .iter()
+            .find(|family| family.name() == name)
+            .map(metric_family_total)
+            .unwrap_or_default()
+    }
+
+    fn metric_family_total(family: &prometheus::proto::MetricFamily) -> f64 {
+        family
+            .get_metric()
+            .iter()
+            .map(|metric| match family.get_field_type() {
+                prometheus::proto::MetricType::COUNTER => metric
+                    .counter
+                    .as_ref()
+                    .map(|counter| counter.value())
+                    .unwrap_or_default(),
+                prometheus::proto::MetricType::GAUGE => metric
+                    .gauge
+                    .as_ref()
+                    .map(|gauge| gauge.value())
+                    .unwrap_or_default(),
+                prometheus::proto::MetricType::HISTOGRAM => metric
+                    .histogram
+                    .as_ref()
+                    .map(|histogram| histogram.get_sample_sum())
+                    .unwrap_or_default(),
+                _ => 0.0,
+            })
+            .sum()
+    }
+
+    fn histogram_family_to_json(family: &prometheus::proto::MetricFamily) -> Histogram {
+        let mut count = 0;
+        let mut sum = 0.0;
+        let mut buckets = Vec::new();
+
+        for metric in family.get_metric() {
+            let Some(histogram) = metric.histogram.as_ref() else {
+                continue;
+            };
+            count += histogram.get_sample_count();
+            sum += histogram.get_sample_sum();
+            buckets.extend(histogram.get_bucket().iter().map(|bucket| HistogramBucket {
+                le: bucket.upper_bound(),
+                count: bucket.cumulative_count(),
+            }));
+        }
+
+        Histogram {
+            count,
+            sum,
+            buckets,
+        }
+    }
+
+    fn metric_family_to_json(family: prometheus::proto::MetricFamily) -> MetricFamily {
+        MetricFamily {
+            name: family.name().to_string(),
+            metric_type: metric_type_name(family.get_field_type()).to_string(),
+            help: non_empty_string(family.help()),
+            unit: None,
+            samples: family
+                .get_metric()
+                .iter()
+                .flat_map(|metric| {
+                    metric_to_samples(family.name(), family.get_field_type(), metric)
+                })
+                .collect(),
+        }
+    }
+
+    fn metric_to_samples(
+        family_name: &str,
+        metric_type: prometheus::proto::MetricType,
+        metric: &prometheus::proto::Metric,
+    ) -> Vec<MetricSample> {
+        let labels = metric
+            .get_label()
+            .iter()
+            .map(|label| (label.name().to_string(), label.value().to_string()))
+            .collect::<BTreeMap<_, _>>();
+        let labels = if labels.is_empty() {
+            None
+        } else {
+            Some(labels)
+        };
+
+        match metric_type {
+            prometheus::proto::MetricType::COUNTER => vec![MetricSample {
+                name: family_name.to_string(),
+                labels,
+                value: metric
+                    .counter
+                    .as_ref()
+                    .map(|counter| counter.value())
+                    .unwrap_or_default(),
+            }],
+            prometheus::proto::MetricType::GAUGE => vec![MetricSample {
+                name: family_name.to_string(),
+                labels,
+                value: metric
+                    .gauge
+                    .as_ref()
+                    .map(|gauge| gauge.value())
+                    .unwrap_or_default(),
+            }],
+            prometheus::proto::MetricType::HISTOGRAM => {
+                let Some(histogram) = metric.histogram.as_ref() else {
+                    return Vec::new();
+                };
+                let mut samples = Vec::with_capacity(histogram.get_bucket().len() + 2);
+                for bucket in histogram.get_bucket() {
+                    let mut bucket_labels = labels.clone().unwrap_or_default();
+                    bucket_labels.insert("le".to_string(), bucket.upper_bound().to_string());
+                    samples.push(MetricSample {
+                        name: format!("{family_name}_bucket"),
+                        labels: Some(bucket_labels),
+                        value: bucket.cumulative_count() as f64,
+                    });
+                }
+                samples.push(MetricSample {
+                    name: format!("{family_name}_sum"),
+                    labels: labels.clone(),
+                    value: histogram.get_sample_sum(),
+                });
+                samples.push(MetricSample {
+                    name: format!("{family_name}_count"),
+                    labels,
+                    value: histogram.get_sample_count() as f64,
+                });
+                samples
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    fn metric_type_name(metric_type: prometheus::proto::MetricType) -> &'static str {
+        match metric_type {
+            prometheus::proto::MetricType::COUNTER => "counter",
+            prometheus::proto::MetricType::GAUGE => "gauge",
+            prometheus::proto::MetricType::HISTOGRAM => "histogram",
+            prometheus::proto::MetricType::SUMMARY => "summary",
+            prometheus::proto::MetricType::UNTYPED => "unknown",
+        }
+    }
+
+    fn non_empty_string(value: &str) -> Option<String> {
+        (!value.is_empty()).then(|| value.to_string())
     }
 
     pub(crate) async fn leases<S: Storage>(
@@ -361,7 +714,7 @@ mod handlers {
 
 /// Various models for API responses
 pub mod models {
-    use std::{collections::HashMap, fmt, net::IpAddr, sync::Arc};
+    use std::{collections::BTreeMap, collections::HashMap, fmt, net::IpAddr, sync::Arc};
 
     use axum::response::IntoResponse;
     use config::wire::v4::Condition;
@@ -392,6 +745,142 @@ pub mod models {
                 }
             )
         }
+    }
+
+    /// Liveness response body.
+    #[derive(Serialize, Deserialize, Debug, PartialEq, Clone, Eq)]
+    pub struct HealthResponse {
+        /// Liveness state.
+        pub status: String,
+        /// Server-generated request id.
+        pub request_id: String,
+    }
+
+    /// Readiness response body.
+    #[derive(Serialize, Deserialize, Debug, PartialEq, Clone, Eq)]
+    pub struct ReadinessResponse {
+        /// Readiness state.
+        pub status: ReadinessStatus,
+        /// Individual readiness checks.
+        pub checks: Vec<ReadinessCheck>,
+        /// Server-generated request id.
+        pub request_id: String,
+    }
+
+    /// Readiness state.
+    #[derive(Serialize, Deserialize, Debug, PartialEq, Copy, Clone, Eq)]
+    #[serde(rename_all = "snake_case")]
+    pub enum ReadinessStatus {
+        /// Server is ready.
+        Ready,
+        /// Server is alive but not ready.
+        NotReady,
+    }
+
+    /// Individual readiness check.
+    #[derive(Serialize, Deserialize, Debug, PartialEq, Clone, Eq)]
+    pub struct ReadinessCheck {
+        /// Check name.
+        pub name: String,
+        /// Check status.
+        pub status: String,
+        /// Optional human-readable detail.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub message: Option<String>,
+    }
+
+    /// Summary metrics for health and dashboards.
+    #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
+    pub struct MetricsSummary {
+        /// Server uptime in seconds.
+        pub uptime_seconds: u64,
+        /// Currently in-flight DHCP messages.
+        pub in_flight: u64,
+        /// DHCPv4 metric summary.
+        pub dhcpv4: ProtocolMetricsSummary,
+        /// DHCPv6 metric summary.
+        pub dhcpv6: ProtocolMetricsSummary,
+    }
+
+    /// Protocol-specific metric summary.
+    #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
+    pub struct ProtocolMetricsSummary {
+        /// Messages received.
+        pub messages_received: u64,
+        /// Messages sent.
+        pub messages_sent: u64,
+        /// Protocol errors.
+        pub errors: u64,
+    }
+
+    /// Detailed structured metrics.
+    #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
+    pub struct MetricsDetailed {
+        /// Summary metrics.
+        pub summary: MetricsSummary,
+        /// Counter metric family totals.
+        pub counters: BTreeMap<String, f64>,
+        /// Gauge metric family totals.
+        pub gauges: BTreeMap<String, f64>,
+        /// Histogram metric family totals.
+        pub histograms: BTreeMap<String, Histogram>,
+    }
+
+    /// Histogram metric.
+    #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
+    pub struct Histogram {
+        /// Sample count.
+        pub count: u64,
+        /// Sample sum.
+        pub sum: f64,
+        /// Histogram buckets.
+        pub buckets: Vec<HistogramBucket>,
+    }
+
+    /// Histogram bucket.
+    #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
+    pub struct HistogramBucket {
+        /// Upper bound.
+        pub le: f64,
+        /// Cumulative count.
+        pub count: u64,
+    }
+
+    /// OpenMetrics-inspired JSON metric families.
+    #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
+    pub struct OpenMetricsJson {
+        /// Metric families.
+        pub families: Vec<MetricFamily>,
+    }
+
+    /// Metric family.
+    #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
+    pub struct MetricFamily {
+        /// Family name.
+        pub name: String,
+        /// Family type.
+        #[serde(rename = "type")]
+        pub metric_type: String,
+        /// Help text.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub help: Option<String>,
+        /// Metric unit.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub unit: Option<String>,
+        /// Samples in this family.
+        pub samples: Vec<MetricSample>,
+    }
+
+    /// Metric sample.
+    #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
+    pub struct MetricSample {
+        /// Sample name.
+        pub name: String,
+        /// Labels.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub labels: Option<BTreeMap<String, String>>,
+        /// Sample value.
+        pub value: f64,
     }
 
     /// leases table
@@ -486,11 +975,37 @@ pub mod models {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
+    use std::{net::SocketAddr, sync::Arc, time::Duration};
 
     use ip_manager::sqlite::SqliteDb;
+    use tokio_util::sync::CancellationToken;
 
     use super::*;
+
+    async fn spawn_test_api(health: Health) -> anyhow::Result<(SocketAddr, CancellationToken)> {
+        let mgr = Arc::new(IpManager::new(SqliteDb::new("sqlite::memory:").await?)?);
+        let cfg = Arc::new(DhcpConfig::default());
+        let state = models::blank_health();
+        *state.lock() = health;
+        let token = CancellationToken::new();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let addr = listener.local_addr()?;
+        let app = api_router::<SqliteDb>(state, cfg, mgr, Duration::from_secs(30));
+        let shutdown = token.clone();
+
+        tokio::spawn(async move {
+            if let Err(err) = axum::serve(listener, app)
+                .with_graceful_shutdown(async move {
+                    shutdown.cancelled().await;
+                })
+                .await
+            {
+                tracing::error!(?err, "test external API task returned error");
+            }
+        });
+
+        Ok((addr, token))
+    }
 
     // The /config endpoint is unauthenticated, so it must never leak the DDNS
     // TSIG secret. Verify the key material is stripped and the reservation
@@ -558,44 +1073,134 @@ v4:
 
     #[tokio::test]
     async fn test_health() -> anyhow::Result<()> {
-        let mgr = Arc::new(IpManager::new(SqliteDb::new("sqlite::memory:").await?)?);
-        let cfg = Arc::new(DhcpConfig::default());
-        let api = ExternalApi::new("0.0.0.0:8889".parse().unwrap(), cfg, mgr);
-        let token = CancellationToken::new();
-        let _handle = api.serve(token);
-        // wait for server to come up
-        tokio::time::sleep(Duration::from_secs(1)).await;
-        let r = reqwest::get("http://0.0.0.0:8889/health")
+        let (addr, token) = spawn_test_api(Health::Bad).await?;
+        let response = reqwest::get(format!("http://{addr}/health"))
             .await?
-            .error_for_status();
-        // initial health state will be BAD i.e. 500
-        match r {
-            Ok(_) => {}
-            Err(err) => {
-                assert_eq!(
-                    err.status(),
-                    Some(reqwest::StatusCode::INTERNAL_SERVER_ERROR)
-                );
-            }
-        }
+            .error_for_status()?;
+        let header_request_id = response
+            .headers()
+            .get("x-request-id")
+            .expect("x-request-id header")
+            .to_str()?
+            .to_string();
+        let body: serde_json::Value = response.json().await?;
+        assert_eq!(body["status"], "alive");
+        assert!(body["request_id"].as_str().is_some_and(|id| !id.is_empty()));
+        assert_eq!(body["request_id"], header_request_id);
+        token.cancel();
         Ok(())
     }
+
+    #[tokio::test]
+    async fn test_ready() -> anyhow::Result<()> {
+        let (addr, token) = spawn_test_api(Health::Good).await?;
+        let response = reqwest::get(format!("http://{addr}/ready"))
+            .await?
+            .error_for_status()?;
+        let header_request_id = response
+            .headers()
+            .get("x-request-id")
+            .expect("x-request-id header")
+            .to_str()?
+            .to_string();
+        let body: serde_json::Value = response.json().await?;
+        assert_eq!(body["status"], "ready");
+        assert_eq!(body["checks"][0]["name"], "health");
+        assert_eq!(body["checks"][0]["status"], "pass");
+        assert!(body["request_id"].as_str().is_some_and(|id| !id.is_empty()));
+        assert_eq!(body["request_id"], header_request_id);
+        token.cancel();
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_not_ready() -> anyhow::Result<()> {
+        let (addr, token) = spawn_test_api(Health::Bad).await?;
+        let err = reqwest::get(format!("http://{addr}/ready"))
+            .await?
+            .error_for_status()
+            .expect_err("not ready should return 503");
+        assert_eq!(err.status(), Some(reqwest::StatusCode::SERVICE_UNAVAILABLE));
+        token.cancel();
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_openapi_json() -> anyhow::Result<()> {
+        let (addr, token) = spawn_test_api(Health::Good).await?;
+        let response = reqwest::get(format!("http://{addr}/openapi.json"))
+            .await?
+            .error_for_status()?;
+        assert!(
+            response.headers().get("x-request-id").is_some(),
+            "expected x-request-id header"
+        );
+        let body: serde_json::Value = response.json().await?;
+        assert_eq!(body["openapi"], "3.1.0");
+        assert!(body["paths"]["/health"].is_object());
+        assert!(body["paths"]["/ready"].is_object());
+        assert!(body["paths"]["/openapi.json"].is_object());
+        token.cancel();
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_json_metrics_endpoints() -> anyhow::Result<()> {
+        let (addr, token) = spawn_test_api(Health::Good).await?;
+
+        let summary_response = reqwest::get(format!("http://{addr}/v1/metrics/summary"))
+            .await?
+            .error_for_status()?;
+        assert!(summary_response.headers().get("x-request-id").is_some());
+        let summary: serde_json::Value = summary_response.json().await?;
+        assert!(summary["uptime_seconds"].is_number());
+        assert!(summary["in_flight"].is_number());
+        assert!(summary["dhcpv4"]["messages_received"].is_number());
+        assert!(summary["dhcpv6"]["messages_sent"].is_number());
+
+        let detailed_response = reqwest::get(format!("http://{addr}/v1/metrics"))
+            .await?
+            .error_for_status()?;
+        assert!(detailed_response.headers().get("x-request-id").is_some());
+        let detailed: serde_json::Value = detailed_response.json().await?;
+        assert!(detailed["summary"].is_object());
+        assert!(detailed["counters"].is_object());
+        assert!(detailed["gauges"].is_object());
+        assert!(detailed["histograms"].is_object());
+
+        let prometheus_response = reqwest::get(format!("http://{addr}/v1/metrics/prometheus"))
+            .await?
+            .error_for_status()?;
+        assert!(prometheus_response.headers().get("x-request-id").is_some());
+        let prometheus: serde_json::Value = prometheus_response.json().await?;
+        assert!(
+            prometheus["families"]
+                .as_array()
+                .is_some_and(|v| !v.is_empty())
+        );
+        assert!(
+            prometheus["families"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|family| family["name"] == "uptime")
+        );
+
+        token.cancel();
+        Ok(())
+    }
+
     // very simple test for existence of metrics endpoint
     #[tokio::test]
     async fn test_metrics() -> anyhow::Result<()> {
-        let mgr = Arc::new(IpManager::new(SqliteDb::new("sqlite::memory:").await?)?);
-        let cfg = Arc::new(DhcpConfig::default());
-        let api = ExternalApi::new("0.0.0.0:8888".parse().unwrap(), cfg, mgr);
-        let token = CancellationToken::new();
-        let _handle = api.serve(token);
-        // wait for server to come up
-        tokio::time::sleep(Duration::from_secs(1)).await;
-        let bytes = reqwest::get("http://0.0.0.0:8888/metrics")
+        let (addr, token) = spawn_test_api(Health::Good).await?;
+        let bytes = reqwest::get(format!("http://{addr}/metrics"))
             .await?
             .error_for_status()?
             .bytes()
             .await;
         assert!(bytes.is_ok());
+        token.cancel();
 
         Ok(())
     }
