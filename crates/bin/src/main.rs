@@ -1,4 +1,5 @@
 #![allow(clippy::cognitive_complexity)]
+// (ci) source-only touch to validate cargo-chef dependency-layer caching in the container build.
 use std::sync::Arc;
 
 use anyhow::{Context, Result, anyhow};
