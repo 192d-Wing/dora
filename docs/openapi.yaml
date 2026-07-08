@@ -1,0 +1,1338 @@
+openapi: 3.1.0
+info:
+  title: Dora Management API
+  version: 1.0.0
+  summary: JSON management and automation API for dora.
+  description: >
+    Dora's v1 management API exposes health, readiness, server metadata,
+    leases, reservations, metrics, configuration management, and operational
+    automation. All responses use application/json. Sensitive endpoints accept
+    either a Bearer token or a valid mTLS client certificate.
+jsonSchemaDialect: https://json-schema.org/draft/2020-12/schema
+servers:
+  - url: http://127.0.0.1:3333
+    description: Default loopback listener
+tags:
+  - name: Discovery
+  - name: Health
+  - name: Server
+  - name: Metrics
+  - name: Leases
+  - name: Reservations
+  - name: Config
+  - name: Actions
+  - name: Operations
+security:
+  - bearerAuth: []
+  - mtlsAuth: []
+paths:
+  /openapi.json:
+    get:
+      tags: [Discovery]
+      summary: Get the OpenAPI document
+      operationId: getOpenApi
+      security: []
+      responses:
+        "200":
+          description: OpenAPI 3.1 document.
+          headers:
+            X-Request-ID:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        default:
+          $ref: "#/components/responses/Error"
+
+  /health:
+    get:
+      tags: [Health]
+      summary: Liveness check
+      operationId: getHealth
+      security: []
+      responses:
+        "200":
+          description: Process is alive.
+          headers:
+            X-Request-ID:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+        default:
+          $ref: "#/components/responses/Error"
+
+  /ready:
+    get:
+      tags: [Health]
+      summary: Readiness check
+      operationId: getReadiness
+      security: []
+      responses:
+        "200":
+          description: Server is ready to serve configured workloads.
+          headers:
+            X-Request-ID:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReadinessResponse"
+        "503":
+          description: Server is alive but not ready.
+          headers:
+            X-Request-ID:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReadinessResponse"
+        default:
+          $ref: "#/components/responses/Error"
+
+  /v1/server:
+    get:
+      tags: [Server]
+      summary: Get server metadata and runtime state
+      operationId: getServer
+      responses:
+        "200":
+          description: Server metadata.
+          headers:
+            X-Request-ID:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServerInfo"
+        default:
+          $ref: "#/components/responses/Error"
+
+  /v1/metrics/summary:
+    get:
+      tags: [Metrics]
+      summary: Get concise structured metrics
+      operationId: getMetricsSummary
+      responses:
+        "200":
+          description: Summary metrics for dashboards and health automation.
+          headers:
+            X-Request-ID:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MetricsSummary"
+        default:
+          $ref: "#/components/responses/Error"
+
+  /v1/metrics:
+    get:
+      tags: [Metrics]
+      summary: Get detailed structured dora metrics
+      operationId: getMetricsDetailed
+      responses:
+        "200":
+          description: Detailed structured metrics.
+          headers:
+            X-Request-ID:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MetricsDetailed"
+        default:
+          $ref: "#/components/responses/Error"
+
+  /v1/metrics/prometheus:
+    get:
+      tags: [Metrics]
+      summary: Get OpenMetrics-inspired Prometheus-compatible JSON
+      operationId: getPrometheusMetricsJson
+      responses:
+        "200":
+          description: Prometheus/OpenMetrics-style metric families as JSON.
+          headers:
+            X-Request-ID:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OpenMetricsJson"
+        default:
+          $ref: "#/components/responses/Error"
+
+  /v1/leases/v4:
+    get:
+      tags: [Leases]
+      summary: List DHCPv4 leases
+      operationId: listV4Leases
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+        - $ref: "#/components/parameters/LeaseState"
+        - $ref: "#/components/parameters/Network"
+        - $ref: "#/components/parameters/Ip"
+        - $ref: "#/components/parameters/ClientId"
+        - $ref: "#/components/parameters/ExpiresFrom"
+        - $ref: "#/components/parameters/ExpiresTo"
+        - $ref: "#/components/parameters/LeaseSort"
+      responses:
+        "200":
+          description: DHCPv4 lease page.
+          headers:
+            X-Request-ID:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/V4LeaseListResponse"
+        default:
+          $ref: "#/components/responses/Error"
+
+  /v1/leases/v6:
+    get:
+      tags: [Leases]
+      summary: List DHCPv6 leases and delegated prefixes
+      operationId: listV6Leases
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+        - $ref: "#/components/parameters/LeaseState"
+        - $ref: "#/components/parameters/Network"
+        - $ref: "#/components/parameters/Ip"
+        - $ref: "#/components/parameters/ClientId"
+        - $ref: "#/components/parameters/ExpiresFrom"
+        - $ref: "#/components/parameters/ExpiresTo"
+        - $ref: "#/components/parameters/LeaseSort"
+      responses:
+        "200":
+          description: DHCPv6 lease page.
+          headers:
+            X-Request-ID:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/V6LeaseListResponse"
+        default:
+          $ref: "#/components/responses/Error"
+
+  /v1/reservations/v4:
+    get:
+      tags: [Reservations]
+      summary: List DHCPv4 reservations
+      operationId: listV4Reservations
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+        - $ref: "#/components/parameters/Network"
+        - $ref: "#/components/parameters/Ip"
+        - $ref: "#/components/parameters/ClientId"
+      responses:
+        "200":
+          description: DHCPv4 reservation page.
+          headers:
+            X-Request-ID:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/V4ReservationListResponse"
+        default:
+          $ref: "#/components/responses/Error"
+
+  /v1/reservations/v6:
+    get:
+      tags: [Reservations]
+      summary: List DHCPv6 reservations
+      operationId: listV6Reservations
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+        - $ref: "#/components/parameters/Network"
+        - $ref: "#/components/parameters/Ip"
+        - $ref: "#/components/parameters/ClientId"
+      responses:
+        "200":
+          description: DHCPv6 reservation page.
+          headers:
+            X-Request-ID:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/V6ReservationListResponse"
+        default:
+          $ref: "#/components/responses/Error"
+
+  /v1/config:
+    get:
+      tags: [Config]
+      summary: Get active redacted configuration
+      operationId: getConfig
+      responses:
+        "200":
+          description: Active configuration with secret fields redacted.
+          headers:
+            X-Request-ID:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfigDocument"
+        default:
+          $ref: "#/components/responses/Error"
+    put:
+      tags: [Config]
+      summary: Stage a new versioned candidate configuration
+      operationId: putConfigCandidate
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ConfigUpdateRequest"
+      responses:
+        "202":
+          description: Candidate config accepted for validation.
+          headers:
+            X-Request-ID:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OperationAccepted"
+        default:
+          $ref: "#/components/responses/Error"
+
+  /v1/config/candidates:
+    get:
+      tags: [Config]
+      summary: List staged configuration candidates
+      operationId: listConfigCandidates
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+      responses:
+        "200":
+          description: Candidate configuration page.
+          headers:
+            X-Request-ID:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfigCandidateListResponse"
+        default:
+          $ref: "#/components/responses/Error"
+    post:
+      tags: [Config]
+      summary: Create a staged configuration candidate
+      operationId: createConfigCandidate
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ConfigUpdateRequest"
+      responses:
+        "202":
+          description: Candidate config accepted for validation.
+          headers:
+            X-Request-ID:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OperationAccepted"
+        default:
+          $ref: "#/components/responses/Error"
+
+  /v1/config/candidates/{candidate_id}:
+    get:
+      tags: [Config]
+      summary: Get a staged configuration candidate
+      operationId: getConfigCandidate
+      parameters:
+        - $ref: "#/components/parameters/CandidateId"
+      responses:
+        "200":
+          description: Candidate configuration.
+          headers:
+            X-Request-ID:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfigCandidate"
+        default:
+          $ref: "#/components/responses/Error"
+
+  /v1/actions/reload:
+    post:
+      tags: [Actions]
+      summary: Reload the active configuration
+      operationId: reloadConfig
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ReloadRequest"
+      responses:
+        "200":
+          $ref: "#/components/responses/ActionResult"
+        "202":
+          $ref: "#/components/responses/OperationAccepted"
+        default:
+          $ref: "#/components/responses/Error"
+
+  /v1/actions/activate-config:
+    post:
+      tags: [Actions]
+      summary: Activate a validated staged configuration
+      operationId: activateConfig
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ActivateConfigRequest"
+      responses:
+        "202":
+          $ref: "#/components/responses/OperationAccepted"
+        default:
+          $ref: "#/components/responses/Error"
+
+  /v1/actions/rollback-config:
+    post:
+      tags: [Actions]
+      summary: Roll back to a previous configuration version
+      operationId: rollbackConfig
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RollbackConfigRequest"
+      responses:
+        "202":
+          $ref: "#/components/responses/OperationAccepted"
+        default:
+          $ref: "#/components/responses/Error"
+
+  /v1/actions/release-lease:
+    post:
+      tags: [Actions]
+      summary: Release a lease
+      operationId: releaseLease
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ReleaseLeaseRequest"
+      responses:
+        "200":
+          $ref: "#/components/responses/ActionResult"
+        "202":
+          $ref: "#/components/responses/OperationAccepted"
+        default:
+          $ref: "#/components/responses/Error"
+
+  /v1/actions/trigger-ddns-update:
+    post:
+      tags: [Actions]
+      summary: Trigger a DDNS update or cleanup
+      operationId: triggerDdnsUpdate
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TriggerDdnsRequest"
+      responses:
+        "200":
+          $ref: "#/components/responses/ActionResult"
+        "202":
+          $ref: "#/components/responses/OperationAccepted"
+        default:
+          $ref: "#/components/responses/Error"
+
+  /v1/actions/create-reservation:
+    post:
+      tags: [Actions]
+      summary: Create a runtime reservation
+      operationId: createReservation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ReservationMutationRequest"
+      responses:
+        "200":
+          $ref: "#/components/responses/ActionResult"
+        "202":
+          $ref: "#/components/responses/OperationAccepted"
+        default:
+          $ref: "#/components/responses/Error"
+
+  /v1/actions/update-reservation:
+    post:
+      tags: [Actions]
+      summary: Update a runtime reservation
+      operationId: updateReservation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ReservationMutationRequest"
+      responses:
+        "200":
+          $ref: "#/components/responses/ActionResult"
+        "202":
+          $ref: "#/components/responses/OperationAccepted"
+        default:
+          $ref: "#/components/responses/Error"
+
+  /v1/actions/delete-reservation:
+    post:
+      tags: [Actions]
+      summary: Delete a runtime reservation
+      operationId: deleteReservation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DeleteReservationRequest"
+      responses:
+        "200":
+          $ref: "#/components/responses/ActionResult"
+        "202":
+          $ref: "#/components/responses/OperationAccepted"
+        default:
+          $ref: "#/components/responses/Error"
+
+  /v1/actions/maintenance-mode:
+    post:
+      tags: [Actions]
+      summary: Enter or leave maintenance mode
+      operationId: setMaintenanceMode
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MaintenanceModeRequest"
+      responses:
+        "200":
+          $ref: "#/components/responses/ActionResult"
+        default:
+          $ref: "#/components/responses/Error"
+
+  /v1/actions/drain:
+    post:
+      tags: [Actions]
+      summary: Enter DHCP drain mode
+      operationId: drainServer
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DrainRequest"
+      responses:
+        "200":
+          $ref: "#/components/responses/ActionResult"
+        default:
+          $ref: "#/components/responses/Error"
+
+  /v1/actions/shutdown:
+    post:
+      tags: [Actions]
+      summary: Gracefully shut down the server
+      operationId: shutdownServer
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ShutdownRequest"
+      responses:
+        "202":
+          $ref: "#/components/responses/OperationAccepted"
+        default:
+          $ref: "#/components/responses/Error"
+
+  /v1/operations/{operation_id}:
+    get:
+      tags: [Operations]
+      summary: Get asynchronous operation status
+      operationId: getOperation
+      parameters:
+        - $ref: "#/components/parameters/OperationId"
+      responses:
+        "200":
+          description: Operation status.
+          headers:
+            X-Request-ID:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Operation"
+        default:
+          $ref: "#/components/responses/Error"
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: opaque
+      description: Opaque Bearer token supplied in the Authorization header.
+    mtlsAuth:
+      type: mutualTLS
+      description: Valid client certificate accepted by the server or fronting proxy.
+
+  headers:
+    RequestId:
+      description: Server-generated request identifier.
+      schema:
+        type: string
+        minLength: 1
+
+  parameters:
+    Limit:
+      name: limit
+      in: query
+      description: Maximum number of records to return.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 1000
+        default: 100
+    Offset:
+      name: offset
+      in: query
+      description: Zero-based offset for pagination.
+      schema:
+        type: integer
+        minimum: 0
+        default: 0
+    LeaseState:
+      name: state
+      in: query
+      schema:
+        $ref: "#/components/schemas/LeaseState"
+    Network:
+      name: network
+      in: query
+      description: CIDR network filter.
+      schema:
+        type: string
+        examples: ["192.168.0.0/24", "2001:db8:1::/64"]
+    Ip:
+      name: ip
+      in: query
+      description: IP address filter.
+      schema:
+        type: string
+        format: ip
+    ClientId:
+      name: client_id
+      in: query
+      description: Hex-encoded DHCP client identifier, DUID, or reservation identifier.
+      schema:
+        type: string
+    ExpiresFrom:
+      name: expires_from
+      in: query
+      description: Include leases expiring at or after this time.
+      schema:
+        type: string
+        format: date-time
+    ExpiresTo:
+      name: expires_to
+      in: query
+      description: Include leases expiring at or before this time.
+      schema:
+        type: string
+        format: date-time
+    LeaseSort:
+      name: sort
+      in: query
+      description: Comma-separated sort fields. Prefix with '-' for descending.
+      schema:
+        type: string
+        default: ip
+        examples: ["state,-expires_at,ip"]
+    CandidateId:
+      name: candidate_id
+      in: path
+      required: true
+      schema:
+        type: string
+    OperationId:
+      name: operation_id
+      in: path
+      required: true
+      schema:
+        type: string
+
+  responses:
+    Error:
+      description: Error response.
+      headers:
+        X-Request-ID:
+          $ref: "#/components/headers/RequestId"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+    ActionResult:
+      description: Synchronous action result.
+      headers:
+        X-Request-ID:
+          $ref: "#/components/headers/RequestId"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ActionResult"
+    OperationAccepted:
+      description: Asynchronous operation accepted.
+      headers:
+        X-Request-ID:
+          $ref: "#/components/headers/RequestId"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/OperationAccepted"
+
+  schemas:
+    ErrorEnvelope:
+      type: object
+      required: [error]
+      properties:
+        error:
+          $ref: "#/components/schemas/Error"
+      additionalProperties: false
+    Error:
+      type: object
+      required: [code, message, request_id]
+      properties:
+        code:
+          type: string
+          examples: [CONFIG_PARSE_FAILED]
+        message:
+          type: string
+        request_id:
+          type: string
+        details:
+          type: object
+          additionalProperties: true
+      additionalProperties: false
+
+    HealthResponse:
+      type: object
+      required: [status, request_id]
+      properties:
+        status:
+          type: string
+          enum: [alive]
+        request_id:
+          type: string
+      additionalProperties: false
+    ReadinessResponse:
+      type: object
+      required: [status, checks, request_id]
+      properties:
+        status:
+          type: string
+          enum: [ready, not_ready]
+        checks:
+          type: array
+          items:
+            $ref: "#/components/schemas/ReadinessCheck"
+        request_id:
+          type: string
+      additionalProperties: false
+    ReadinessCheck:
+      type: object
+      required: [name, status]
+      properties:
+        name:
+          type: string
+        status:
+          type: string
+          enum: [pass, warn, fail]
+        message:
+          type: string
+      additionalProperties: false
+
+    ServerInfo:
+      type: object
+      required: [id, version, started_at, mode, api]
+      properties:
+        id:
+          type: string
+        version:
+          type: string
+        started_at:
+          type: string
+          format: date-time
+        mode:
+          $ref: "#/components/schemas/ServerMode"
+        api:
+          type: object
+          required: [version, auth]
+          properties:
+            version:
+              type: string
+              const: v1
+            auth:
+              type: array
+              items:
+                type: string
+                enum: [bearer, mtls]
+          additionalProperties: false
+      additionalProperties: true
+    ServerMode:
+      type: string
+      enum: [normal, maintenance, drain, shutting_down]
+
+    MetricsSummary:
+      type: object
+      required: [uptime_seconds, in_flight, dhcpv4, dhcpv6]
+      properties:
+        uptime_seconds:
+          type: integer
+          minimum: 0
+        in_flight:
+          type: integer
+          minimum: 0
+        dhcpv4:
+          $ref: "#/components/schemas/ProtocolMetricsSummary"
+        dhcpv6:
+          $ref: "#/components/schemas/ProtocolMetricsSummary"
+      additionalProperties: false
+    ProtocolMetricsSummary:
+      type: object
+      required: [messages_received, messages_sent, errors]
+      properties:
+        messages_received:
+          type: integer
+          minimum: 0
+        messages_sent:
+          type: integer
+          minimum: 0
+        errors:
+          type: integer
+          minimum: 0
+      additionalProperties: false
+    MetricsDetailed:
+      type: object
+      required: [summary, counters, gauges, histograms]
+      properties:
+        summary:
+          $ref: "#/components/schemas/MetricsSummary"
+        counters:
+          type: object
+          additionalProperties:
+            type: number
+        gauges:
+          type: object
+          additionalProperties:
+            type: number
+        histograms:
+          type: object
+          additionalProperties:
+            $ref: "#/components/schemas/Histogram"
+      additionalProperties: false
+    Histogram:
+      type: object
+      required: [count, sum, buckets]
+      properties:
+        count:
+          type: integer
+          minimum: 0
+        sum:
+          type: number
+        buckets:
+          type: array
+          items:
+            type: object
+            required: [le, count]
+            properties:
+              le:
+                oneOf:
+                  - type: number
+                  - type: string
+                    const: "+Inf"
+              count:
+                type: integer
+                minimum: 0
+            additionalProperties: false
+      additionalProperties: false
+    OpenMetricsJson:
+      type: object
+      required: [families]
+      properties:
+        families:
+          type: array
+          items:
+            $ref: "#/components/schemas/MetricFamily"
+      additionalProperties: false
+    MetricFamily:
+      type: object
+      required: [name, type, samples]
+      properties:
+        name:
+          type: string
+        type:
+          type: string
+          enum: [counter, gauge, histogram, summary, info, stateset, unknown]
+        help:
+          type: string
+        unit:
+          type: string
+        samples:
+          type: array
+          items:
+            $ref: "#/components/schemas/MetricSample"
+      additionalProperties: false
+    MetricSample:
+      type: object
+      required: [name, value]
+      properties:
+        name:
+          type: string
+        labels:
+          type: object
+          additionalProperties:
+            type: string
+        value:
+          type: number
+        timestamp:
+          type: string
+          format: date-time
+        exemplar:
+          type: object
+          additionalProperties: true
+      additionalProperties: false
+
+    PaginationMeta:
+      type: object
+      required: [limit, offset, total, count, filters, sort]
+      properties:
+        limit:
+          type: integer
+        offset:
+          type: integer
+        total:
+          type: integer
+        count:
+          type: integer
+        filters:
+          type: object
+          additionalProperties: true
+        sort:
+          type: array
+          items:
+            type: string
+      additionalProperties: false
+    LeaseState:
+      type: string
+      enum: [leased, reserved, probated, released, expired]
+    V4LeaseListResponse:
+      type: object
+      required: [meta, items]
+      properties:
+        meta:
+          $ref: "#/components/schemas/PaginationMeta"
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/V4Lease"
+      additionalProperties: false
+    V6LeaseListResponse:
+      type: object
+      required: [meta, items]
+      properties:
+        meta:
+          $ref: "#/components/schemas/PaginationMeta"
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/V6Lease"
+      additionalProperties: false
+    V4Lease:
+      type: object
+      required: [family, state, ip, network]
+      properties:
+        family:
+          type: string
+          const: v4
+        state:
+          $ref: "#/components/schemas/LeaseState"
+        ip:
+          type: string
+          format: ipv4
+        network:
+          type: string
+        client_id:
+          type: string
+        expires_at:
+          type: string
+          format: date-time
+        source:
+          type: string
+          enum: [database, config, runtime]
+      additionalProperties: false
+    V6Lease:
+      type: object
+      required: [family, state, lease_type, network]
+      properties:
+        family:
+          type: string
+          const: v6
+        state:
+          $ref: "#/components/schemas/LeaseState"
+        lease_type:
+          type: string
+          enum: [ia_na, ia_pd]
+        ip:
+          type: string
+          format: ipv6
+        prefix:
+          type: string
+        network:
+          type: string
+        client_id:
+          type: string
+        iaid:
+          type: integer
+          minimum: 0
+        expires_at:
+          type: string
+          format: date-time
+        source:
+          type: string
+          enum: [database, config, runtime]
+      additionalProperties: false
+
+    V4ReservationListResponse:
+      type: object
+      required: [meta, items]
+      properties:
+        meta:
+          $ref: "#/components/schemas/PaginationMeta"
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/V4Reservation"
+      additionalProperties: false
+    V6ReservationListResponse:
+      type: object
+      required: [meta, items]
+      properties:
+        meta:
+          $ref: "#/components/schemas/PaginationMeta"
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/V6Reservation"
+      additionalProperties: false
+    V4Reservation:
+      type: object
+      required: [family, ip, source, match]
+      properties:
+        family:
+          type: string
+          const: v4
+        ip:
+          type: string
+          format: ipv4
+        network:
+          type: string
+        source:
+          type: string
+          enum: [config, runtime]
+        match:
+          type: object
+          additionalProperties: true
+      additionalProperties: false
+    V6Reservation:
+      type: object
+      required: [family, source, match]
+      properties:
+        family:
+          type: string
+          const: v6
+        ip:
+          type: string
+          format: ipv6
+        prefix:
+          type: string
+        network:
+          type: string
+        source:
+          type: string
+          enum: [config, runtime]
+        match:
+          type: object
+          additionalProperties: true
+      additionalProperties: false
+
+    ConfigDocument:
+      type: object
+      required: [version, redacted, document]
+      properties:
+        version:
+          type: string
+        redacted:
+          type: boolean
+          const: true
+        document:
+          type: object
+          additionalProperties: true
+      additionalProperties: false
+    ConfigUpdateRequest:
+      type: object
+      required: [document]
+      properties:
+        document:
+          type: object
+          additionalProperties: true
+        message:
+          type: string
+      additionalProperties: false
+    ConfigCandidateListResponse:
+      type: object
+      required: [meta, items]
+      properties:
+        meta:
+          $ref: "#/components/schemas/PaginationMeta"
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/ConfigCandidate"
+      additionalProperties: false
+    ConfigCandidate:
+      type: object
+      required: [candidate_id, status, created_at]
+      properties:
+        candidate_id:
+          type: string
+        status:
+          type: string
+          enum: [staged, validating, valid, invalid, activated, superseded]
+        created_at:
+          type: string
+          format: date-time
+        activated_at:
+          type: string
+          format: date-time
+        message:
+          type: string
+        validation:
+          type: array
+          items:
+            $ref: "#/components/schemas/ValidationMessage"
+        document:
+          type: object
+          additionalProperties: true
+      additionalProperties: false
+    ValidationMessage:
+      type: object
+      required: [level, message]
+      properties:
+        level:
+          type: string
+          enum: [info, warning, error]
+        path:
+          type: string
+        message:
+          type: string
+      additionalProperties: false
+
+    ActionResult:
+      type: object
+      required: [status, action]
+      properties:
+        status:
+          type: string
+          enum: [succeeded, failed]
+        action:
+          type: string
+        message:
+          type: string
+        result:
+          type: object
+          additionalProperties: true
+      additionalProperties: false
+    OperationAccepted:
+      type: object
+      required: [operation_id, status]
+      properties:
+        operation_id:
+          type: string
+        status:
+          type: string
+          enum: [accepted]
+        links:
+          type: object
+          properties:
+            self:
+              type: string
+          additionalProperties: false
+      additionalProperties: false
+    Operation:
+      type: object
+      required: [operation_id, action, status, created_at]
+      properties:
+        operation_id:
+          type: string
+        action:
+          type: string
+        status:
+          type: string
+          enum: [accepted, running, succeeded, failed, canceled]
+        created_at:
+          type: string
+          format: date-time
+        started_at:
+          type: string
+          format: date-time
+        completed_at:
+          type: string
+          format: date-time
+        result:
+          type: object
+          additionalProperties: true
+        error:
+          $ref: "#/components/schemas/Error"
+      additionalProperties: false
+
+    ReloadRequest:
+      type: object
+      properties:
+        async:
+          type: boolean
+          default: false
+      additionalProperties: false
+    ActivateConfigRequest:
+      type: object
+      required: [candidate_id]
+      properties:
+        candidate_id:
+          type: string
+      additionalProperties: false
+    RollbackConfigRequest:
+      type: object
+      required: [version]
+      properties:
+        version:
+          type: string
+      additionalProperties: false
+    ReleaseLeaseRequest:
+      type: object
+      required: [family, ip]
+      properties:
+        family:
+          type: string
+          enum: [v4, v6]
+        ip:
+          type: string
+          format: ip
+        client_id:
+          type: string
+        ddns_cleanup:
+          type: boolean
+          default: false
+        async:
+          type: boolean
+          default: false
+      additionalProperties: false
+    TriggerDdnsRequest:
+      type: object
+      required: [operation, family, ip]
+      properties:
+        operation:
+          type: string
+          enum: [update, cleanup]
+        family:
+          type: string
+          enum: [v4, v6]
+        ip:
+          type: string
+          format: ip
+        hostname:
+          type: string
+        client_id:
+          type: string
+        async:
+          type: boolean
+          default: false
+      additionalProperties: false
+    ReservationMutationRequest:
+      type: object
+      required: [family, reservation]
+      properties:
+        family:
+          type: string
+          enum: [v4, v6]
+        reservation:
+          oneOf:
+            - $ref: "#/components/schemas/V4Reservation"
+            - $ref: "#/components/schemas/V6Reservation"
+        async:
+          type: boolean
+          default: false
+      additionalProperties: false
+    DeleteReservationRequest:
+      type: object
+      required: [family, ip]
+      properties:
+        family:
+          type: string
+          enum: [v4, v6]
+        ip:
+          type: string
+          format: ip
+        async:
+          type: boolean
+          default: false
+      additionalProperties: false
+    MaintenanceModeRequest:
+      type: object
+      required: [enabled]
+      properties:
+        enabled:
+          type: boolean
+        reason:
+          type: string
+      additionalProperties: false
+    DrainRequest:
+      type: object
+      properties:
+        reason:
+          type: string
+      additionalProperties: false
+    ShutdownRequest:
+      type: object
+      properties:
+        grace_period_seconds:
+          type: integer
+          minimum: 0
+          default: 30
+        reason:
+          type: string
+      additionalProperties: false
