@@ -3,51 +3,54 @@
 This checklist tracks the gap between the target OAS 3.1 API in
 `docs/openapi.yaml` and the current dora HTTP API implementation.
 
+**Status as of branch `api-public-endpoints`.** `[x]` = done, `[ ]` = not done;
+items annotated `— partial:` are started but incomplete.
+
 ## Contract And Serving
 
 - [ ] Add `docs/openapi.yaml` validation in CI.
-- [ ] Serve the OpenAPI document as unauthenticated JSON at `GET /openapi.json`.
-- [ ] Ensure every API response uses `application/json`.
-- [ ] Remove or intentionally replace legacy unversioned routes as part of the breaking API cleanup.
-- [ ] Generate and return `X-Request-ID` on every response.
-- [ ] Include the generated `request_id` in all error bodies.
+- [x] Serve the OpenAPI document as unauthenticated JSON at `GET /openapi.json`.
+- [ ] Ensure every API response uses `application/json`. — partial: JSON endpoints done, but `/metrics` / `/metrics-text` still serve text.
+- [ ] Remove or intentionally replace legacy unversioned routes as part of the breaking API cleanup. — partial: `/config` → `/v1/config` done; `/metrics`, `/metrics-text`, `/ping`, and the old combined `/v1/leases` remain.
+- [x] Generate and return `X-Request-ID` on every response. — on success and error responses.
+- [x] Include the generated `request_id` in all error bodies.
 
 ## Authentication
 
-- [ ] Add Bearer token authentication for sensitive endpoints.
+- [x] Add Bearer token authentication for sensitive endpoints. — via `DORA_API_TOKEN`.
 - [ ] Add mTLS authentication support, either in-process or through documented proxy integration.
-- [ ] Accept either Bearer token or valid mTLS client certificate.
-- [ ] Keep only `GET /health`, `GET /ready`, and `GET /openapi.json` public.
-- [ ] Add authorization tests for public, authenticated, and rejected requests.
+- [ ] Accept either Bearer token or valid mTLS client certificate. — Bearer only.
+- [ ] Keep only `GET /health`, `GET /ready`, and `GET /openapi.json` public. — partial: `/ping` and the metrics endpoints are also public.
+- [ ] Add authorization tests for public, authenticated, and rejected requests. — partial: rejected (401) cases covered; full matrix not.
 
 ## Health And Server Metadata
 
-- [ ] Replace current health body/status behavior with JSON `GET /health`.
-- [ ] Add `GET /ready` with structured readiness checks.
-- [ ] Add `GET /v1/server` with runtime metadata and server mode.
-- [ ] Track server modes: `normal`, `maintenance`, `drain`, and `shutting_down`.
+- [x] Replace current health body/status behavior with JSON `GET /health`.
+- [x] Add `GET /ready` with structured readiness checks.
+- [x] Add `GET /v1/server` with runtime metadata and server mode.
+- [ ] Track server modes: `normal`, `maintenance`, `drain`, and `shutting_down`. — partial: `ServerMode` enum exists but only `Normal` is ever reported; no transitions.
 
 ## Metrics
 
-- [ ] Convert current Prometheus endpoints into JSON API endpoints.
-- [ ] Add `GET /v1/metrics/summary`.
-- [ ] Add `GET /v1/metrics` for detailed structured dora metrics.
-- [ ] Add `GET /v1/metrics/prometheus` using the OpenMetrics-inspired JSON shape.
-- [ ] Decide whether old `/metrics` and `/metrics-text` are removed immediately or left behind a compatibility flag.
+- [x] Convert current Prometheus endpoints into JSON API endpoints.
+- [x] Add `GET /v1/metrics/summary`.
+- [x] Add `GET /v1/metrics` for detailed structured dora metrics.
+- [x] Add `GET /v1/metrics/prometheus` using the OpenMetrics-inspired JSON shape.
+- [ ] Decide whether old `/metrics` and `/metrics-text` are removed immediately or left behind a compatibility flag. — currently kept; decision pending.
 
 ## Leases
 
-- [ ] Replace current `GET /v1/leases` with separate `GET /v1/leases/v4` and `GET /v1/leases/v6`.
-- [ ] Add pagination with `limit` and `offset`.
-- [ ] Add response metadata: `limit`, `offset`, `total`, `count`, `filters`, and `sort`.
-- [ ] Add broad filters: `state`, `network`, `ip`, `client_id`, `expires_from`, and `expires_to`.
-- [ ] Add flexible sorting such as `sort=state,-expires_at,ip`.
-- [ ] Implement DHCPv6 lease listing, including IA_NA and IA_PD where available.
+- [x] Replace current `GET /v1/leases` with separate `GET /v1/leases/v4` and `GET /v1/leases/v6`. — note: the old combined `/v1/leases` is still registered.
+- [x] Add pagination with `limit` and `offset`.
+- [x] Add response metadata: `limit`, `offset`, `total`, `count`, `filters`, and `sort`.
+- [x] Add broad filters: `state`, `network`, `ip`, `client_id`, `expires_from`, and `expires_to`.
+- [ ] Add flexible sorting such as `sort=state,-expires_at,ip`. — partial: `sort` is parsed and echoed in `meta`, but results are only sorted by `ip`.
+- [x] Implement DHCPv6 lease listing, including IA_NA and IA_PD where available.
 
 ## Reservations
 
 - [ ] Add runtime reservation storage.
-- [ ] Preserve config reservations.
+- [ ] Preserve config reservations. — config reservations appear in lease listings, but there is no reservations API.
 - [ ] Define and enforce precedence: runtime API reservations override config reservations.
 - [ ] Add `GET /v1/reservations/v4`.
 - [ ] Add `GET /v1/reservations/v6`.
@@ -56,9 +59,9 @@ This checklist tracks the gap between the target OAS 3.1 API in
 
 ## Configuration Management
 
-- [ ] Change `/v1/config` to return structured redacted JSON, not YAML-as-string.
-- [ ] Keep secret redaction guarantees for DDNS TSIG data.
-- [ ] Add full config management: read, validate, update, activate, reload, and rollback.
+- [x] Change `/v1/config` to return structured redacted JSON, not YAML-as-string.
+- [x] Keep secret redaction guarantees for DDNS TSIG data.
+- [ ] Add full config management: read, validate, update, activate, reload, and rollback. — only read is implemented.
 - [ ] Add versioned staged config candidates.
 - [ ] Add candidate validation results.
 - [ ] Add rollback-capable activation history.
@@ -89,10 +92,10 @@ This checklist tracks the gap between the target OAS 3.1 API in
 
 ## Error Model
 
-- [ ] Replace current `{ "message": "..." }` error bodies with `{ "error": { "code", "message", "request_id", "details" } }`.
-- [ ] Define stable machine-readable error codes.
-- [ ] Ensure validation errors include useful field/path details.
-- [ ] Ensure internal errors do not leak secrets or filesystem internals.
+- [x] Replace current `{ "message": "..." }` error bodies with `{ "error": { "code", "message", "request_id", "details" } }`.
+- [x] Define stable machine-readable error codes. — `unauthorized`, `internal`; the envelope carries a `code` per error.
+- [ ] Ensure validation errors include useful field/path details. — partial: the envelope has an optional `details` field, but no endpoint populates it yet.
+- [x] Ensure internal errors do not leak secrets or filesystem internals. — 5xx return a generic message; the full error is logged server-side only.
 
 ## Documentation
 
