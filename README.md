@@ -131,50 +131,47 @@ It will pretty-print the internal dora config representation as well as parse th
 
 ## HTTP API
 
-By default dora binds to `0.0.0.0:3333`, the following endpoints are defined:
+dora serves a JSON management API. By default it binds to `127.0.0.1:3333`
+(override with `--external-api` / `EXTERNAL_API`). The full contract is the
+OpenAPI 3.1 document in [`docs/openapi.yaml`](docs/openapi.yaml), also served at
+`GET /openapi.json`.
 
-```
-/health
-/ping
-/metrics
-/metrics-text
-/v1/leases
-/config
+Public (unauthenticated): `GET /health`, `GET /ready`, `GET /openapi.json`.
+Everything else is gated by a Bearer token when `DORA_API_TOKEN` is set. Current
+endpoints:
+
+```text
+GET /health
+GET /ready
+GET /openapi.json
+GET /v1/server
+GET /v1/metrics            (also /v1/metrics/summary, /v1/metrics/prometheus)
+GET /metrics, /metrics-text   (Prometheus scrape, authenticated)
+GET /v1/leases/v4         (pagination, filters, sort)
+GET /v1/leases/v6
+GET /v1/reservations/v4
+GET /v1/reservations/v6
+GET /v1/config            (structured, secrets redacted)
 ```
 
-The leases endpoint returns JSON in the format of:
+Every response carries an `X-Request-ID` header; errors use the envelope
+`{ "error": { "code", "message", "request_id" } }`.
 
-```
-❯ curl 0.0.0.0:3333/v1/leases | jq
+```console
+❯ curl -s 127.0.0.1:3333/v1/leases/v4 | jq
 {
-  "networks": {
-    "192.168.5.0/24": {
-      "ips": [
-        {
-          "type": "leased",
-          "ip": "192.168.5.2",
-          "id": "c08fd9962fc1",
-          "expires_at_epoch": 1743963741,
-          "expires_at_utc": "2025-04-06T18:22:21+00:00"
-        },
-        {
-          "type": "reserved",
-          "ip": "192.168.5.100",
-          "id": null,
-          "match": {
-            "options": {
-              "values": {
-                "60": {
-                  "type": "hex",
-                  "value": "666f6f626172"
-                }
-              }
-            }
-          }
-        }
-      ]
+  "meta": { "limit": 100, "offset": 0, "total": 1, "count": 1, "filters": {}, "sort": ["ip"] },
+  "items": [
+    {
+      "family": "v4",
+      "state": "leased",
+      "ip": "192.168.5.2",
+      "network": "192.168.5.0/24",
+      "client_id": "c08fd9962fc1",
+      "expires_at": "2025-04-06T18:22:21+00:00",
+      "source": "database"
     }
-  }
+  ]
 }
 ```
 
