@@ -504,6 +504,9 @@ mod handlers {
     ) -> ServerResult<impl IntoResponse> {
         authorize(&headers, &auth)?;
         let request_id = request_id();
+        // shutting-down is terminal: refuse changes that would re-enable serving
+        // while the graceful-shutdown grace period is counting down
+        reject_if_shutting_down(&mode)?;
         let req: MaintenanceModeRequest = parse_required_body(&body)?;
         let target = if req.enabled {
             ServerMode::Maintenance
@@ -545,6 +548,7 @@ mod handlers {
     ) -> ServerResult<impl IntoResponse> {
         authorize(&headers, &auth)?;
         let request_id = request_id();
+        reject_if_shutting_down(&mode)?;
         let req: DrainRequest = parse_optional_body(&body)?;
         mode.set(ServerMode::Drain);
         let result = serde_json::json!({ "mode": ServerMode::Drain });
@@ -580,7 +584,12 @@ mod handlers {
     ) -> ServerResult<impl IntoResponse> {
         authorize(&headers, &auth)?;
         let request_id = request_id();
+        // a shutdown is already terminal; don't accept a second one
+        reject_if_shutting_down(&mode)?;
         let req: ShutdownRequest = parse_optional_body(&body)?;
+        // clamp the grace period so a mistaken huge value can't wedge the server
+        // in shutting-down mode indefinitely (with no un-shutdown path)
+        let grace_secs = req.grace_period_seconds.min(MAX_GRACE_PERIOD_SECONDS);
         let operation_id = new_operation_id();
         let now = SystemTime::now();
         let record = OperationRecord {
@@ -590,7 +599,7 @@ mod handlers {
             actor: actor(&auth),
             input_summary: Some(
                 serde_json::json!({
-                    "grace_period_seconds": req.grace_period_seconds,
+                    "grace_period_seconds": grace_secs,
                     "reason": req.reason,
                 })
                 .to_string(),
@@ -610,7 +619,7 @@ mod handlers {
         // finish out of band: mark running, wait the grace period, mark succeeded,
         // then cancel the shared token (stops the DHCP servers and this API)
         let ip_mgr = Arc::clone(&ip_mgr);
-        let grace = Duration::from_secs(req.grace_period_seconds);
+        let grace = Duration::from_secs(grace_secs);
         tokio::spawn(async move {
             let mut record = record;
             record.status = OperationStatus::Running;
@@ -641,18 +650,40 @@ mod handlers {
         ))
     }
 
+    /// Upper bound on a shutdown grace period. Past this the server would sit in
+    /// shutting-down mode with no way to recover, so cap it at one hour.
+    const MAX_GRACE_PERIOD_SECONDS: u64 = 3600;
+
+    /// Reject a mode-changing action once shutdown has begun. Shutting-down is
+    /// terminal, so re-entering normal/drain/maintenance (or a second shutdown)
+    /// is a `409 Conflict`.
+    fn reject_if_shutting_down(mode: &SharedMode) -> ServerResult<()> {
+        if mode.get() == ServerMode::ShuttingDown {
+            Err(crate::models::ServerError::conflict(
+                "server is shutting down",
+            ))
+        } else {
+            Ok(())
+        }
+    }
+
     /// Summarize the caller's auth context for the audit trail (never a secret).
     fn actor(auth: &crate::ApiAuth) -> Option<String> {
         auth.auth_methods().into_iter().next()
     }
 
-    /// Generate a unique operation id (hex nanoseconds since the epoch).
+    /// Generate a unique operation id. Combines hex nanoseconds with a
+    /// process-lifetime counter so two operations minted within the same clock
+    /// tick can't collide on the `operation_id` primary key.
     fn new_operation_id() -> String {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|elapsed| elapsed.as_nanos())
             .unwrap_or_default();
-        format!("op-{nanos:x}")
+        let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+        format!("op-{nanos:x}-{seq:x}")
     }
 
     /// Parse an optional JSON body, defaulting an empty body to `T::default()`.
@@ -2172,6 +2203,13 @@ pub mod models {
                 anyhow::anyhow!(message.into()),
             )
         }
+        pub(crate) fn conflict(message: impl Into<String>) -> Self {
+            Self::new(
+                axum::http::StatusCode::CONFLICT,
+                "conflict",
+                anyhow::anyhow!(message.into()),
+            )
+        }
     }
 
     /// The standard error envelope: `{ "error": { code, message, request_id, details } }`.
@@ -3011,6 +3049,39 @@ v4:
             .send()
             .await?;
         assert_eq!(ok.status(), reqwest::StatusCode::OK);
+
+        token.cancel();
+        Ok(())
+    }
+
+    // once shutdown has begun, mode-changing actions are 409 Conflict so nothing
+    // can re-enable serving while the grace period counts down.
+    #[tokio::test]
+    async fn test_actions_rejected_after_shutdown() -> anyhow::Result<()> {
+        let (addr, token, _mode, _mgr) =
+            spawn_test_api_full(Health::Good, ApiAuth::disabled()).await?;
+        // long grace so the shared token isn't cancelled during the test
+        let accepted = reqwest::Client::new()
+            .post(format!("http://{addr}/v1/actions/shutdown"))
+            .json(&serde_json::json!({ "grace_period_seconds": 3600 }))
+            .send()
+            .await?;
+        assert_eq!(accepted.status(), reqwest::StatusCode::ACCEPTED);
+
+        let drain = reqwest::Client::new()
+            .post(format!("http://{addr}/v1/actions/drain"))
+            .send()
+            .await?;
+        assert_eq!(drain.status(), reqwest::StatusCode::CONFLICT);
+        let body: serde_json::Value = drain.json().await?;
+        assert_eq!(body["error"]["code"], "conflict");
+
+        let maintenance = reqwest::Client::new()
+            .post(format!("http://{addr}/v1/actions/maintenance-mode"))
+            .json(&serde_json::json!({ "enabled": false }))
+            .send()
+            .await?;
+        assert_eq!(maintenance.status(), reqwest::StatusCode::CONFLICT);
 
         token.cancel();
         Ok(())

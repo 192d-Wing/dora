@@ -99,12 +99,12 @@ impl Plugin<Message> for MsgType {
         );
 
         // Honor the server mode before doing any work. Drain / maintenance /
-        // shutting-down suppress new lease acquisition (DISCOVER); maintenance
-        // additionally suppresses renewals (REQUEST). Under drain / shutting-down
-        // renewals keep flowing so existing clients age out gracefully. Other
-        // message types (RELEASE, DECLINE, INFORM) are always processed.
-        // (A SELECTING REQUEST completing an offer issued before drain began can
-        // still get an address; drain is best-effort for in-flight handshakes.)
+        // shutting-down suppress new lease acquisition; maintenance additionally
+        // suppresses renewals, taking the server fully out of service. New
+        // acquisition is a DISCOVER or a SELECTING / INIT-REBOOT REQUEST;
+        // renewals are RENEWING / REBINDING REQUESTs (classified by
+        // `request_state`). Other message types (RELEASE, DECLINE, INFORM) are
+        // always processed.
         let mode = self.mode.get();
         match msg_type {
             Some(MessageType::Discover) if mode.suppresses_new_leases() => {
@@ -114,9 +114,26 @@ impl Plugin<Message> for MsgType {
                 );
                 return Ok(Action::NoResponse);
             }
-            Some(MessageType::Request) if mode.suppresses_renewals() => {
-                debug!(?mode, "server mode suppresses renewals; dropping REQUEST");
-                return Ok(Action::NoResponse);
+            Some(MessageType::Request) => {
+                // RENEWING / REBINDING extend an existing lease; everything else
+                // (SELECTING, INIT-REBOOT, and malformed/Unknown) is treated as a
+                // new acquisition for the purpose of mode enforcement.
+                let is_renewal = matches!(
+                    ctx.request_state(),
+                    RequestState::Renewing { .. } | RequestState::Rebinding { .. }
+                );
+                let suppress = if is_renewal {
+                    mode.suppresses_renewals()
+                } else {
+                    mode.suppresses_new_leases()
+                };
+                if suppress {
+                    debug!(
+                        ?mode,
+                        is_renewal, "server mode suppresses REQUEST; dropping"
+                    );
+                    return Ok(Action::NoResponse);
+                }
             }
             _ => {}
         }
@@ -499,14 +516,17 @@ impl Plugin<v6::Message> for MsgType {
         // let network = self.cfg.v6().get_network(meta.ifindex);
 
         // Honor the server mode (mirrors the v4 path): drain / maintenance /
-        // shutting-down suppress SOLICIT (new leases); maintenance additionally
-        // suppresses RENEW / REBIND so the server is fully out of service. Other
-        // message types (RELEASE, DECLINE, CONFIRM, INFORMATION-REQUEST) are
-        // always processed.
+        // shutting-down suppress new lease acquisition; maintenance additionally
+        // suppresses renewals. SOLICIT and the REQUEST that completes it are new
+        // acquisition; RENEW / REBIND are renewals. Other message types (RELEASE,
+        // DECLINE, CONFIRM, INFORMATION-REQUEST) are always processed.
         let mode = self.mode.get();
         match msg_type {
-            MessageType::Solicit if mode.suppresses_new_leases() => {
-                debug!(?mode, "server mode suppresses new leases; dropping SOLICIT");
+            MessageType::Solicit | MessageType::Request if mode.suppresses_new_leases() => {
+                debug!(
+                    ?mode,
+                    "server mode suppresses new leases; dropping SOLICIT/REQUEST"
+                );
                 return Ok(Action::NoResponse);
             }
             MessageType::Renew | MessageType::Rebind if mode.suppresses_renewals() => {
@@ -692,10 +712,11 @@ mod tests {
         Ok(())
     }
 
-    /// Drain still allows renewals: a REQUEST is answered (ACK).
+    /// Drain still allows renewals: a RENEWING REQUEST (ciaddr set, no
+    /// server-id) is answered (ACK).
     #[tokio::test]
     #[traced_test]
-    async fn test_drain_allows_request() -> Result<()> {
+    async fn test_drain_allows_renewal_request() -> Result<()> {
         use dora_core::mode::{ServerMode, SharedMode};
         let cfg = DhcpConfig::parse_str(SAMPLE_YAML).unwrap();
         let plugin = MsgType::new(Arc::new(cfg))?.with_mode(SharedMode::new(ServerMode::Drain));
@@ -705,6 +726,8 @@ mod tests {
             "192.168.0.1".parse()?,
             v4::MessageType::Request,
         )?;
+        // ciaddr set + no server-id => RENEWING, which drain must still answer
+        ctx.msg_mut().set_ciaddr("192.168.0.2".parse::<Ipv4Addr>()?);
         plugin.handle(&mut ctx).await?;
         assert!(
             ctx.resp_msg()
@@ -712,6 +735,33 @@ mod tests {
                 .opts()
                 .has_msg_type(v4::MessageType::Ack)
         );
+        Ok(())
+    }
+
+    /// Drain suppresses a SELECTING REQUEST (new acquisition completing an
+    /// offer): no response.
+    #[tokio::test]
+    #[traced_test]
+    async fn test_drain_suppresses_selecting_request() -> Result<()> {
+        use dora_core::mode::{ServerMode, SharedMode};
+        let cfg = DhcpConfig::parse_str(SAMPLE_YAML).unwrap();
+        let plugin = MsgType::new(Arc::new(cfg))?.with_mode(SharedMode::new(ServerMode::Drain));
+        let mut ctx = util::blank_ctx(
+            "192.168.0.1:67".parse()?,
+            "192.168.0.1".parse()?,
+            "192.168.0.1".parse()?,
+            v4::MessageType::Request,
+        )?;
+        // server-id (names us) + requested-ip + ciaddr 0 => SELECTING, a new
+        // acquisition that drain must suppress
+        ctx.msg_mut()
+            .opts_mut()
+            .insert(v4::DhcpOption::ServerIdentifier("192.168.0.1".parse()?));
+        ctx.msg_mut()
+            .opts_mut()
+            .insert(v4::DhcpOption::RequestedIpAddress("192.168.0.2".parse()?));
+        let action = plugin.handle(&mut ctx).await?;
+        assert!(matches!(action, Action::NoResponse));
         Ok(())
     }
 
