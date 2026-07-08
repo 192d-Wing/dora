@@ -182,6 +182,73 @@ pub trait Storage: Send + Sync + 'static {
         expires_at: SystemTime,
     ) -> Result<Option<State>, Self::Error>;
     async fn count(&self, state: IpState) -> Result<usize, Self::Error>;
+
+    // ---- operations / audit -------------------------------------------------
+    /// insert a new management-operation record (the audit trail row for an
+    /// action). Synchronous actions insert an already-terminal record;
+    /// asynchronous actions insert `accepted` and update it as work proceeds.
+    async fn insert_operation(&self, op: &OperationRecord) -> Result<(), Self::Error>;
+    /// update an existing operation record in place, keyed by `operation_id`
+    async fn update_operation(&self, op: &OperationRecord) -> Result<(), Self::Error>;
+    /// fetch an operation record by id, or `None` if no such record exists
+    async fn get_operation(
+        &self,
+        operation_id: &str,
+    ) -> Result<Option<OperationRecord>, Self::Error>;
+}
+
+/// Lifecycle status of an [`OperationRecord`], mirroring the management API's
+/// `Operation.status`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OperationStatus {
+    Accepted,
+    Running,
+    Succeeded,
+    Failed,
+    Canceled,
+}
+
+impl OperationStatus {
+    /// the value stored in the `operations.status` column
+    pub fn as_str(self) -> &'static str {
+        match self {
+            OperationStatus::Accepted => "accepted",
+            OperationStatus::Running => "running",
+            OperationStatus::Succeeded => "succeeded",
+            OperationStatus::Failed => "failed",
+            OperationStatus::Canceled => "canceled",
+        }
+    }
+
+    /// parse a value read back from the `operations.status` column
+    pub fn from_db_str(s: &str) -> Option<Self> {
+        Some(match s {
+            "accepted" => OperationStatus::Accepted,
+            "running" => OperationStatus::Running,
+            "succeeded" => OperationStatus::Succeeded,
+            "failed" => OperationStatus::Failed,
+            "canceled" => OperationStatus::Canceled,
+            _ => return None,
+        })
+    }
+}
+
+/// A persisted async-operation / audit record (one row of the `operations`
+/// table). The `input_summary`, `result`, and `error_*` fields are opaque to
+/// the storage layer — the management API fills them with redacted JSON text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OperationRecord {
+    pub operation_id: String,
+    pub action: String,
+    pub status: OperationStatus,
+    pub actor: Option<String>,
+    pub input_summary: Option<String>,
+    pub result: Option<String>,
+    pub error_code: Option<String>,
+    pub error_message: Option<String>,
+    pub created_at: SystemTime,
+    pub started_at: Option<SystemTime>,
+    pub completed_at: Option<SystemTime>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -541,6 +608,24 @@ where
     /// select all leases in array, returning as a vec
     pub async fn select_all(&self) -> Result<Vec<State>, IpError<T::Error>> {
         Ok(self.store.select_all().await?)
+    }
+
+    /// insert a new management-operation / audit record
+    pub async fn insert_operation(&self, op: &OperationRecord) -> Result<(), IpError<T::Error>> {
+        Ok(self.store.insert_operation(op).await?)
+    }
+
+    /// update an existing operation record in place (lifecycle transition)
+    pub async fn update_operation(&self, op: &OperationRecord) -> Result<(), IpError<T::Error>> {
+        Ok(self.store.update_operation(op).await?)
+    }
+
+    /// fetch an operation record by id
+    pub async fn get_operation(
+        &self,
+        operation_id: &str,
+    ) -> Result<Option<OperationRecord>, IpError<T::Error>> {
+        Ok(self.store.get_operation(operation_id).await?)
     }
 
     pub async fn get(&self, ip: IpAddr) -> Result<Option<State>, IpError<T::Error>> {

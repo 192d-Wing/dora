@@ -11,6 +11,7 @@ use dora_core::{
         trace,
     },
     dhcproto::{v4, v6},
+    mode::{ServerMode, SharedMode},
     tokio::{self, runtime::Builder, signal, task::JoinHandle},
     tracing::*,
 };
@@ -73,12 +74,16 @@ async fn start(config: cli::Config) -> Result<()> {
     let dhcp_cfg = Arc::new(DhcpConfig::parse(&config.config_path)?);
     debug!("starting database");
     let ip_mgr = Arc::new(IpManager::new(SqliteDb::new(database_url).await?)?);
+    // shared server mode: the management API sets it (maintenance / drain /
+    // shutdown) and the DHCP datapath reads it to decide whether to answer.
+    let mode = SharedMode::new(ServerMode::Normal);
     // start external api for healthchecks
     let api = ExternalApi::new(
         config.external_api,
         Arc::clone(&dhcp_cfg),
         Arc::clone(&ip_mgr),
-    );
+    )
+    .with_mode(mode.clone());
     // start v4 server
     debug!("starting v4 server");
     let mut v4: Server<v4::Message> =
@@ -87,7 +92,9 @@ async fn start(config: cli::Config) -> Result<()> {
 
     // perhaps with only one plugin chain we will just register deps here
     // in order? we could get rid of derive macros & topo sort
-    MsgType::new(Arc::clone(&dhcp_cfg))?.register(&mut v4);
+    MsgType::new(Arc::clone(&dhcp_cfg))?
+        .with_mode(mode.clone())
+        .register(&mut v4);
     StaticAddr::new(Arc::clone(&dhcp_cfg))?.register(&mut v4);
     // leases plugin
 
@@ -99,7 +106,9 @@ async fn start(config: cli::Config) -> Result<()> {
         let mut v6: Server<v6::Message> =
             Server::new(config.clone(), dhcp_cfg.v6().interfaces().to_owned())?;
         info!("starting v6 plugins");
-        MsgType::new(Arc::clone(&dhcp_cfg))?.register(&mut v6);
+        MsgType::new(Arc::clone(&dhcp_cfg))?
+            .with_mode(mode.clone())
+            .register(&mut v6);
         LeasesV6::new(Arc::clone(&dhcp_cfg), Arc::clone(&ip_mgr)).register(&mut v6);
         Some(v6)
     } else {
@@ -141,7 +150,16 @@ async fn flatten<T>(handle: JoinHandle<Result<T, anyhow::Error>>) -> Result<T, a
 }
 
 async fn shutdown_signal(token: CancellationToken) -> Result<()> {
-    let ret = signal::ctrl_c().await.map_err(|err| anyhow!(err));
-    token.cancel();
-    ret
+    // Resolve on either Ctrl-C or a cancellation of the shared token (e.g. the
+    // management API's `shutdown` action). Without the token branch, an
+    // API-triggered shutdown would stop the HTTP API but leave the DHCP servers
+    // running, since they wait on this future rather than the token directly.
+    tokio::select! {
+        ret = signal::ctrl_c() => {
+            // propagate the Ctrl-C to the rest of the system (API + other server)
+            token.cancel();
+            ret.map_err(|err| anyhow!(err))
+        }
+        _ = token.cancelled() => Ok(()),
+    }
 }

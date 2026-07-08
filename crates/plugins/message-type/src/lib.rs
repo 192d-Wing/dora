@@ -16,6 +16,7 @@ use dora_core::{
         v6,
     },
     metrics,
+    mode::SharedMode,
     prelude::*,
     tracing::warn,
 };
@@ -31,11 +32,19 @@ use config::{DhcpConfig, client_classes};
 pub struct MsgType {
     cfg: Arc<DhcpConfig>,
     flood: Option<FloodCache<Vec<u8>>>,
+    /// shared server mode; when the server is draining / in maintenance /
+    /// shutting down, new-lease (and, for maintenance, renewal) requests are
+    /// dropped here. Defaults to `Normal`; the binary wires in the live handle
+    /// via [`MsgType::with_mode`].
+    mode: SharedMode,
 }
 
 impl Debug for MsgType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("MsgType").field("cfg", &self.cfg).finish()
+        f.debug_struct("MsgType")
+            .field("cfg", &self.cfg)
+            .field("mode", &self.mode.get())
+            .finish()
     }
 }
 
@@ -44,7 +53,15 @@ impl MsgType {
         Ok(Self {
             flood: cfg.v4().flood_threshold().map(FloodCache::new),
             cfg,
+            mode: SharedMode::default(),
         })
+    }
+
+    /// Attach the shared server-mode handle so the datapath honors
+    /// drain / maintenance / shutting-down modes set via the management API.
+    pub fn with_mode(mut self, mode: SharedMode) -> Self {
+        self.mode = mode;
+        self
     }
 
     pub fn flood_check(&self, id: &Vec<u8>) -> bool {
@@ -80,6 +97,29 @@ impl Plugin<Message> for MsgType {
             ?subnet,
             req = %ctx.msg(),
         );
+
+        // Honor the server mode before doing any work. Drain / maintenance /
+        // shutting-down suppress new lease acquisition (DISCOVER); maintenance
+        // additionally suppresses renewals (REQUEST). Under drain / shutting-down
+        // renewals keep flowing so existing clients age out gracefully. Other
+        // message types (RELEASE, DECLINE, INFORM) are always processed.
+        // (A SELECTING REQUEST completing an offer issued before drain began can
+        // still get an address; drain is best-effort for in-flight handshakes.)
+        let mode = self.mode.get();
+        match msg_type {
+            Some(MessageType::Discover) if mode.suppresses_new_leases() => {
+                debug!(
+                    ?mode,
+                    "server mode suppresses new leases; dropping DISCOVER"
+                );
+                return Ok(Action::NoResponse);
+            }
+            Some(MessageType::Request) if mode.suppresses_renewals() => {
+                debug!(?mode, "server mode suppresses renewals; dropping REQUEST");
+                return Ok(Action::NoResponse);
+            }
+            _ => {}
+        }
 
         let client_id = self.cfg.v4().client_id(req).to_vec(); // to_vec required b/c of borrowck error
         if !self.flood_check(&client_id) {
@@ -458,6 +498,27 @@ impl Plugin<v6::Message> for MsgType {
 
         // let network = self.cfg.v6().get_network(meta.ifindex);
 
+        // Honor the server mode (mirrors the v4 path): drain / maintenance /
+        // shutting-down suppress SOLICIT (new leases); maintenance additionally
+        // suppresses RENEW / REBIND so the server is fully out of service. Other
+        // message types (RELEASE, DECLINE, CONFIRM, INFORMATION-REQUEST) are
+        // always processed.
+        let mode = self.mode.get();
+        match msg_type {
+            MessageType::Solicit if mode.suppresses_new_leases() => {
+                debug!(?mode, "server mode suppresses new leases; dropping SOLICIT");
+                return Ok(Action::NoResponse);
+            }
+            MessageType::Renew | MessageType::Rebind if mode.suppresses_renewals() => {
+                debug!(
+                    ?mode,
+                    "server mode suppresses renewals; dropping RENEW/REBIND"
+                );
+                return Ok(Action::NoResponse);
+            }
+            _ => {}
+        }
+
         // create initial response with reply type
         let mut resp = v6::Message::new_with_id(MessageType::Reply, req.xid());
 
@@ -609,6 +670,68 @@ mod tests {
         plugin.handle(&mut ctx).await?;
 
         assert!(ctx.resp_msg().unwrap().opts().msg_type().is_none());
+        Ok(())
+    }
+
+    /// Drain suppresses new leases: a DISCOVER gets no response.
+    #[tokio::test]
+    #[traced_test]
+    async fn test_drain_suppresses_discover() -> Result<()> {
+        use dora_core::mode::{ServerMode, SharedMode};
+        let cfg = DhcpConfig::parse_str(SAMPLE_YAML).unwrap();
+        let plugin = MsgType::new(Arc::new(cfg))?.with_mode(SharedMode::new(ServerMode::Drain));
+        let mut ctx = util::blank_ctx(
+            "192.168.0.1:67".parse()?,
+            "192.168.0.1".parse()?,
+            "192.168.0.1".parse()?,
+            v4::MessageType::Discover,
+        )?;
+        // NoResponse tells the server runner to send nothing back to the client
+        let action = plugin.handle(&mut ctx).await?;
+        assert!(matches!(action, Action::NoResponse));
+        Ok(())
+    }
+
+    /// Drain still allows renewals: a REQUEST is answered (ACK).
+    #[tokio::test]
+    #[traced_test]
+    async fn test_drain_allows_request() -> Result<()> {
+        use dora_core::mode::{ServerMode, SharedMode};
+        let cfg = DhcpConfig::parse_str(SAMPLE_YAML).unwrap();
+        let plugin = MsgType::new(Arc::new(cfg))?.with_mode(SharedMode::new(ServerMode::Drain));
+        let mut ctx = util::blank_ctx(
+            "192.168.0.1:67".parse()?,
+            "192.168.0.1".parse()?,
+            "192.168.0.1".parse()?,
+            v4::MessageType::Request,
+        )?;
+        plugin.handle(&mut ctx).await?;
+        assert!(
+            ctx.resp_msg()
+                .unwrap()
+                .opts()
+                .has_msg_type(v4::MessageType::Ack)
+        );
+        Ok(())
+    }
+
+    /// Maintenance takes the server fully out of service: even a REQUEST
+    /// (renewal) gets no response.
+    #[tokio::test]
+    #[traced_test]
+    async fn test_maintenance_suppresses_request() -> Result<()> {
+        use dora_core::mode::{ServerMode, SharedMode};
+        let cfg = DhcpConfig::parse_str(SAMPLE_YAML).unwrap();
+        let plugin =
+            MsgType::new(Arc::new(cfg))?.with_mode(SharedMode::new(ServerMode::Maintenance));
+        let mut ctx = util::blank_ctx(
+            "192.168.0.1:67".parse()?,
+            "192.168.0.1".parse()?,
+            "192.168.0.1".parse()?,
+            v4::MessageType::Request,
+        )?;
+        let action = plugin.handle(&mut ctx).await?;
+        assert!(matches!(action, Action::NoResponse));
         Ok(())
     }
 

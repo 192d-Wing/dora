@@ -33,6 +33,7 @@ pub mod config;
 pub mod env;
 pub mod handler;
 pub mod metrics;
+pub mod mode;
 pub mod prelude;
 pub mod server;
 

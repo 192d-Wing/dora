@@ -108,6 +108,84 @@
     },
     "query": "SELECT COUNT(addr) as count_addr FROM leases_v6 WHERE leased = ?1 AND probation = ?2 AND expires_at > ?3"
   },
+  "213e6a9396363f674b098e5b92d9a1a032ae1c82803238ab5fa322da082db50b": {
+    "describe": {
+      "columns": [
+        {
+          "name": "operation_id!",
+          "ordinal": 0,
+          "type_info": "Text"
+        },
+        {
+          "name": "action!",
+          "ordinal": 1,
+          "type_info": "Text"
+        },
+        {
+          "name": "status!",
+          "ordinal": 2,
+          "type_info": "Text"
+        },
+        {
+          "name": "actor?",
+          "ordinal": 3,
+          "type_info": "Text"
+        },
+        {
+          "name": "input_summary?",
+          "ordinal": 4,
+          "type_info": "Text"
+        },
+        {
+          "name": "result?",
+          "ordinal": 5,
+          "type_info": "Text"
+        },
+        {
+          "name": "error_code?",
+          "ordinal": 6,
+          "type_info": "Text"
+        },
+        {
+          "name": "error_message?",
+          "ordinal": 7,
+          "type_info": "Text"
+        },
+        {
+          "name": "created_at!",
+          "ordinal": 8,
+          "type_info": "Int64"
+        },
+        {
+          "name": "started_at?",
+          "ordinal": 9,
+          "type_info": "Int64"
+        },
+        {
+          "name": "completed_at?",
+          "ordinal": 10,
+          "type_info": "Int64"
+        }
+      ],
+      "nullable": [
+        false,
+        false,
+        false,
+        true,
+        true,
+        true,
+        true,
+        true,
+        false,
+        true,
+        true
+      ],
+      "parameters": {
+        "Right": 1
+      }
+    },
+    "query": "SELECT\n                 operation_id  AS \"operation_id!\",\n                 action        AS \"action!\",\n                 status        AS \"status!\",\n                 actor         AS \"actor?\",\n                 input_summary AS \"input_summary?\",\n                 result        AS \"result?\",\n                 error_code    AS \"error_code?\",\n                 error_message AS \"error_message?\",\n                 created_at    AS \"created_at!\",\n                 started_at    AS \"started_at?\",\n                 completed_at  AS \"completed_at?\"\n               FROM operations WHERE operation_id = ?1"
+  },
   "2705ef6ede59cb46a73fc0799bab3c4c4f1148d2cd73c63f1c90fb09fa51a2c6": {
     "describe": {
       "columns": [
@@ -227,6 +305,16 @@
       }
     },
     "query": "SELECT * FROM leases_v6 WHERE addr = ?1 AND prefix_len = 128"
+  },
+  "59eb7cdd3666b851164b3edbd05f40a021c9394ae2bc881cd39d8ce51d47c6eb": {
+    "describe": {
+      "columns": [],
+      "nullable": [],
+      "parameters": {
+        "Right": 11
+      }
+    },
+    "query": "INSERT INTO operations (operation_id, action, status, actor, input_summary, result, error_code, error_message, created_at, started_at, completed_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)"
   },
   "5c1a24787bd4dc547d627386a946c121877922112645661601bf1d758f189adf": {
     "describe": {
@@ -809,6 +897,16 @@
       }
     },
     "query": "INSERT INTO leases_v6\n                (addr, prefix_len, client_id, expires_at, network, leased, probation)\n               VALUES (?1, 128, ?2, ?3, ?4, ?5, ?6)"
+  },
+  "ceda5681ad28c4b614f0b24a45ac1baea9bdc187cb11e0ebeb44d97c547591b7": {
+    "describe": {
+      "columns": [],
+      "nullable": [],
+      "parameters": {
+        "Right": 10
+      }
+    },
+    "query": "UPDATE operations SET action = ?2, status = ?3, actor = ?4, input_summary = ?5, result = ?6, error_code = ?7, error_message = ?8, started_at = ?9, completed_at = ?10 WHERE operation_id = ?1"
   },
   "d936276b3e7ea7fd4e26597791388e43779d3b87835573709227673ab8d49847": {
     "describe": {

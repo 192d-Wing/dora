@@ -28,7 +28,7 @@ items annotated `— partial:` are started but incomplete.
 - [x] Replace current health body/status behavior with JSON `GET /health`.
 - [x] Add `GET /ready` with structured readiness checks.
 - [x] Add `GET /v1/server` with runtime metadata and server mode.
-- [ ] Track server modes: `normal`, `maintenance`, `drain`, and `shutting_down`. — partial: `ServerMode` enum exists but only `Normal` is ever reported; no transitions.
+- [x] Track server modes: `normal`, `maintenance`, `drain`, and `shutting_down`. — a shared `SharedMode` handle (`dora-core`) is set by the maintenance-mode/drain/shutdown actions, reported by `/v1/server`, and enforced in the DHCP datapath (drain/shutting_down suppress new leases; maintenance also suppresses renewals).
 
 ## Metrics
 
@@ -70,7 +70,7 @@ items annotated `— partial:` are started but incomplete.
 
 ## Automation Actions
 
-- [ ] Add action-oriented endpoints under `/v1/actions`.
+- [x] Add action-oriented endpoints under `/v1/actions`. — partial: `maintenance-mode`, `drain`, and `shutdown` implemented; config/reservation/lease/DDNS actions pending in later phases.
 - [ ] Implement reload config.
 - [ ] Implement activate config.
 - [ ] Implement rollback config.
@@ -78,17 +78,17 @@ items annotated `— partial:` are started but incomplete.
 - [ ] Allow per-request DDNS cleanup on lease release.
 - [ ] Implement trigger DDNS update and cleanup.
 - [ ] Implement create/update/delete reservation actions.
-- [ ] Implement maintenance mode.
-- [ ] Implement drain mode.
-- [ ] Implement graceful shutdown.
+- [x] Implement maintenance mode. — `POST /v1/actions/maintenance-mode` (sync); suppresses new leases and renewals.
+- [x] Implement drain mode. — `POST /v1/actions/drain` (sync); suppresses new leases, keeps renewals.
+- [x] Implement graceful shutdown. — `POST /v1/actions/shutdown` (async `202`); enters shutting-down mode, cancels the shared token after the grace period.
 
 ## Async Operations And Audit
 
-- [ ] Add mixed sync/async action execution.
-- [ ] Add `GET /v1/operations/{operation_id}`.
-- [ ] Persist completed operation records until normal log/audit retention removes them.
-- [ ] Record actor/auth context, action input summary, status, timestamps, and errors.
-- [ ] Add tests for operation lifecycle: accepted, running, succeeded, failed, and canceled.
+- [x] Add mixed sync/async action execution. — maintenance-mode/drain return `ActionResult` synchronously; shutdown returns `202 OperationAccepted` and completes out of band.
+- [x] Add `GET /v1/operations/{operation_id}`.
+- [x] Persist completed operation records until normal log/audit retention removes them. — DB-backed `operations` table.
+- [x] Record actor/auth context, action input summary, status, timestamps, and errors.
+- [x] Add tests for operation lifecycle: accepted, running, succeeded, failed, and canceled. — partial: accepted/running/succeeded exercised via the shutdown flow; failed/canceled paths land with the config/reservation actions that can fail.
 
 ## Error Model
 
