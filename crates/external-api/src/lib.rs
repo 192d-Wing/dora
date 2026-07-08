@@ -404,7 +404,7 @@ mod handlers {
         ))
     }
 
-    fn request_id() -> String {
+    pub(crate) fn request_id() -> String {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|elapsed| elapsed.as_nanos())
@@ -1423,35 +1423,80 @@ pub mod models {
     #[derive(Debug)]
     pub struct ServerError {
         status: axum::http::StatusCode,
+        /// stable, machine-readable error code (e.g. `unauthorized`, `internal`)
+        code: &'static str,
         error: anyhow::Error,
+        /// optional structured details, e.g. offending fields for a validation error
+        details: Option<serde_json::Value>,
     }
     /// return error result
     pub type ServerResult<T> = Result<T, ServerError>;
 
     impl ServerError {
-        pub(crate) fn unauthorized(message: &'static str) -> Self {
+        pub(crate) fn new(
+            status: axum::http::StatusCode,
+            code: &'static str,
+            error: anyhow::Error,
+        ) -> Self {
             Self {
-                status: axum::http::StatusCode::UNAUTHORIZED,
-                error: anyhow::anyhow!(message),
+                status,
+                code,
+                error,
+                details: None,
             }
         }
+        pub(crate) fn unauthorized(message: &'static str) -> Self {
+            Self::new(
+                axum::http::StatusCode::UNAUTHORIZED,
+                "unauthorized",
+                anyhow::anyhow!(message),
+            )
+        }
+    }
+
+    /// The standard error envelope: `{ "error": { code, message, request_id, details } }`.
+    #[derive(Serialize)]
+    struct ErrorEnvelope {
+        error: ErrorBody,
+    }
+
+    #[derive(Serialize)]
+    struct ErrorBody {
+        code: &'static str,
+        message: String,
+        request_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        details: Option<serde_json::Value>,
     }
 
     impl IntoResponse for ServerError {
         fn into_response(self) -> axum::response::Response {
-            // How we want errors responses to be serialized
-            #[derive(Serialize)]
-            struct ErrorResponse {
-                message: String,
-            }
+            let request_id = crate::handlers::request_id();
 
-            (
-                self.status,
-                axum::Json(ErrorResponse {
-                    message: format!("{}", self.error),
-                }),
-            )
-                .into_response()
+            // SECURITY: 5xx errors carry internal detail (file paths, DB errors) in
+            // the anyhow chain. Log it server-side but return a generic message so
+            // we never leak filesystem/internal state to clients.
+            let message = if self.status.is_server_error() {
+                tracing::error!(code = self.code, error = ?self.error, "API internal error");
+                "internal server error".to_string()
+            } else {
+                format!("{}", self.error)
+            };
+
+            let body = ErrorEnvelope {
+                error: ErrorBody {
+                    code: self.code,
+                    message,
+                    request_id: request_id.clone(),
+                    details: self.details,
+                },
+            };
+
+            let mut response = (self.status, axum::Json(body)).into_response();
+            if let Ok(value) = axum::http::HeaderValue::from_str(&request_id) {
+                response.headers_mut().insert("x-request-id", value);
+            }
+            response
         }
     }
 
@@ -1460,10 +1505,11 @@ pub mod models {
         E: Into<anyhow::Error>,
     {
         fn from(err: E) -> Self {
-            Self {
-                status: axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                error: err.into(),
-            }
+            Self::new(
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                err.into(),
+            )
         }
     }
 }
@@ -1883,6 +1929,32 @@ v4:
             .error_for_status()?;
         let public_body: serde_json::Value = public.json().await?;
         assert_eq!(public_body["status"], "alive");
+
+        token.cancel();
+        Ok(())
+    }
+
+    // an error response uses the standard envelope { error: { code, message,
+    // request_id } } and carries an X-Request-ID header.
+    #[tokio::test]
+    async fn test_error_envelope_shape() -> anyhow::Result<()> {
+        let (addr, token) =
+            spawn_test_api_with_auth(Health::Good, ApiAuth::bearer("secret")).await?;
+
+        // no bearer token -> 401 with the structured error body
+        let response = reqwest::get(format!("http://{addr}/v1/server")).await?;
+        assert_eq!(response.status(), reqwest::StatusCode::UNAUTHORIZED);
+        let header_id = response
+            .headers()
+            .get("x-request-id")
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string)
+            .expect("error response must carry X-Request-ID");
+
+        let body: serde_json::Value = response.json().await?;
+        assert_eq!(body["error"]["code"], "unauthorized");
+        assert!(body["error"]["message"].is_string());
+        assert_eq!(body["error"]["request_id"], header_id);
 
         token.cancel();
         Ok(())
