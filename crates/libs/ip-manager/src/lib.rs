@@ -195,6 +195,33 @@ pub trait Storage: Send + Sync + 'static {
         &self,
         operation_id: &str,
     ) -> Result<Option<OperationRecord>, Self::Error>;
+
+    // ---- runtime reservations -----------------------------------------------
+    /// insert or replace a runtime reservation, keyed by (family, ip)
+    async fn upsert_reservation(&self, res: &RuntimeReservationRecord) -> Result<(), Self::Error>;
+    /// delete a runtime reservation by (family, ip); returns whether a row was removed
+    async fn delete_reservation(&self, family: &str, ip: &str) -> Result<bool, Self::Error>;
+    /// fetch a runtime reservation by (family, ip)
+    async fn get_reservation(
+        &self,
+        family: &str,
+        ip: &str,
+    ) -> Result<Option<RuntimeReservationRecord>, Self::Error>;
+    /// list all runtime reservations (used to warm the in-memory store on startup)
+    async fn list_reservations(&self) -> Result<Vec<RuntimeReservationRecord>, Self::Error>;
+}
+
+/// A persisted runtime (API-managed) host reservation (one row of the
+/// `runtime_reservations` table). `match_json` is opaque to storage — the
+/// management API / in-memory store parse it into a match predicate.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeReservationRecord {
+    pub family: String,
+    pub ip: String,
+    pub prefix: Option<String>,
+    pub network: Option<String>,
+    pub match_json: String,
+    pub created_at: SystemTime,
 }
 
 /// Lifecycle status of an [`OperationRecord`], mirroring the management API's
@@ -628,6 +655,30 @@ where
         Ok(self.store.get_operation(operation_id).await?)
     }
 
+    /// insert or replace a runtime reservation
+    pub async fn upsert_reservation(
+        &self,
+        res: &RuntimeReservationRecord,
+    ) -> Result<(), IpError<T::Error>> {
+        Ok(self.store.upsert_reservation(res).await?)
+    }
+
+    /// delete a runtime reservation by (family, ip); returns whether a row was removed
+    pub async fn delete_reservation(
+        &self,
+        family: &str,
+        ip: &str,
+    ) -> Result<bool, IpError<T::Error>> {
+        Ok(self.store.delete_reservation(family, ip).await?)
+    }
+
+    /// list all runtime reservations
+    pub async fn list_reservations(
+        &self,
+    ) -> Result<Vec<RuntimeReservationRecord>, IpError<T::Error>> {
+        Ok(self.store.list_reservations().await?)
+    }
+
     pub async fn get(&self, ip: IpAddr) -> Result<Option<State>, IpError<T::Error>> {
         Ok(self.store.get(ip).await?)
     }
@@ -739,6 +790,37 @@ where
             }
         }
         Ok(None)
+    }
+
+    /// Pin a specific delegated prefix for a client (an IA_PD reservation), but
+    /// only if it is free, expired, or already this client's — never steal a
+    /// live delegation held by someone else. Returns `Ok(None)` when the prefix
+    /// is in use, so the caller can fall back to normal delegation.
+    pub async fn reserve_pd(
+        &self,
+        base: Ipv6Addr,
+        dlen: u8,
+        network: IpAddr,
+        id: &[u8],
+        expires_at: SystemTime,
+        state: IpState,
+    ) -> Result<Option<(Ipv6Addr, u8)>, IpError<T::Error>> {
+        let now = SystemTime::now();
+        let claimable = match self.store.get_pd(IpAddr::V6(base), dlen).await? {
+            None => true,
+            Some(existing) => {
+                let info = existing.as_ref();
+                info.expires_at() < now || info.id() == Some(id)
+            }
+        };
+        if claimable {
+            self.store
+                .upsert_pd(IpAddr::V6(base), dlen, network, id, expires_at, Some(state))
+                .await?;
+            Ok(Some((base, dlen)))
+        } else {
+            Ok(None)
+        }
     }
 
     /// Extend an existing delegated prefix (IA_PD Renew/Rebind). Never creates a

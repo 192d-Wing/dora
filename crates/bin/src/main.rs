@@ -3,7 +3,10 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result, anyhow};
 
-use config::DhcpConfig;
+use config::{
+    DhcpConfig,
+    reservations::{RuntimeReservation, RuntimeReservations},
+};
 use dora_core::{
     Register, Server,
     config::{
@@ -77,13 +80,43 @@ async fn start(config: cli::Config) -> Result<()> {
     // shared server mode: the management API sets it (maintenance / drain /
     // shutdown) and the DHCP datapath reads it to decide whether to answer.
     let mode = SharedMode::new(ServerMode::Normal);
+    // shared runtime (API-managed) reservations: the management API mutates them
+    // and the DHCP datapath reads them, overriding config reservations and the
+    // pool. Warm the in-memory store from the database.
+    let reservations = RuntimeReservations::new();
+    match ip_mgr.list_reservations().await {
+        Ok(records) => {
+            let loaded: Vec<_> = records
+                .iter()
+                .filter_map(|r| {
+                    match RuntimeReservation::from_parts(
+                        &r.family,
+                        &r.ip,
+                        r.prefix.as_deref(),
+                        r.network.clone(),
+                        &r.match_json,
+                    ) {
+                        Ok(res) => Some(res),
+                        Err(err) => {
+                            warn!(?err, ip = %r.ip, "skipping malformed runtime reservation");
+                            None
+                        }
+                    }
+                })
+                .collect();
+            info!(count = loaded.len(), "loaded runtime reservations");
+            reservations.load(loaded);
+        }
+        Err(err) => error!(?err, "failed to load runtime reservations from database"),
+    }
     // start external api for healthchecks
     let api = ExternalApi::new(
         config.external_api,
         Arc::clone(&dhcp_cfg),
         Arc::clone(&ip_mgr),
     )
-    .with_mode(mode.clone());
+    .with_mode(mode.clone())
+    .with_reservations(reservations.clone());
     // start v4 server
     debug!("starting v4 server");
     let mut v4: Server<v4::Message> =
@@ -95,7 +128,9 @@ async fn start(config: cli::Config) -> Result<()> {
     MsgType::new(Arc::clone(&dhcp_cfg))?
         .with_mode(mode.clone())
         .register(&mut v4);
-    StaticAddr::new(Arc::clone(&dhcp_cfg))?.register(&mut v4);
+    StaticAddr::new(Arc::clone(&dhcp_cfg))?
+        .with_reservations(reservations.clone())
+        .register(&mut v4);
     // leases plugin
 
     Leases::new(Arc::clone(&dhcp_cfg), Arc::clone(&ip_mgr)).register(&mut v4);
@@ -109,7 +144,9 @@ async fn start(config: cli::Config) -> Result<()> {
         MsgType::new(Arc::clone(&dhcp_cfg))?
             .with_mode(mode.clone())
             .register(&mut v6);
-        LeasesV6::new(Arc::clone(&dhcp_cfg), Arc::clone(&ip_mgr)).register(&mut v6);
+        LeasesV6::new(Arc::clone(&dhcp_cfg), Arc::clone(&ip_mgr))
+            .with_reservations(reservations.clone())
+            .register(&mut v6);
         Some(v6)
     } else {
         None

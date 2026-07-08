@@ -49,13 +49,13 @@ items annotated `— partial:` are started but incomplete.
 
 ## Reservations
 
-- [ ] Add runtime reservation storage.
+- [x] Add runtime reservation storage. — DB-backed `runtime_reservations` table + an in-memory `RuntimeReservations` store (config crate) warmed on startup and read by the datapath.
 - [x] Preserve config reservations. — surfaced via `GET /v1/reservations/v4` with `source: config`.
-- [ ] Define and enforce precedence: runtime API reservations override config reservations.
-- [x] Add `GET /v1/reservations/v4`. — config reservations, pagination + network/ip/client_id filters.
-- [x] Add `GET /v1/reservations/v6`. — empty until runtime v6 reservations exist.
-- [ ] Add action endpoints for create, update, and delete reservation.
-- [ ] Add conflict and precedence tests.
+- [x] Define and enforce precedence: runtime API reservations override config reservations. — v4 `StaticAddr` checks the runtime store (MAC then option) before config; v6 `LeasesV6` pins the reserved IA_NA/IA_PD for a matching DUID before pool allocation. Runtime entries shadow same-address config entries in the listing.
+- [x] Add `GET /v1/reservations/v4`. — config + runtime reservations, pagination + network/ip/client_id filters.
+- [x] Add `GET /v1/reservations/v6`. — runtime v6 reservations (config has none).
+- [x] Add action endpoints for create, update, and delete reservation. — `POST /v1/actions/{create,update,delete}-reservation`, sync (`200`) or async (`202`), each recording an audit operation.
+- [x] Add conflict and precedence tests. — duplicate-address / duplicate-match conflicts (`409`); v4 and v6 datapath precedence tests (runtime overrides config / pool).
 
 ## Configuration Management
 
@@ -70,14 +70,14 @@ items annotated `— partial:` are started but incomplete.
 
 ## Automation Actions
 
-- [x] Add action-oriented endpoints under `/v1/actions`. — partial: `maintenance-mode`, `drain`, and `shutdown` implemented; config/reservation/lease/DDNS actions pending in later phases.
+- [x] Add action-oriented endpoints under `/v1/actions`. — partial: `maintenance-mode`, `drain`, `shutdown`, and `{create,update,delete}-reservation` implemented; config/lease/DDNS actions pending in later phases.
 - [ ] Implement reload config.
 - [ ] Implement activate config.
 - [ ] Implement rollback config.
 - [ ] Implement release lease.
 - [ ] Allow per-request DDNS cleanup on lease release.
 - [ ] Implement trigger DDNS update and cleanup.
-- [ ] Implement create/update/delete reservation actions.
+- [x] Implement create/update/delete reservation actions. — `POST /v1/actions/{create,update,delete}-reservation`, enforced in the v4 + v6 datapath.
 - [x] Implement maintenance mode. — `POST /v1/actions/maintenance-mode` (sync); suppresses new leases and renewals.
 - [x] Implement drain mode. — `POST /v1/actions/drain` (sync); suppresses new leases, keeps renewals.
 - [x] Implement graceful shutdown. — `POST /v1/actions/shutdown` (async `202`); enters shutting-down mode, cancels the shared token after the grace period.

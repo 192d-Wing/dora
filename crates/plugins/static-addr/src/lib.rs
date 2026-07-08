@@ -15,7 +15,7 @@ use dora_core::{
 };
 use register_derive::Register;
 
-use config::{DhcpConfig, v4::Reserved};
+use config::{DhcpConfig, reservations::RuntimeReservations, v4::Reserved};
 use message_type::{MatchedClasses, MsgType};
 
 #[derive(Debug, Register)]
@@ -23,11 +23,25 @@ use message_type::{MatchedClasses, MsgType};
 #[register(plugin(MsgType))]
 pub struct StaticAddr {
     cfg: Arc<DhcpConfig>,
+    /// runtime (API-managed) reservations, which take precedence over config
+    /// reservations. Empty unless the binary wires in the shared handle via
+    /// [`StaticAddr::with_reservations`].
+    reservations: RuntimeReservations,
 }
 
 impl StaticAddr {
     pub fn new(cfg: Arc<DhcpConfig>) -> Result<Self> {
-        Ok(Self { cfg })
+        Ok(Self {
+            cfg,
+            reservations: RuntimeReservations::new(),
+        })
+    }
+
+    /// Attach the shared runtime-reservation store so API-managed reservations
+    /// override config reservations and the dynamic pool.
+    pub fn with_reservations(mut self, reservations: RuntimeReservations) -> Self {
+        self.reservations = reservations;
+        self
     }
 }
 
@@ -44,34 +58,27 @@ impl Plugin<Message> for StaticAddr {
         let classes = ctx.get_local::<MatchedClasses>().map(|m| m.0.to_owned());
         let classes = classes.as_deref();
         if let Some(net) = self.cfg.v4().network(subnet) {
-            // determine if we have a reservation based on mac
-            if chaddr.len() == 6 {
-                let mac = MacAddr::new(
+            let mac = (chaddr.len() == 6).then(|| {
+                MacAddr::new(
                     chaddr[0], chaddr[1], chaddr[2], chaddr[3], chaddr[4], chaddr[5],
-                );
-                let bootp = self.cfg.v4().bootp_enabled();
-                if let Some(res) = net.get_reserved_mac(mac, classes) {
-                    // mac is present in our config
-                    return match req.opts().msg_type() {
-                        Some(MessageType::Discover) => self.discover(ctx, &chaddr, classes, res),
-                        Some(MessageType::Request) => self.request(ctx, &chaddr, classes, res),
-                        // no message type, but BOOTP enabled
-                        None if bootp => self.bootp(ctx, &chaddr, classes, res),
-                        // we have a reservation, but we didn't et a DISCOVER or REQUEST
-                        // drop the message
-                        _ => Ok(Action::NoResponse),
-                    };
-                }
-            }
+                )
+            });
+            // Precedence: a runtime reservation wins over a config reservation
+            // (by MAC then by option), which wins over the dynamic pool.
+            let reserved: Option<Reserved> = self
+                .reservations
+                .lookup_v4(mac, req.opts(), classes)
+                .or_else(|| mac.and_then(|mac| net.get_reserved_mac(mac, classes).cloned()))
+                .or_else(|| net.search_reserved_opt(req.opts(), classes).cloned());
 
-            // determine if we have a reservation based on opt
-            if let Some(res) = net.search_reserved_opt(req.opts(), classes) {
-                // matching opt is present in our config
-                return match req.opts().msg_type().context("no message type found")? {
-                    MessageType::Discover => self.discover(ctx, &chaddr, classes, res),
-                    MessageType::Request => self.request(ctx, &chaddr, classes, res),
-                    // we have a reservation, but we didn't et a DISCOVER or REQUEST
-                    // drop the message
+            if let Some(res) = reserved {
+                let bootp = self.cfg.v4().bootp_enabled();
+                return match req.opts().msg_type() {
+                    Some(MessageType::Discover) => self.discover(ctx, &chaddr, classes, &res),
+                    Some(MessageType::Request) => self.request(ctx, &chaddr, classes, &res),
+                    // no message type, but BOOTP enabled
+                    None if bootp => self.bootp(ctx, &chaddr, classes, &res),
+                    // we have a reservation, but not a DISCOVER/REQUEST — drop it
                     _ => Ok(Action::NoResponse),
                 };
             }
@@ -226,6 +233,46 @@ mod tests {
         assert_eq!(
             ctx.resp_msg().unwrap().yiaddr(),
             Ipv4Addr::new(192, 168, 0, 170)
+        );
+        Ok(())
+    }
+
+    // The sample config reserves aabbccddeeff -> 192.168.0.170. A runtime
+    // reservation for the same MAC to a different address must take precedence.
+    #[tokio::test]
+    #[traced_test]
+    async fn test_runtime_reservation_overrides_config() -> Result<()> {
+        use config::reservations::{ResMatch, RuntimeReservation, RuntimeReservations};
+        use config::wire::v4::Condition;
+
+        let cfg = DhcpConfig::parse_str(SAMPLE_YAML).unwrap();
+        let store = RuntimeReservations::new();
+        let mac = MacAddr::new(0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff);
+        store
+            .insert(
+                RuntimeReservation {
+                    ip: "192.168.0.171".parse().unwrap(),
+                    prefix: None,
+                    network: None,
+                    match_: ResMatch::V4(Condition::Mac(mac)),
+                },
+                false,
+            )
+            .unwrap();
+        let plugin = StaticAddr::new(Arc::new(cfg))?.with_reservations(store);
+        let mut ctx = util::blank_ctx(
+            "192.168.0.1:67".parse()?,
+            "192.168.0.1".parse()?,
+            "192.168.0.1".parse()?,
+            v4::MessageType::Discover,
+        )?;
+        ctx.msg_mut().set_chaddr(&hex::decode(b"aabbccddeeff")?);
+        plugin.handle(&mut ctx).await?;
+
+        // runtime .171 wins over config .170
+        assert_eq!(
+            ctx.resp_msg().unwrap().yiaddr(),
+            Ipv4Addr::new(192, 168, 0, 171)
         );
         Ok(())
     }

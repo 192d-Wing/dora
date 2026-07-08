@@ -31,6 +31,7 @@ use dora_core::{
 
 use config::{
     DhcpConfig,
+    reservations::RuntimeReservations,
     v6::{NetRange, Network, PdPool},
 };
 use ip_manager::{IpManager, IpState, Storage};
@@ -51,6 +52,11 @@ where
 {
     cfg: Arc<DhcpConfig>,
     ip_mgr: Arc<IpManager<S>>,
+    /// runtime (API-managed) reservations; a match on the client DUID pins the
+    /// reserved IA_NA address / IA_PD prefix, overriding pool allocation. Empty
+    /// unless the binary wires in the shared handle via
+    /// [`LeasesV6::with_reservations`].
+    reservations: RuntimeReservations,
 }
 
 impl<S: Storage> fmt::Debug for LeasesV6<S> {
@@ -61,7 +67,18 @@ impl<S: Storage> fmt::Debug for LeasesV6<S> {
 
 impl<S: Storage> LeasesV6<S> {
     pub fn new(cfg: Arc<DhcpConfig>, ip_mgr: Arc<IpManager<S>>) -> Self {
-        Self { cfg, ip_mgr }
+        Self {
+            cfg,
+            ip_mgr,
+            reservations: RuntimeReservations::new(),
+        }
+    }
+
+    /// Attach the shared runtime-reservation store so a DUID match assigns the
+    /// reserved address/prefix instead of allocating from the pool.
+    pub fn with_reservations(mut self, reservations: RuntimeReservations) -> Self {
+        self.reservations = reservations;
+        self
     }
 }
 
@@ -172,11 +189,22 @@ where
             IpState::Reserve
         };
 
+        // A runtime reservation for this DUID pins a specific IA_NA address (and
+        // optional IA_PD prefix), overriding pool allocation. A reservation
+        // reserves a single address/prefix, so it applies to the first IA of
+        // each kind; any further IAs fall back to the pool.
+        let reserved = self.reservations.lookup_v6(duid);
+        let mut reserved_addr = reserved.as_ref().map(|r| r.ip);
+        let mut reserved_prefix = reserved.as_ref().and_then(|r| r.prefix);
+
         let mut ia_opts = Vec::with_capacity(ianas.len() + iapds.len());
         // IA_NA: assign an address per IA (with that pool's lifetimes)
         for iana in ianas {
             let id = binding_id(duid, iana.id);
-            match self.allocate(network, &id, state).await {
+            match self
+                .allocate(network, &id, state, reserved_addr.take())
+                .await
+            {
                 Some((addr, preferred, valid)) => {
                     debug!(?addr, iaid = iana.id, commit, "assigned v6 address");
                     ia_opts.push(iana_with_addr(iana.id, addr, preferred, valid));
@@ -190,7 +218,10 @@ where
         // IA_PD: delegate a prefix per IA (with that pool's lifetimes)
         for iapd in iapds {
             let id = binding_id(duid, iapd.id);
-            match self.allocate_prefix(network, &id, state).await {
+            match self
+                .allocate_prefix(network, &id, state, reserved_prefix.take())
+                .await
+            {
                 Some((prefix, plen, preferred, valid)) => {
                     debug!(?prefix, plen, iaid = iapd.id, commit, "delegated v6 prefix");
                     ia_opts.push(iapd_with_prefix(iapd.id, prefix, plen, preferred, valid));
@@ -425,7 +456,39 @@ where
         network: &Network,
         id: &[u8],
         state: IpState,
+        reserved: Option<Ipv6Addr>,
     ) -> Option<(Ipv6Addr, Duration, Duration)> {
+        // A runtime reservation pins a specific address, overriding both the
+        // reuse arm and pool allocation. The address is validated in-range at
+        // create time, so `network.range` finds it and supplies lifetimes; if a
+        // later config change moved it out of range, fall back to normal alloc.
+        if let Some(addr) = reserved {
+            if let Some(range) = network.range(addr) {
+                let (preferred, valid) = range_lifetimes(range);
+                let expires_at = SystemTime::now() + db_ttl(state, valid);
+                match self
+                    .ip_mgr
+                    .try_ip(
+                        IpAddr::V6(addr),
+                        IpAddr::V6(network.subnet()),
+                        id,
+                        expires_at,
+                        network,
+                        Some(state),
+                    )
+                    .await
+                {
+                    Ok(_) => return Some((addr, preferred, valid)),
+                    Err(err) => debug!(?err, "could not pin reserved v6 address; falling back"),
+                }
+            } else {
+                warn!(
+                    ?addr,
+                    "reserved v6 address is outside all ranges; falling back"
+                );
+            }
+        }
+
         // Reuse an existing binding anywhere in this network first. The per-range
         // reserve loop below matches the client id globally, so on a multi-range
         // network it would find (and then delete) a lease held in a *different*
@@ -484,8 +547,37 @@ where
         network: &Network,
         id: &[u8],
         state: IpState,
+        reserved: Option<(Ipv6Addr, u8)>,
     ) -> Option<(Ipv6Addr, u8, Duration, Duration)> {
         let subnet = IpAddr::V6(network.subnet());
+        // A runtime reservation pins a specific delegated prefix, overriding pool
+        // delegation — but only if it lives in one of this network's pd_pools and
+        // isn't held by another client (reserve_pd never steals a live binding).
+        if let Some((base, len)) = reserved {
+            if let Some(pool) = network
+                .pd_pools()
+                .iter()
+                .find(|p| p.delegated_len() == len && p.prefix().contains(&base))
+            {
+                let (preferred, valid) = pool_lifetimes(pool);
+                let expires_at = SystemTime::now() + db_ttl(state, valid);
+                match self
+                    .ip_mgr
+                    .reserve_pd(base, len, subnet, id, expires_at, state)
+                    .await
+                {
+                    Ok(Some((prefix, plen))) => return Some((prefix, plen, preferred, valid)),
+                    Ok(None) => debug!(?base, "reserved prefix in use; falling back"),
+                    Err(err) => debug!(?err, "could not pin reserved prefix; falling back"),
+                }
+            } else {
+                warn!(
+                    ?base,
+                    len, "reserved v6 prefix is outside all pd_pools; falling back"
+                );
+            }
+        }
+
         // Reuse the client's existing delegation from whichever pool holds it, so
         // a multi-pool network keeps the prefix stable (the per-pool loop below
         // returns on the first pool and would otherwise hand out a fresh prefix).
@@ -886,5 +978,51 @@ mod tests {
             panic!("empty IA_PD must carry a StatusCode");
         };
         assert_eq!(sc.status, Status::NoPrefixAvail);
+    }
+
+    // A runtime reservation for a DUID pins the reserved in-range IA_NA address
+    // and persists the binding, so renewals (which read the stored binding) keep
+    // honoring it.
+    #[tokio::test]
+    async fn test_reserved_v6_address_is_pinned_and_persisted() -> anyhow::Result<()> {
+        use config::reservations::{ResMatch, RuntimeReservation, RuntimeReservations};
+        use ip_manager::sqlite::SqliteDb;
+
+        let cfg = Arc::new(DhcpConfig::parse_str(include_str!(
+            "../../../libs/config/sample/config_v6_pools.yaml"
+        ))?);
+        let ip_mgr = Arc::new(IpManager::new(SqliteDb::new("sqlite::memory:").await?)?);
+
+        let duid = vec![0x00u8, 0x01, 0x02, 0x03];
+        let reserved: Ipv6Addr = "2001:db8:1::120".parse()?; // in range, not excluded
+        let store = RuntimeReservations::new();
+        store
+            .insert(
+                RuntimeReservation {
+                    ip: IpAddr::V6(reserved),
+                    prefix: None,
+                    network: None,
+                    match_: ResMatch::V6Duid(duid.clone()),
+                },
+                false,
+            )
+            .unwrap();
+
+        let plugin = LeasesV6::new(Arc::clone(&cfg), Arc::clone(&ip_mgr)).with_reservations(store);
+        let (_subnet, network) = cfg.v6().get_first().expect("a v6 network");
+        let id = binding_id(&duid, 1);
+
+        // allocation honors the reservation instead of picking from the pool
+        let got = plugin
+            .allocate(network, &id, IpState::Lease, Some(reserved))
+            .await;
+        assert_eq!(got.map(|(ip, _, _)| ip), Some(reserved));
+
+        // the binding is persisted so RENEW/REBIND find it
+        assert_eq!(
+            ip_mgr.lookup_id_v6(&id).await.ok(),
+            Some(IpAddr::V6(reserved))
+        );
+        Ok(())
     }
 }

@@ -13,7 +13,9 @@ use sqlx::{
 };
 use tracing::debug;
 
-use crate::{ClientInfo, IpState, OperationRecord, OperationStatus, State, Storage};
+use crate::{
+    ClientInfo, IpState, OperationRecord, OperationStatus, RuntimeReservationRecord, State, Storage,
+};
 
 #[derive(Debug)]
 pub struct SqliteDb {
@@ -572,6 +574,84 @@ impl Storage for SqliteDb {
             started_at: row.started_at.map(util::to_systime),
             completed_at: row.completed_at.map(util::to_systime),
         }))
+    }
+
+    async fn upsert_reservation(&self, res: &RuntimeReservationRecord) -> Result<(), Self::Error> {
+        let prefix = res.prefix.as_deref();
+        let network = res.network.as_deref();
+        let created_at = util::systime_epoch(res.created_at);
+        sqlx::query!(
+            "INSERT OR REPLACE INTO runtime_reservations \
+             (family, ip, prefix, network, match_json, created_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            res.family,
+            res.ip,
+            prefix,
+            network,
+            res.match_json,
+            created_at,
+        )
+        .execute(&self.inner)
+        .await?;
+        Ok(())
+    }
+
+    async fn delete_reservation(&self, family: &str, ip: &str) -> Result<bool, Self::Error> {
+        let result = sqlx::query!(
+            "DELETE FROM runtime_reservations WHERE family = ?1 AND ip = ?2",
+            family,
+            ip
+        )
+        .execute(&self.inner)
+        .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    async fn get_reservation(
+        &self,
+        family: &str,
+        ip: &str,
+    ) -> Result<Option<RuntimeReservationRecord>, Self::Error> {
+        let row = sqlx::query!(
+            r#"SELECT family AS "family!", ip AS "ip!", prefix AS "prefix?",
+                      network AS "network?", match_json AS "match_json!",
+                      created_at AS "created_at!"
+               FROM runtime_reservations WHERE family = ?1 AND ip = ?2"#,
+            family,
+            ip,
+        )
+        .fetch_optional(&self.inner)
+        .await?;
+        Ok(row.map(|r| RuntimeReservationRecord {
+            family: r.family,
+            ip: r.ip,
+            prefix: r.prefix,
+            network: r.network,
+            match_json: r.match_json,
+            created_at: util::to_systime(r.created_at),
+        }))
+    }
+
+    async fn list_reservations(&self) -> Result<Vec<RuntimeReservationRecord>, Self::Error> {
+        let rows = sqlx::query!(
+            r#"SELECT family AS "family!", ip AS "ip!", prefix AS "prefix?",
+                      network AS "network?", match_json AS "match_json!",
+                      created_at AS "created_at!"
+               FROM runtime_reservations ORDER BY family, ip"#
+        )
+        .fetch_all(&self.inner)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|r| RuntimeReservationRecord {
+                family: r.family,
+                ip: r.ip,
+                prefix: r.prefix,
+                network: r.network,
+                match_json: r.match_json,
+                created_at: util::to_systime(r.created_at),
+            })
+            .collect())
     }
 }
 
