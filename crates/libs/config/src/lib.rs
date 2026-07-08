@@ -10,6 +10,7 @@ use tracing::debug;
 use wire::v6::ServerDuidInfo;
 
 pub mod client_classes;
+pub mod reservations;
 pub mod v4;
 pub mod v6;
 pub mod wire;

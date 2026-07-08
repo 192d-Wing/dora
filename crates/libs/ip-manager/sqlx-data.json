@@ -462,6 +462,64 @@
     },
     "query": "SELECT * FROM leases_v6 WHERE addr = ?1 AND prefix_len = ?2 AND client_id = ?3"
   },
+  "6ccf197503ba50b8938a172cd5efd2bd650390e5f4f02f71371879f22d7dce49": {
+    "describe": {
+      "columns": [
+        {
+          "name": "family!",
+          "ordinal": 0,
+          "type_info": "Text"
+        },
+        {
+          "name": "ip!",
+          "ordinal": 1,
+          "type_info": "Text"
+        },
+        {
+          "name": "prefix?",
+          "ordinal": 2,
+          "type_info": "Text"
+        },
+        {
+          "name": "network?",
+          "ordinal": 3,
+          "type_info": "Text"
+        },
+        {
+          "name": "match_json!",
+          "ordinal": 4,
+          "type_info": "Text"
+        },
+        {
+          "name": "created_at!",
+          "ordinal": 5,
+          "type_info": "Int64"
+        }
+      ],
+      "nullable": [
+        false,
+        false,
+        true,
+        true,
+        false,
+        false
+      ],
+      "parameters": {
+        "Right": 0
+      }
+    },
+    "query": "SELECT family AS \"family!\", ip AS \"ip!\", prefix AS \"prefix?\",\n                      network AS \"network?\", match_json AS \"match_json!\",\n                      created_at AS \"created_at!\"\n               FROM runtime_reservations ORDER BY family, ip"
+  },
+  "6fdcd66f33517364f81f8eb13a9b053434fe7c9e9c824876d9973ad04f446ee5": {
+    "describe": {
+      "columns": [],
+      "nullable": [],
+      "parameters": {
+        "Right": 2
+      }
+    },
+    "query": "DELETE FROM runtime_reservations WHERE family = ?1 AND ip = ?2"
+  },
   "793f1692b36d96a6815c6bfb21d5de88c4f64c020af406405a2ed8c9535ffff3": {
     "describe": {
       "columns": [
@@ -537,6 +595,54 @@
       }
     },
     "query": "INSERT INTO leases\n                    (ip, client_id, expires_at, network, leased, probation)\n                VALUES\n                    (?1, ?2, ?3, ?4, ?5, ?6)"
+  },
+  "7c65709448f2005270a0f9873bd849901e8f3daf86df960c64489bca81840c31": {
+    "describe": {
+      "columns": [
+        {
+          "name": "family!",
+          "ordinal": 0,
+          "type_info": "Text"
+        },
+        {
+          "name": "ip!",
+          "ordinal": 1,
+          "type_info": "Text"
+        },
+        {
+          "name": "prefix?",
+          "ordinal": 2,
+          "type_info": "Text"
+        },
+        {
+          "name": "network?",
+          "ordinal": 3,
+          "type_info": "Text"
+        },
+        {
+          "name": "match_json!",
+          "ordinal": 4,
+          "type_info": "Text"
+        },
+        {
+          "name": "created_at!",
+          "ordinal": 5,
+          "type_info": "Int64"
+        }
+      ],
+      "nullable": [
+        false,
+        false,
+        true,
+        true,
+        false,
+        false
+      ],
+      "parameters": {
+        "Right": 2
+      }
+    },
+    "query": "SELECT family AS \"family!\", ip AS \"ip!\", prefix AS \"prefix?\",\n                      network AS \"network?\", match_json AS \"match_json!\",\n                      created_at AS \"created_at!\"\n               FROM runtime_reservations WHERE family = ?1 AND ip = ?2"
   },
   "882703a86e74138d6b6f7e58219890fbf40508e6212ba0aa6e507b1f1c9ad1f4": {
     "describe": {
@@ -887,6 +993,16 @@
       }
     },
     "query": "SELECT * FROM leases"
+  },
+  "bbb552df9f748b071bfac9ce86ea6301c0f5260f99aeb8541da9d585b2817713": {
+    "describe": {
+      "columns": [],
+      "nullable": [],
+      "parameters": {
+        "Right": 6
+      }
+    },
+    "query": "INSERT OR REPLACE INTO runtime_reservations (family, ip, prefix, network, match_json, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)"
   },
   "c5aa15319b04a100c32ce71c53ad264e638edf4763b972d209ee673085e5f16c": {
     "describe": {
