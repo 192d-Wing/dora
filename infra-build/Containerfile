@@ -13,13 +13,24 @@
 # for each target architecture.
 FROM rust:1 AS builder
 WORKDIR /usr/src/dora
-COPY . .
-# sqlx-cli creates the db + applies migrations so the sqlx query macros can run.
-RUN cargo install sqlx-cli
-RUN sqlx database create
-RUN sqlx migrate run
+# Build against sqlx's offline query cache (crates/libs/ip-manager/sqlx-data.json)
+# — the same thing the rest of CI uses — so no sqlx-cli, database, or migrations
+# are needed at image-build time.
+ENV SQLX_OFFLINE=true
 ARG BUILD_MODE=release
-RUN cargo build --${BUILD_MODE} --bin dora
+COPY . .
+# BuildKit cache mounts keep the cargo registry and the compiled `target/` dir
+# out of the image layers and let CI persist them across builds (restored via
+# reproducible-containers/buildkit-cache-dance). The dominant build cost is
+# recompiling dora's own crates; with a warm `target` mount an ordinary source
+# edit recompiles only what changed instead of the whole workspace. The binary
+# lives inside the mounted target dir, so copy it out before the mount is
+# released at the end of the RUN.
+RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
+    --mount=type=cache,target=/usr/src/dora/target,sharing=locked \
+    cargo build --${BUILD_MODE} --bin dora \
+    && cp "target/${BUILD_MODE}/dora" /usr/local/bin/dora
 
 # ---- runtime ----
 # Iron Bank hardened UBI 10 (published for linux/amd64 and linux/arm64).
@@ -40,8 +51,7 @@ RUN dnf -y install --setopt=install_weak_deps=False --nodocs \
     && groupadd -r dhcpd \
     && useradd -r -g dhcpd -s /sbin/nologin -d /var/lib/dora dhcpd
 
-ARG BUILD_MODE=release
-COPY --from=builder /usr/src/dora/target/${BUILD_MODE}/dora /usr/local/bin/dora
+COPY --from=builder /usr/local/bin/dora /usr/local/bin/dora
 
 RUN mkdir -p /var/lib/dora/
 
