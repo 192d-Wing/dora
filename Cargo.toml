@@ -22,7 +22,7 @@ hickory-proto = { version = "0.26.1", default-features = false, features = [
     "serde",
     "std",
 ] }
-socket2 = { version = "0.5.10", features = [
+socket2 = { version = "0.6.4", features = [
     "all",
 ] } # TODO: update when tokio sockets impl AsFd, then update unix-udp-sock
 anyhow = { version = "1.0", features = ["backtrace"] }
