@@ -128,11 +128,18 @@ jobs:
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
 
+      - name: Install nextest
+        uses: taiki-e/install-action@nextest
+
       - name: Allow ICMP socket creation
         run: sudo sysctl -w net.ipv4.ping_group_range="0 2147483647"
 
+      # run coverage through nextest so it honors the serial test-groups in
+      # .config/nextest.toml (the v6 server-id and dora-bin netns tests share
+      # global OS state and must not run concurrently); plain `cargo llvm-cov`
+      # uses threaded `cargo test`, which ignores those groups and races.
       - name: Generate code coverage
-        run: cargo llvm-cov --all-features --exclude register_derive_impl --workspace --no-fail-fast --lcov --output-path lcov.info
+        run: cargo llvm-cov nextest --all-features --exclude register_derive_impl --workspace --no-fail-fast --lcov --output-path lcov.info
 
       - name: Coveralls upload
         uses: coverallsapp/github-action@v2
