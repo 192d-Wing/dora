@@ -29,10 +29,25 @@ yaml_serde = { workspace = true }
 prometheus = { workspace = true }
 ipnet = { workspace = true }
 subtle = "2.6"
-
+# in-process TLS + mTLS termination for the management API. tokio-rustls 0.26
+# re-exports rustls 0.23 (the same modern stack sqlx/reqwest already pull in);
+# use its `ring` provider to avoid a new aws-lc-rs C toolchain dependency.
+tokio-rustls = { version = "0.26", default-features = false, features = [
+    "ring",
+    "tls12",
+    "logging",
+] }
+rustls-pemfile = "2"
+# hand-rolled TLS accept loop: axum 0.7's `serve` is hardcoded to a plain
+# TcpListener, so we drive the Router over each TLS connection with hyper
+# ourselves (the axum `low-level-rustls` pattern).
+hyper = { version = "1", features = ["server", "http1", "http2"] }
+hyper-util = { version = "0.1", features = ["server-auto", "tokio"] }
+tower = { version = "0.5", features = ["util"] }
 
 [dev-dependencies]
 reqwest = { version = "0.12.28", default-features = false, features = [
     "json",
     "rustls-tls",
 ] }
+rcgen = "0.13"
