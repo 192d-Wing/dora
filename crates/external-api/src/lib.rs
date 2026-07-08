@@ -57,6 +57,7 @@ pub struct ExternalApi<S> {
     addr: SocketAddr,
     state: State,
     api_state: ApiState,
+    auth: ApiAuth,
     ip_mgr: Arc<IpManager<S>>,
     cfg: Arc<DhcpConfig>,
 }
@@ -64,6 +65,43 @@ pub struct ExternalApi<S> {
 #[derive(Debug, Clone)]
 struct ApiState {
     started_at: SystemTime,
+}
+
+#[derive(Debug, Clone)]
+struct ApiAuth {
+    bearer_token: Option<Arc<str>>,
+}
+
+impl ApiAuth {
+    fn from_env() -> Self {
+        let bearer_token = std::env::var("DORA_API_TOKEN")
+            .ok()
+            .map(|token| token.trim().to_string())
+            .filter(|token| !token.is_empty())
+            .map(Arc::<str>::from);
+
+        Self { bearer_token }
+    }
+
+    #[cfg(test)]
+    fn disabled() -> Self {
+        Self { bearer_token: None }
+    }
+
+    #[cfg(test)]
+    fn bearer(token: &str) -> Self {
+        Self {
+            bearer_token: Some(Arc::<str>::from(token)),
+        }
+    }
+
+    fn auth_methods(&self) -> Vec<String> {
+        if self.bearer_token.is_some() {
+            vec!["bearer".to_string()]
+        } else {
+            Vec::new()
+        }
+    }
 }
 
 impl<S: Storage> ExternalApi<S> {
@@ -80,6 +118,7 @@ impl<S: Storage> ExternalApi<S> {
             api_state: ApiState {
                 started_at: SystemTime::now(),
             },
+            auth: ApiAuth::from_env(),
             ip_mgr,
             cfg,
         }
@@ -112,12 +151,20 @@ impl<S: Storage> ExternalApi<S> {
         addr: SocketAddr,
         state: State,
         api_state: ApiState,
+        auth: ApiAuth,
         cfg: Arc<DhcpConfig>,
         ip_mgr: Arc<IpManager<S>>,
         token: CancellationToken,
     ) -> Result<()> {
         const TIMEOUT: u64 = 30;
-        let service = api_router::<S>(state, api_state, cfg, ip_mgr, Duration::from_secs(TIMEOUT));
+        let service = api_router::<S>(
+            state,
+            api_state,
+            auth,
+            cfg,
+            ip_mgr,
+            Duration::from_secs(TIMEOUT),
+        );
 
         let tcp = TcpListener::bind(&addr).await?;
         tracing::debug!(%addr, "external API listening");
@@ -135,6 +182,7 @@ impl<S: Storage> ExternalApi<S> {
     pub fn start(mut self, token: CancellationToken) -> JoinHandle<()> {
         let state = self.state.clone();
         let api_state = self.api_state.clone();
+        let auth = self.auth.clone();
         let addr = self.addr;
         let ip_mgr = self.ip_mgr.clone();
         let cfg = self.cfg.clone();
@@ -143,7 +191,7 @@ impl<S: Storage> ExternalApi<S> {
         tokio::spawn(async move {
             // `run` will exit when cancel token completes
             tokio::select! {
-                r = ExternalApi::run(addr, state, api_state, cfg, ip_mgr, token) => {
+                r = ExternalApi::run(addr, state, api_state, auth, cfg, ip_mgr, token) => {
                     if let Err(err) = r {
                         error!(?err, "external api task returned error")
                     }
@@ -165,6 +213,7 @@ impl<S: Storage> ExternalApi<S> {
 fn api_router<S: Storage>(
     state: State,
     api_state: ApiState,
+    auth: ApiAuth,
     cfg: Arc<DhcpConfig>,
     ip_mgr: Arc<IpManager<S>>,
     timeout: Duration,
@@ -197,6 +246,7 @@ fn api_router<S: Storage>(
         ))
         .layer(Extension(state))
         .layer(Extension(api_state))
+        .layer(Extension(auth))
         .layer(Extension(ip_mgr))
         .layer(Extension(cfg))
 }
@@ -214,7 +264,7 @@ mod handlers {
         body::Body,
         extract::Extension,
         http::header,
-        http::{HeaderMap, HeaderValue, Response, StatusCode},
+        http::{HeaderMap, HeaderValue, Response, StatusCode, header::AUTHORIZATION},
         response::IntoResponse,
     };
     use chrono::{DateTime, Utc};
@@ -283,7 +333,11 @@ mod handlers {
         ))
     }
 
-    pub(crate) async fn metrics_summary() -> ServerResult<impl IntoResponse> {
+    pub(crate) async fn metrics_summary(
+        headers: HeaderMap,
+        Extension(auth): Extension<crate::ApiAuth>,
+    ) -> ServerResult<impl IntoResponse> {
+        authorize(&headers, &auth)?;
         let request_id = request_id();
         Ok((
             request_id_header(&request_id)?,
@@ -291,7 +345,11 @@ mod handlers {
         ))
     }
 
-    pub(crate) async fn metrics_json() -> ServerResult<impl IntoResponse> {
+    pub(crate) async fn metrics_json(
+        headers: HeaderMap,
+        Extension(auth): Extension<crate::ApiAuth>,
+    ) -> ServerResult<impl IntoResponse> {
+        authorize(&headers, &auth)?;
         let request_id = request_id();
         let families = prometheus::gather();
         Ok((
@@ -300,7 +358,11 @@ mod handlers {
         ))
     }
 
-    pub(crate) async fn metrics_prometheus_json() -> ServerResult<impl IntoResponse> {
+    pub(crate) async fn metrics_prometheus_json(
+        headers: HeaderMap,
+        Extension(auth): Extension<crate::ApiAuth>,
+    ) -> ServerResult<impl IntoResponse> {
+        authorize(&headers, &auth)?;
         let request_id = request_id();
         Ok((
             request_id_header(&request_id)?,
@@ -314,10 +376,14 @@ mod handlers {
     }
 
     pub(crate) async fn server_info(
+        headers: HeaderMap,
         Extension(api_state): Extension<crate::ApiState>,
+        Extension(auth): Extension<crate::ApiAuth>,
     ) -> ServerResult<impl IntoResponse> {
+        authorize(&headers, &auth)?;
         let request_id = request_id();
         let started_at = DateTime::<Utc>::from(api_state.started_at).to_rfc3339();
+        let auth_methods = auth.auth_methods();
         Ok((
             request_id_header(&request_id)?,
             axum::Json(ServerInfo {
@@ -327,7 +393,7 @@ mod handlers {
                 mode: ServerMode::Normal,
                 api: ServerApiInfo {
                     version: "v1".to_string(),
-                    auth: Vec::new(),
+                    auth: auth_methods,
                 },
                 request_id,
             }),
@@ -346,6 +412,30 @@ mod handlers {
         let mut headers = HeaderMap::new();
         headers.insert("x-request-id", HeaderValue::from_str(request_id)?);
         Ok(headers)
+    }
+
+    fn authorize(headers: &HeaderMap, auth: &crate::ApiAuth) -> ServerResult<()> {
+        let Some(expected) = auth.bearer_token.as_deref() else {
+            return Ok(());
+        };
+
+        let Some(actual) = headers
+            .get(AUTHORIZATION)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.strip_prefix("Bearer "))
+        else {
+            return Err(crate::models::ServerError::unauthorized(
+                "missing bearer token",
+            ));
+        };
+
+        if actual == expected {
+            Ok(())
+        } else {
+            Err(crate::models::ServerError::unauthorized(
+                "invalid bearer token",
+            ))
+        }
     }
 
     fn yaml_to_json(yaml: yaml_serde::Value) -> serde_json::Value {
@@ -591,9 +681,12 @@ mod handlers {
     }
 
     pub(crate) async fn leases<S: Storage>(
+        headers: HeaderMap,
+        Extension(auth): Extension<crate::ApiAuth>,
         Extension(cfg): Extension<Arc<DhcpConfig>>,
         Extension(ip_mgr): Extension<Arc<IpManager<S>>>,
     ) -> ServerResult<axum::Json<crate::models::Leases>> {
+        authorize(&headers, &auth)?;
         use crate::models::{LeaseIp, LeaseNetworks, LeaseState, Leases};
         use ip_manager::State as S;
 
@@ -672,8 +765,11 @@ mod handlers {
     }
 
     pub(crate) async fn config(
+        headers: HeaderMap,
+        Extension(auth): Extension<crate::ApiAuth>,
         Extension(cfg): Extension<Arc<DhcpConfig>>,
     ) -> ServerResult<impl IntoResponse> {
+        authorize(&headers, &auth)?;
         // TODO: if serializing worked we could get DhcpConfig back into JSON/YAML but there's
         // a lot of logic left to make that particular transform. So just read from disk
         let path = cfg.path().context("no path specified for config")?;
@@ -1021,9 +1117,21 @@ pub mod models {
     // error type
     /// Make our own error that wraps `anyhow::Error`.
     #[derive(Debug)]
-    pub struct ServerError(anyhow::Error);
+    pub struct ServerError {
+        status: axum::http::StatusCode,
+        error: anyhow::Error,
+    }
     /// return error result
     pub type ServerResult<T> = Result<T, ServerError>;
+
+    impl ServerError {
+        pub(crate) fn unauthorized(message: &'static str) -> Self {
+            Self {
+                status: axum::http::StatusCode::UNAUTHORIZED,
+                error: anyhow::anyhow!(message),
+            }
+        }
+    }
 
     impl IntoResponse for ServerError {
         fn into_response(self) -> axum::response::Response {
@@ -1034,9 +1142,9 @@ pub mod models {
             }
 
             (
-                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                self.status,
                 axum::Json(ErrorResponse {
-                    message: format!("{}", self.0),
+                    message: format!("{}", self.error),
                 }),
             )
                 .into_response()
@@ -1048,14 +1156,21 @@ pub mod models {
         E: Into<anyhow::Error>,
     {
         fn from(err: E) -> Self {
-            Self(err.into())
+            Self {
+                status: axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                error: err.into(),
+            }
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::{net::SocketAddr, sync::Arc, time::Duration};
+    use std::{
+        net::SocketAddr,
+        sync::Arc,
+        time::{Duration, SystemTime},
+    };
 
     use ip_manager::sqlite::SqliteDb;
     use tokio_util::sync::CancellationToken;
@@ -1063,6 +1178,13 @@ mod tests {
     use super::*;
 
     async fn spawn_test_api(health: Health) -> anyhow::Result<(SocketAddr, CancellationToken)> {
+        spawn_test_api_with_auth(health, ApiAuth::disabled()).await
+    }
+
+    async fn spawn_test_api_with_auth(
+        health: Health,
+        auth: ApiAuth,
+    ) -> anyhow::Result<(SocketAddr, CancellationToken)> {
         let mgr = Arc::new(IpManager::new(SqliteDb::new("sqlite::memory:").await?)?);
         let cfg = Arc::new(DhcpConfig::default());
         let state = models::blank_health();
@@ -1075,6 +1197,7 @@ mod tests {
             ApiState {
                 started_at: SystemTime::now(),
             },
+            auth,
             cfg,
             mgr,
             Duration::from_secs(30),
@@ -1095,7 +1218,7 @@ mod tests {
         Ok((addr, token))
     }
 
-    // The /config endpoint is unauthenticated, so it must never leak the DDNS
+    // The /config endpoint can expose config material, so it must never leak the DDNS
     // TSIG secret. Verify the key material is stripped and the reservation
     // `match:` map form (which yaml_serde would otherwise reject) round-trips.
     #[test]
@@ -1299,6 +1422,45 @@ v4:
         assert!(body["api"]["auth"].as_array().is_some());
         assert!(body["started_at"].as_str().is_some_and(|v| !v.is_empty()));
         assert_eq!(body["request_id"], header_request_id);
+
+        token.cancel();
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_bearer_auth_protects_v1_routes_when_configured() -> anyhow::Result<()> {
+        let (addr, token) =
+            spawn_test_api_with_auth(Health::Good, ApiAuth::bearer("secret")).await?;
+
+        let missing = reqwest::get(format!("http://{addr}/v1/server"))
+            .await?
+            .error_for_status()
+            .expect_err("missing bearer token should be unauthorized");
+        assert_eq!(missing.status(), Some(reqwest::StatusCode::UNAUTHORIZED));
+
+        let bad = reqwest::Client::new()
+            .get(format!("http://{addr}/v1/server"))
+            .bearer_auth("wrong")
+            .send()
+            .await?
+            .error_for_status()
+            .expect_err("invalid bearer token should be unauthorized");
+        assert_eq!(bad.status(), Some(reqwest::StatusCode::UNAUTHORIZED));
+
+        let response = reqwest::Client::new()
+            .get(format!("http://{addr}/v1/server"))
+            .bearer_auth("secret")
+            .send()
+            .await?
+            .error_for_status()?;
+        let body: serde_json::Value = response.json().await?;
+        assert_eq!(body["api"]["auth"][0], "bearer");
+
+        let public = reqwest::get(format!("http://{addr}/health"))
+            .await?
+            .error_for_status()?;
+        let public_body: serde_json::Value = public.json().await?;
+        assert_eq!(public_body["status"], "alive");
 
         token.cancel();
         Ok(())
