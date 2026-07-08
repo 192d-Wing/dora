@@ -507,6 +507,7 @@ dependencies = [
  "dora-core",
  "hex",
  "ipnet",
+ "parking_lot 0.12.5",
  "phf 0.11.3",
  "rand 0.10.2",
  "rustls-pki-types",

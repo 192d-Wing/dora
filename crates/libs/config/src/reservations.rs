@@ -17,7 +17,7 @@ use std::{
     fmt,
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
     str::FromStr,
-    sync::{Arc, RwLock},
+    sync::Arc,
 };
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -25,6 +25,7 @@ use dora_core::{
     dhcproto::v4::{DhcpOption, DhcpOptions, OptionCode},
     pnet::util::MacAddr,
 };
+use parking_lot::RwLock;
 
 use crate::{
     v4::Reserved,
@@ -90,6 +91,17 @@ impl RuntimeReservation {
     /// the match predicate as a JSON value (for the API response `match` field)
     pub fn match_value(&self) -> serde_json::Value {
         match_to_value(&self.match_)
+    }
+
+    /// For an option-match v4 reservation, the option code it is indexed by in
+    /// the lookup table (only the first option is used, mirroring config).
+    fn first_option_code(&self) -> Option<OptionCode> {
+        match &self.match_ {
+            ResMatch::V4(Condition::Options(opts)) => {
+                opts.values.0.iter().next().map(|(code, _)| *code)
+            }
+            _ => None,
+        }
     }
 
     /// Reconstruct a reservation from its persisted parts (as stored by
@@ -177,9 +189,8 @@ impl RuntimeReservations {
     }
 
     /// Warm the store from persisted reservations (called once on startup).
-    /// Returns the number loaded; malformed rows are skipped and logged.
     pub fn load(&self, reservations: impl IntoIterator<Item = RuntimeReservation>) {
-        let mut inner = self.inner.write().expect("reservation lock poisoned");
+        let mut inner = self.inner.write();
         for res in reservations {
             inner
                 .entries
@@ -188,36 +199,59 @@ impl RuntimeReservations {
         inner.rebuild_indexes();
     }
 
-    /// Insert a reservation. With `replace = false` (create) an existing address
-    /// is an error; with `replace = true` (update) it overwrites. Either way a
-    /// match that already points at a *different* address is rejected.
+    /// Insert a reservation, returning the entry it replaced (if any) so the
+    /// caller can roll back on a later persistence failure. With `replace = false`
+    /// (create) an existing address is [`ReservationError::AddressExists`]; with
+    /// `replace = true` (update) a *missing* address is
+    /// [`ReservationError::NotFound`]. Either way a match that already points at a
+    /// different address — or, for an option match, reuses another reservation's
+    /// option code — is [`ReservationError::MatchExists`].
     pub fn insert(
         &self,
         res: RuntimeReservation,
         replace: bool,
-    ) -> std::result::Result<(), ReservationError> {
-        let mut inner = self.inner.write().expect("reservation lock poisoned");
+    ) -> std::result::Result<Option<RuntimeReservation>, ReservationError> {
+        let mut inner = self.inner.write();
         let key = (res.family().to_string(), res.ip);
-        if !replace && inner.entries.contains_key(&key) {
+        let exists = inner.entries.contains_key(&key);
+        if !replace && exists {
             return Err(ReservationError::AddressExists);
         }
-        // reject a duplicate match that resolves to a different address
-        if let Some((_, existing)) = inner
-            .entries
-            .iter()
-            .find(|((_, ip), e)| *ip != res.ip && e.match_ == res.match_)
-        {
-            let _ = existing;
-            return Err(ReservationError::MatchExists);
+        if replace && !exists {
+            return Err(ReservationError::NotFound);
         }
-        inner.entries.insert(key, res);
+        // reject a duplicate match that resolves to a different address, including
+        // an option match that would collide on the same option code (the lookup
+        // index is keyed by code, so two would silently shadow each other)
+        let new_opt_code = res.first_option_code();
+        for ((_, ip), e) in inner.entries.iter() {
+            if *ip == res.ip {
+                continue;
+            }
+            let same_match = e.match_ == res.match_;
+            let same_opt_code = new_opt_code.is_some() && e.first_option_code() == new_opt_code;
+            if same_match || same_opt_code {
+                return Err(ReservationError::MatchExists);
+            }
+        }
+        let replaced = inner.entries.insert(key, res);
         inner.rebuild_indexes();
-        Ok(())
+        Ok(replaced)
+    }
+
+    /// Restore a previously-removed / replaced entry without conflict checks —
+    /// used to roll back after a persistence failure.
+    pub fn restore(&self, res: RuntimeReservation) {
+        let mut inner = self.inner.write();
+        inner
+            .entries
+            .insert((res.family().to_string(), res.ip), res);
+        inner.rebuild_indexes();
     }
 
     /// Remove a reservation by (family, ip). Returns whether one was removed.
     pub fn remove(&self, family: &str, ip: IpAddr) -> bool {
-        let mut inner = self.inner.write().expect("reservation lock poisoned");
+        let mut inner = self.inner.write();
         let removed = inner.entries.remove(&(family.to_string(), ip)).is_some();
         if removed {
             inner.rebuild_indexes();
@@ -229,20 +263,13 @@ impl RuntimeReservations {
     pub fn contains(&self, family: &str, ip: IpAddr) -> bool {
         self.inner
             .read()
-            .expect("reservation lock poisoned")
             .entries
             .contains_key(&(family.to_string(), ip))
     }
 
     /// All reservations, ordered by (family, ip).
     pub fn list(&self) -> Vec<RuntimeReservation> {
-        self.inner
-            .read()
-            .expect("reservation lock poisoned")
-            .entries
-            .values()
-            .cloned()
-            .collect()
+        self.inner.read().entries.values().cloned().collect()
     }
 
     /// v4 datapath lookup: a runtime reservation for this MAC (first) or a
@@ -255,7 +282,7 @@ impl RuntimeReservations {
         opts: &DhcpOptions,
         classes: Option<&[String]>,
     ) -> Option<Reserved> {
-        let inner = self.inner.read().expect("reservation lock poisoned");
+        let inner = self.inner.read();
         if let Some(res) = mac.and_then(|mac| inner.reserved_macs.get(&mac))
             && res.match_class(classes)
         {
@@ -277,12 +304,7 @@ impl RuntimeReservations {
 
     /// v6 datapath lookup: the reserved address/prefix for this DUID, if any.
     pub fn lookup_v6(&self, duid: &[u8]) -> Option<V6Reserved> {
-        self.inner
-            .read()
-            .expect("reservation lock poisoned")
-            .v6_duids
-            .get(duid)
-            .cloned()
+        self.inner.read().v6_duids.get(duid).cloned()
     }
 }
 

@@ -238,6 +238,12 @@ where
     /// Renew (unicast) / Rebind (any server): extend the client's existing
     /// bindings. RFC 8415 §18.3.4 / §18.3.5. Unknown bindings get NoBinding;
     /// a Rebind that matches nothing stays silent.
+    ///
+    /// Note: a runtime reservation created for a client that is actively renewing
+    /// a *different* dynamic address takes effect on its next full Solicit/Request
+    /// exchange (reboot, lease expiry, or link change), not mid-renewal — renew
+    /// only extends the address the client already holds, matching how host
+    /// reservations conventionally apply.
     async fn renew(
         &self,
         ctx: &mut MsgContext<v6::Message>,
@@ -466,6 +472,9 @@ where
             if let Some(range) = network.range(addr) {
                 let (preferred, valid) = range_lifetimes(range);
                 let expires_at = SystemTime::now() + db_ttl(state, valid);
+                // note the client's current binding (if any) *before* pinning the
+                // reserved address, so we can release a stale one afterward
+                let prev = self.ip_mgr.lookup_id_v6(id).await.ok();
                 match self
                     .ip_mgr
                     .try_ip(
@@ -478,7 +487,15 @@ where
                     )
                     .await
                 {
-                    Ok(_) => return Some((addr, preferred, valid)),
+                    Ok(_) => {
+                        // release a prior different binding so it doesn't leak
+                        if let Some(IpAddr::V6(prev)) = prev
+                            && prev != addr
+                        {
+                            let _ = self.ip_mgr.release_ip(IpAddr::V6(prev), id).await;
+                        }
+                        return Some((addr, preferred, valid));
+                    }
                     Err(err) => debug!(?err, "could not pin reserved v6 address; falling back"),
                 }
             } else {

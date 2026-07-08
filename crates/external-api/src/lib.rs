@@ -763,15 +763,16 @@ mod handlers {
             crate::models::ServerError::bad_request(format!("invalid ip {}", req.ip))
         })?;
 
-        // persist first, then drop from the in-memory store
+        // persist first; only drop from the in-memory store if a row actually
+        // existed, so a 404 leaves both DB and memory untouched
         let removed = ip_mgr.delete_reservation(&req.family, &req.ip).await?;
-        reservations.remove(&req.family, ip);
         if !removed {
             return Err(crate::models::ServerError::not_found(format!(
                 "no {} reservation for {}",
                 req.family, req.ip
             )));
         }
+        reservations.remove(&req.family, ip);
 
         let result = serde_json::json!({ "family": req.family, "ip": req.ip });
         let operation_id = record_sync_action(
@@ -805,8 +806,9 @@ mod handlers {
         let async_flag = req.r#async;
         let res = parse_reservation(&req)?;
 
-        // in-memory first so conflict detection happens before we persist
-        reservations
+        // in-memory first so conflict detection happens before we persist;
+        // keep the entry it replaced so we can fully roll back on a DB failure
+        let replaced = reservations
             .insert(res.clone(), replace)
             .map_err(reservation_error_to_server)?;
         let record = RuntimeReservationRecord {
@@ -818,8 +820,14 @@ mod handlers {
             created_at: SystemTime::now(),
         };
         if let Err(err) = ip_mgr.upsert_reservation(&record).await {
-            // roll back the in-memory change so the store matches the database
-            reservations.remove(res.family(), res.ip);
+            // restore the prior state so the store matches the database: put back
+            // the replaced entry (update), or drop the new one (create)
+            match replaced {
+                Some(old) => reservations.restore(old),
+                None => {
+                    reservations.remove(res.family(), res.ip);
+                }
+            }
             return Err(err.into());
         }
 
@@ -3577,6 +3585,28 @@ v4:
         assert_eq!(
             response.json::<serde_json::Value>().await?["error"]["code"],
             "bad_request"
+        );
+
+        token.cancel();
+        Ok(())
+    }
+
+    // updating a reservation that doesn't exist is a 404 (not a silent create).
+    #[tokio::test]
+    async fn test_update_nonexistent_reservation_is_404() -> anyhow::Result<()> {
+        let (addr, token) = spawn_test_api(Health::Good).await?;
+        let response = reqwest::Client::new()
+            .post(format!("http://{addr}/v1/actions/update-reservation"))
+            .json(&serde_json::json!({
+                "family": "v4",
+                "reservation": { "ip": "192.168.9.99", "match": { "chaddr": "aa:bb:cc:dd:ee:01" } }
+            }))
+            .send()
+            .await?;
+        assert_eq!(response.status(), reqwest::StatusCode::NOT_FOUND);
+        assert_eq!(
+            response.json::<serde_json::Value>().await?["error"]["code"],
+            "not_found"
         );
 
         token.cancel();
