@@ -165,9 +165,14 @@ impl<S: Storage> ExternalApi<S> {
     /// Serve the API over TLS using the given cert/key (and optional client-cert
     /// trust anchors for mTLS), hot-reloading them on rotation. Without this the
     /// API serves plain HTTP (intended to sit behind a TLS-terminating proxy).
-    pub fn with_tls(mut self, tls: tls::TlsConfig) -> Self {
+    pub fn with_tls(mut self, mut tls: tls::TlsConfig) -> Self {
         // advertise mtls in server metadata when a client-CA bundle is present
         self.auth.mtls_enabled = tls.client_ca.is_some();
+        // If a client-CA is configured but there's no Bearer token, require a
+        // valid client cert at the TLS layer — otherwise `authorize` (which is
+        // open when no token is set) would let certless clients straight in,
+        // making a `client_ca`-only deployment silently open.
+        tls.require_client_auth = tls.client_ca.is_some() && self.auth.bearer_token.is_none();
         self.tls = Some(tls);
         self
     }
@@ -3736,7 +3741,11 @@ v4:
 
     /// Write the server cert/key (and optionally the client CA) to a temp dir and
     /// return a `TlsConfig` pointing at them.
-    fn write_tls_files(pki: &TestPki, with_client_ca: bool) -> crate::tls::TlsConfig {
+    fn write_tls_files(
+        pki: &TestPki,
+        with_client_ca: bool,
+        require_client_auth: bool,
+    ) -> crate::tls::TlsConfig {
         let dir =
             std::env::temp_dir().join(format!("dora-tls-{}-{}", std::process::id(), unique()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -3753,6 +3762,7 @@ v4:
             cert,
             key,
             client_ca,
+            require_client_auth,
             reload_interval: Duration::from_secs(60),
         }
     }
@@ -3799,7 +3809,7 @@ v4:
     async fn test_tls_serves_https() -> anyhow::Result<()> {
         let pki = gen_pki();
         let (addr, token) =
-            spawn_tls_api(ApiAuth::disabled(), write_tls_files(&pki, false)).await?;
+            spawn_tls_api(ApiAuth::disabled(), write_tls_files(&pki, false, false)).await?;
         let client = reqwest::Client::builder()
             .add_root_certificate(reqwest::Certificate::from_pem(pki.server_cert.as_bytes())?)
             .build()?;
@@ -3820,8 +3830,11 @@ v4:
     #[tokio::test]
     async fn test_mtls_client_cert_authenticates() -> anyhow::Result<()> {
         let pki = gen_pki();
-        let (addr, token) =
-            spawn_tls_api(ApiAuth::bearer("secret"), write_tls_files(&pki, true)).await?;
+        let (addr, token) = spawn_tls_api(
+            ApiAuth::bearer("secret"),
+            write_tls_files(&pki, true, false),
+        )
+        .await?;
         let client = reqwest::Client::builder()
             .add_root_certificate(reqwest::Certificate::from_pem(pki.server_cert.as_bytes())?)
             .identity(reqwest::Identity::from_pem(pki.client_identity.as_bytes())?)
@@ -3845,8 +3858,11 @@ v4:
     #[tokio::test]
     async fn test_no_client_cert_requires_bearer() -> anyhow::Result<()> {
         let pki = gen_pki();
-        let (addr, token) =
-            spawn_tls_api(ApiAuth::bearer("secret"), write_tls_files(&pki, true)).await?;
+        let (addr, token) = spawn_tls_api(
+            ApiAuth::bearer("secret"),
+            write_tls_files(&pki, true, false),
+        )
+        .await?;
         let client = reqwest::Client::builder()
             .add_root_certificate(reqwest::Certificate::from_pem(pki.server_cert.as_bytes())?)
             .build()?;
@@ -3880,6 +3896,43 @@ v4:
             .send()
             .await?;
         assert_eq!(resp.status(), reqwest::StatusCode::UNAUTHORIZED);
+        token.cancel();
+        Ok(())
+    }
+
+    // Mandatory mTLS: a client-CA with no bearer requires a client cert at the
+    // TLS layer, so a certless client can't even complete the handshake (it
+    // can't reach the open API), while a valid client cert connects.
+    #[tokio::test]
+    async fn test_mandatory_mtls_requires_client_cert() -> anyhow::Result<()> {
+        let pki = gen_pki();
+        let (addr, token) =
+            spawn_tls_api(ApiAuth::disabled(), write_tls_files(&pki, true, true)).await?;
+        let root = reqwest::Certificate::from_pem(pki.server_cert.as_bytes())?;
+
+        // no client cert -> handshake is rejected
+        let certless = reqwest::Client::builder()
+            .add_root_certificate(root.clone())
+            .build()?;
+        assert!(
+            certless
+                .get(format!("https://{addr}/health"))
+                .send()
+                .await
+                .is_err()
+        );
+
+        // valid client cert -> connects and is authorized
+        let client = reqwest::Client::builder()
+            .add_root_certificate(root)
+            .identity(reqwest::Identity::from_pem(pki.client_identity.as_bytes())?)
+            .build()?;
+        let resp = client
+            .get(format!("https://{addr}/v1/server"))
+            .send()
+            .await?;
+        assert_eq!(resp.status(), reqwest::StatusCode::OK);
+
         token.cancel();
         Ok(())
     }

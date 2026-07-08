@@ -127,12 +127,21 @@ async fn start(config: cli::Config) -> Result<()> {
                 cert,
                 key,
                 client_ca: config.external_api_tls_client_ca.clone(),
+                // recomputed inside with_tls based on whether a bearer token is set
+                require_client_auth: false,
                 reload_interval: std::time::Duration::from_secs(
                     config.external_api_tls_reload_secs,
                 ),
             });
         }
-        (None, None) => {}
+        (None, None) => {
+            if config.external_api_tls_client_ca.is_some() {
+                warn!(
+                    "--external-api-tls-client-ca set without --external-api-tls-cert/-key; \
+                     mTLS is ignored and the API serves plaintext"
+                );
+            }
+        }
         _ => warn!(
             "only one of --external-api-tls-cert / --external-api-tls-key set; serving plaintext"
         ),

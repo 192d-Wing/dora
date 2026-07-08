@@ -40,9 +40,14 @@ pub struct TlsConfig {
     /// server private key (PEM)
     pub key: PathBuf,
     /// trust anchors for verifying client certificates (PEM). `None` disables
-    /// mTLS; a bundle enables *optional* mTLS (a presented cert is verified, but
-    /// a client may still connect without one and authenticate by Bearer token).
+    /// mTLS; a bundle enables mTLS (a presented cert is always verified).
     pub client_ca: Option<PathBuf>,
+    /// require a valid client certificate at the TLS layer (mandatory mTLS). When
+    /// false, mTLS is *optional* — a client may connect without a cert and
+    /// authenticate by Bearer token instead. `ExternalApi::with_tls` sets this to
+    /// true when a client-CA is configured but no Bearer token is, so a
+    /// `client_ca` alone can't leave the API open to certless clients.
+    pub require_client_auth: bool,
     /// how often to re-read the files and hot-swap on rotation
     pub reload_interval: Duration,
 }
@@ -78,7 +83,7 @@ impl TlsState {
     /// Load the TLS files and build the initial server config.
     pub fn load(tls: TlsConfig) -> Result<Arc<Self>> {
         let provider = Arc::new(tokio_rustls::rustls::crypto::ring::default_provider());
-        let (config, fingerprint) = build_config(&tls, &provider)?;
+        let (config, fingerprint) = build_config(&tls, read_fingerprint(&tls)?, &provider)?;
         info!(
             cert = %tls.cert.display(),
             mtls = tls.client_ca.is_some(),
@@ -104,15 +109,15 @@ impl TlsState {
         if *self.fingerprint.read() == fingerprint {
             return Ok(false);
         }
-        let (config, fingerprint) = build_config(&self.tls, &self.provider)?;
+        let (config, fingerprint) = build_config(&self.tls, fingerprint, &self.provider)?;
         *self.config.write() = config;
         *self.fingerprint.write() = fingerprint;
         Ok(true)
     }
 
-    /// The reload interval.
+    /// The reload interval, floored at 1s so a misconfigured `0` can't busy-loop.
     fn interval(&self) -> Duration {
-        self.tls.reload_interval
+        self.tls.reload_interval.max(Duration::from_secs(1))
     }
 }
 
@@ -160,6 +165,16 @@ pub async fn serve(
     use hyper_util::rt::{TokioExecutor, TokioIo};
     use hyper_util::server::conn::auto::Builder;
 
+    /// abort a stalled TLS handshake so slow-loris clients can't tie up a slot
+    const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+    /// bound concurrent connections so unfinished handshakes can't exhaust memory/FDs
+    const MAX_CONNECTIONS: usize = 1024;
+    /// how long to let in-flight connections drain after shutdown is requested
+    const DRAIN_TIMEOUT: Duration = Duration::from_secs(10);
+
+    let limit = Arc::new(tokio::sync::Semaphore::new(MAX_CONNECTIONS));
+    let mut conns = tokio::task::JoinSet::new();
+
     loop {
         let (stream, addr) = tokio::select! {
             _ = shutdown.cancelled() => break,
@@ -172,17 +187,33 @@ pub async fn serve(
             },
         };
 
+        // acquire a slot; if we're at the cap, drop the connection rather than
+        // queue unboundedly
+        let permit = match Arc::clone(&limit).try_acquire_owned() {
+            Ok(permit) => permit,
+            Err(_) => {
+                warn!(%addr, "connection limit reached; dropping connection");
+                continue;
+            }
+        };
+
         let acceptor = TlsAcceptor::from(state.current());
         let app = app.clone();
         let conn_shutdown = shutdown.clone();
-        tokio::spawn(async move {
-            let tls_stream = match acceptor.accept(stream).await {
-                Ok(s) => s,
-                Err(err) => {
-                    debug!(?err, %addr, "tls handshake failed");
-                    return;
-                }
-            };
+        conns.spawn(async move {
+            let _permit = permit; // held for the connection's lifetime
+            let tls_stream =
+                match tokio::time::timeout(HANDSHAKE_TIMEOUT, acceptor.accept(stream)).await {
+                    Ok(Ok(stream)) => stream,
+                    Ok(Err(err)) => {
+                        debug!(?err, %addr, "tls handshake failed");
+                        return;
+                    }
+                    Err(_) => {
+                        debug!(%addr, "tls handshake timed out");
+                        return;
+                    }
+                };
             let mtls_authenticated = tls_stream
                 .get_ref()
                 .1
@@ -223,17 +254,27 @@ pub async fn serve(
                 }
             }
         });
+
+        // reap finished connections so the JoinSet doesn't grow unbounded
+        while conns.try_join_next().is_some() {}
     }
+
+    // shutdown requested: give in-flight connections a bounded window to drain
+    let _ = tokio::time::timeout(DRAIN_TIMEOUT, async {
+        while conns.join_next().await.is_some() {}
+    })
+    .await;
     Ok(())
 }
 
-/// Build a `ServerConfig` from the current files, returning it with the
-/// fingerprint of the bytes it was built from.
+/// Build a `ServerConfig` from an already-read `fingerprint` (the file bytes),
+/// returning it with that fingerprint. Taking the bytes in avoids a second read
+/// that could pair a freshly-rotated cert with a stale key.
 fn build_config(
     tls: &TlsConfig,
+    fingerprint: Fingerprint,
     provider: &Arc<CryptoProvider>,
 ) -> Result<(Arc<ServerConfig>, Fingerprint)> {
-    let fingerprint = read_fingerprint(tls)?;
     let certs = load_certs(&fingerprint.cert)
         .with_context(|| format!("loading server certificate {}", tls.cert.display()))?;
     let key = load_key(&fingerprint.key)
@@ -254,13 +295,18 @@ fn build_config(
             })? {
                 roots.add(cert).context("adding client-cert trust anchor")?;
             }
-            // optional mTLS: verify a presented client cert, but allow clients
-            // that present none (they must authenticate by Bearer token).
-            let verifier =
-                WebPkiClientVerifier::builder_with_provider(Arc::new(roots), provider.clone())
-                    .allow_unauthenticated()
-                    .build()
-                    .context("building client-cert verifier")?;
+            let verifier_builder =
+                WebPkiClientVerifier::builder_with_provider(Arc::new(roots), provider.clone());
+            // mandatory vs optional mTLS. Mandatory: the client MUST present a
+            // valid cert (used when a client-CA is set but no Bearer token, so
+            // a certless client can't slip through). Optional: a presented cert
+            // is verified, but a client may connect without one and use Bearer.
+            let verifier = if tls.require_client_auth {
+                verifier_builder.build()
+            } else {
+                verifier_builder.allow_unauthenticated().build()
+            }
+            .context("building client-cert verifier")?;
             builder
                 .with_client_cert_verifier(verifier)
                 .with_single_cert(certs, key)
