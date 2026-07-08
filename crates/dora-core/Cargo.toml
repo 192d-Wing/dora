@@ -37,6 +37,8 @@ socket2 = { workspace = true }
 libc = "0.2.186"
 unix-udp-sock = "0.8.0"
 pnet = { workspace = true }
+serde = { workspace = true }
 
 [dev-dependencies]
 tokio-test = "0.4.5"
+serde_json = { workspace = true }

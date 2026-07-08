@@ -854,6 +854,8 @@ dependencies = [
  "prometheus",
  "prometheus-static-metric",
  "rand 0.10.2",
+ "serde",
+ "serde_json",
  "socket2 0.5.10",
  "tokio",
  "tokio-stream",

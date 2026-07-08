@@ -13,7 +13,7 @@ use sqlx::{
 };
 use tracing::debug;
 
-use crate::{ClientInfo, IpState, State, Storage};
+use crate::{ClientInfo, IpState, OperationRecord, OperationStatus, State, Storage};
 
 #[derive(Debug)]
 pub struct SqliteDb {
@@ -467,6 +467,111 @@ impl Storage for SqliteDb {
         let mut all = util::select_all(&self.inner).await?;
         all.extend(util_v6::select_all(&self.inner).await?);
         Ok(all)
+    }
+
+    async fn insert_operation(&self, op: &OperationRecord) -> Result<(), Self::Error> {
+        let status = op.status.as_str();
+        let actor = op.actor.as_deref();
+        let input_summary = op.input_summary.as_deref();
+        let result = op.result.as_deref();
+        let error_code = op.error_code.as_deref();
+        let error_message = op.error_message.as_deref();
+        let created_at = util::systime_epoch(op.created_at);
+        let started_at = op.started_at.map(util::systime_epoch);
+        let completed_at = op.completed_at.map(util::systime_epoch);
+        sqlx::query!(
+            "INSERT INTO operations \
+             (operation_id, action, status, actor, input_summary, result, \
+              error_code, error_message, created_at, started_at, completed_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            op.operation_id,
+            op.action,
+            status,
+            actor,
+            input_summary,
+            result,
+            error_code,
+            error_message,
+            created_at,
+            started_at,
+            completed_at,
+        )
+        .execute(&self.inner)
+        .await?;
+        Ok(())
+    }
+
+    async fn update_operation(&self, op: &OperationRecord) -> Result<(), Self::Error> {
+        let status = op.status.as_str();
+        let actor = op.actor.as_deref();
+        let input_summary = op.input_summary.as_deref();
+        let result = op.result.as_deref();
+        let error_code = op.error_code.as_deref();
+        let error_message = op.error_message.as_deref();
+        let started_at = op.started_at.map(util::systime_epoch);
+        let completed_at = op.completed_at.map(util::systime_epoch);
+        sqlx::query!(
+            "UPDATE operations SET \
+             action = ?2, status = ?3, actor = ?4, input_summary = ?5, \
+             result = ?6, error_code = ?7, error_message = ?8, \
+             started_at = ?9, completed_at = ?10 \
+             WHERE operation_id = ?1",
+            op.operation_id,
+            op.action,
+            status,
+            actor,
+            input_summary,
+            result,
+            error_code,
+            error_message,
+            started_at,
+            completed_at,
+        )
+        .execute(&self.inner)
+        .await?;
+        Ok(())
+    }
+
+    async fn get_operation(
+        &self,
+        operation_id: &str,
+    ) -> Result<Option<OperationRecord>, Self::Error> {
+        let row = sqlx::query!(
+            r#"SELECT
+                 operation_id  AS "operation_id!",
+                 action        AS "action!",
+                 status        AS "status!",
+                 actor         AS "actor?",
+                 input_summary AS "input_summary?",
+                 result        AS "result?",
+                 error_code    AS "error_code?",
+                 error_message AS "error_message?",
+                 created_at    AS "created_at!",
+                 started_at    AS "started_at?",
+                 completed_at  AS "completed_at?"
+               FROM operations WHERE operation_id = ?1"#,
+            operation_id,
+        )
+        .fetch_optional(&self.inner)
+        .await?;
+
+        let Some(row) = row else { return Ok(None) };
+        let status = OperationStatus::from_db_str(&row.status).ok_or_else(|| {
+            sqlx::Error::Decode(format!("invalid operation status: {}", row.status).into())
+        })?;
+        Ok(Some(OperationRecord {
+            operation_id: row.operation_id,
+            action: row.action,
+            status,
+            actor: row.actor,
+            input_summary: row.input_summary,
+            result: row.result,
+            error_code: row.error_code,
+            error_message: row.error_message,
+            created_at: util::to_systime(row.created_at),
+            started_at: row.started_at.map(util::to_systime),
+            completed_at: row.completed_at.map(util::to_systime),
+        }))
     }
 }
 
