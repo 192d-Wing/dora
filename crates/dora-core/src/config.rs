@@ -20,6 +20,8 @@ pub mod cli {
     /// remote access can override `--external-api`/`EXTERNAL_API` and put an
     /// authenticating proxy in front of it.
     pub static DEFAULT_EXTERNAL_API: &str = "127.0.0.1:3333";
+    /// how often (seconds) to re-read the management API TLS files for rotation
+    pub const DEFAULT_TLS_RELOAD_SECS: u64 = 30;
     /// Default channel size for mpsc chans
     pub const DEFAULT_CHANNEL_SIZE: usize = 10_000;
     /// Max live messages -- Changing this value will effect memory
@@ -73,6 +75,21 @@ pub mod cli {
         /// the management HTTP API address to listen on
         #[clap(long, env, value_parser, default_value = DEFAULT_EXTERNAL_API)]
         pub external_api: SocketAddr,
+        /// path to the management API TLS server certificate chain (PEM).
+        /// TLS is enabled when this and --external-api-tls-key are both set;
+        /// otherwise the API serves plaintext (intended behind a TLS proxy).
+        #[clap(long, env, value_parser)]
+        pub external_api_tls_cert: Option<PathBuf>,
+        /// path to the management API TLS server private key (PEM)
+        #[clap(long, env, value_parser)]
+        pub external_api_tls_key: Option<PathBuf>,
+        /// path to client-certificate trust anchors (PEM); enables optional mTLS
+        /// (a verified client cert authenticates a request, else the bearer token)
+        #[clap(long, env, value_parser)]
+        pub external_api_tls_client_ca: Option<PathBuf>,
+        /// how often (seconds) to re-read the TLS files and hot-reload on rotation
+        #[clap(long, env, value_parser, default_value_t = DEFAULT_TLS_RELOAD_SECS)]
+        pub external_api_tls_reload_secs: u64,
         /// default timeout, dora will respond within this window or drop
         #[clap(long, env, value_parser, default_value_t = DEFAULT_TIMEOUT)]
         pub timeout: u64,

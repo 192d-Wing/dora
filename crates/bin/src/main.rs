@@ -110,13 +110,42 @@ async fn start(config: cli::Config) -> Result<()> {
         Err(err) => error!(?err, "failed to load runtime reservations from database"),
     }
     // start external api for healthchecks
-    let api = ExternalApi::new(
+    let mut api = ExternalApi::new(
         config.external_api,
         Arc::clone(&dhcp_cfg),
         Arc::clone(&ip_mgr),
     )
     .with_mode(mode.clone())
     .with_reservations(reservations.clone());
+    // enable in-process TLS (+ optional mTLS) when a cert/key pair is configured
+    match (
+        config.external_api_tls_cert.clone(),
+        config.external_api_tls_key.clone(),
+    ) {
+        (Some(cert), Some(key)) => {
+            api = api.with_tls(external_api::tls::TlsConfig {
+                cert,
+                key,
+                client_ca: config.external_api_tls_client_ca.clone(),
+                // recomputed inside with_tls based on whether a bearer token is set
+                require_client_auth: false,
+                reload_interval: std::time::Duration::from_secs(
+                    config.external_api_tls_reload_secs,
+                ),
+            });
+        }
+        (None, None) => {
+            if config.external_api_tls_client_ca.is_some() {
+                warn!(
+                    "--external-api-tls-client-ca set without --external-api-tls-cert/-key; \
+                     mTLS is ignored and the API serves plaintext"
+                );
+            }
+        }
+        _ => warn!(
+            "only one of --external-api-tls-cert / --external-api-tls-key set; serving plaintext"
+        ),
+    }
     // start v4 server
     debug!("starting v4 server");
     let mut v4: Server<v4::Message> =

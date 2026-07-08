@@ -36,6 +36,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{error, info, trace};
 
 pub use crate::models::{Health, State};
+pub mod tls;
 use config::DhcpConfig;
 
 /// The task runner for the [`ExternalApi`]
@@ -67,6 +68,7 @@ pub struct ExternalApi<S> {
     cfg: Arc<DhcpConfig>,
     mode: SharedMode,
     reservations: RuntimeReservations,
+    tls: Option<tls::TlsConfig>,
 }
 
 #[derive(Debug, Clone)]
@@ -77,6 +79,11 @@ struct ApiState {
 #[derive(Debug, Clone)]
 struct ApiAuth {
     bearer_token: Option<Arc<str>>,
+    /// whether mTLS client-cert auth is offered (a client-CA trust bundle is
+    /// configured). Only affects what `auth_methods()` advertises; the actual
+    /// per-request check reads the trusted `x-dora-client-verified` header the
+    /// TLS layer stamps.
+    mtls_enabled: bool,
 }
 
 impl ApiAuth {
@@ -87,29 +94,43 @@ impl ApiAuth {
             .filter(|token| !token.is_empty())
             .map(Arc::<str>::from);
 
-        Self { bearer_token }
+        Self {
+            bearer_token,
+            mtls_enabled: false,
+        }
     }
 
     #[cfg(test)]
     fn disabled() -> Self {
-        Self { bearer_token: None }
+        Self {
+            bearer_token: None,
+            mtls_enabled: false,
+        }
     }
 
     #[cfg(test)]
     fn bearer(token: &str) -> Self {
         Self {
             bearer_token: Some(Arc::<str>::from(token)),
+            mtls_enabled: false,
         }
     }
 
     fn auth_methods(&self) -> Vec<String> {
+        let mut methods = Vec::new();
         if self.bearer_token.is_some() {
-            vec!["bearer".to_string()]
-        } else {
-            Vec::new()
+            methods.push("bearer".to_string());
         }
+        if self.mtls_enabled {
+            methods.push("mtls".to_string());
+        }
+        methods
     }
 }
+
+/// The header the TLS layer stamps (and always strips from client input first)
+/// to mark a request as authenticated by a verified client certificate.
+pub(crate) const MTLS_HEADER: &str = "x-dora-client-verified";
 
 impl<S: Storage> ExternalApi<S> {
     /// Create a new ExternalApi instance
@@ -130,6 +151,7 @@ impl<S: Storage> ExternalApi<S> {
             cfg,
             mode: SharedMode::default(),
             reservations: RuntimeReservations::new(),
+            tls: None,
         }
     }
 
@@ -137,6 +159,21 @@ impl<S: Storage> ExternalApi<S> {
     /// reservation actions mutate the same reservations the datapath reads.
     pub fn with_reservations(mut self, reservations: RuntimeReservations) -> Self {
         self.reservations = reservations;
+        self
+    }
+
+    /// Serve the API over TLS using the given cert/key (and optional client-cert
+    /// trust anchors for mTLS), hot-reloading them on rotation. Without this the
+    /// API serves plain HTTP (intended to sit behind a TLS-terminating proxy).
+    pub fn with_tls(mut self, mut tls: tls::TlsConfig) -> Self {
+        // advertise mtls in server metadata when a client-CA bundle is present
+        self.auth.mtls_enabled = tls.client_ca.is_some();
+        // If a client-CA is configured but there's no Bearer token, require a
+        // valid client cert at the TLS layer — otherwise `authorize` (which is
+        // open when no token is set) would let certless clients straight in,
+        // making a `client_ca`-only deployment silently open.
+        tls.require_client_auth = tls.client_ca.is_some() && self.auth.bearer_token.is_none();
+        self.tls = Some(tls);
         self
     }
 
@@ -180,6 +217,7 @@ impl<S: Storage> ExternalApi<S> {
         ip_mgr: Arc<IpManager<S>>,
         mode: SharedMode,
         reservations: RuntimeReservations,
+        tls: Option<tls::TlsConfig>,
         token: CancellationToken,
     ) -> Result<()> {
         const TIMEOUT: u64 = 30;
@@ -198,13 +236,24 @@ impl<S: Storage> ExternalApi<S> {
         );
 
         let tcp = TcpListener::bind(&addr).await?;
-        tracing::debug!(%addr, "external API listening");
 
-        axum::serve(tcp, service)
-            .with_graceful_shutdown(async move {
-                token.cancelled().await;
-            })
-            .await?;
+        match tls {
+            Some(tls_cfg) => {
+                // terminate TLS in-process, hot-reloading certs in the background
+                let state = tls::TlsState::load(tls_cfg)?;
+                tokio::spawn(tls::reload_task(state.clone(), token.clone()));
+                tracing::debug!(%addr, "external API listening (TLS)");
+                tls::serve(tcp, state, service, token).await?;
+            }
+            None => {
+                tracing::debug!(%addr, "external API listening (plaintext)");
+                axum::serve(tcp, service)
+                    .with_graceful_shutdown(async move {
+                        token.cancelled().await;
+                    })
+                    .await?;
+            }
+        }
         Ok(())
     }
 
@@ -219,12 +268,13 @@ impl<S: Storage> ExternalApi<S> {
         let cfg = self.cfg.clone();
         let mode = self.mode.clone();
         let reservations = self.reservations.clone();
+        let tls = self.tls.clone();
         // if tx is not cloned, health listen will never update since ExternalApi is owner
 
         tokio::spawn(async move {
             // `run` will exit when cancel token completes
             tokio::select! {
-                r = ExternalApi::run(addr, state, api_state, auth, cfg, ip_mgr, mode, reservations, token) => {
+                r = ExternalApi::run(addr, state, api_state, auth, cfg, ip_mgr, mode, reservations, tls, token) => {
                     if let Err(err) = r {
                         error!(?err, "external api task returned error")
                     }
@@ -322,10 +372,31 @@ fn api_router<S: Storage>(
         .layer(Extension(mode))
         .layer(Extension(reservations))
         .layer(Extension(shutdown))
+        // stamp the trusted mTLS marker from the connection's verified client
+        // cert (and strip any client-supplied spoof) before handlers run auth
+        .layer(axum::middleware::from_fn(stamp_mtls))
         // outermost layer: guarantee every response carries an X-Request-ID
         // header — including the timeout responses generated by the TimeoutLayer
         // above. Handlers that set their own matching id are left untouched.
         .layer(map_response(ensure_request_id_header))
+}
+
+/// Replace the `x-dora-client-verified` header with a trusted value derived from
+/// the TLS connection's verified client certificate. Any client-supplied value
+/// is removed first, so a request can never forge mTLS authentication (including
+/// over plaintext, where `ConnData` is absent and the header is simply cleared).
+async fn stamp_mtls(mut request: axum::extract::Request, next: axum::middleware::Next) -> Response {
+    request.headers_mut().remove(MTLS_HEADER);
+    let verified = request
+        .extensions()
+        .get::<tls::ConnData>()
+        .is_some_and(|conn| conn.mtls_authenticated);
+    if verified {
+        request
+            .headers_mut()
+            .insert(MTLS_HEADER, HeaderValue::from_static("1"));
+    }
+    next.run(request).await
 }
 
 /// Backfill an `X-Request-ID` header on any response that doesn't already have
@@ -1021,6 +1092,16 @@ mod handlers {
     }
 
     fn authorize(headers: &HeaderMap, auth: &crate::ApiAuth) -> ServerResult<()> {
+        // A verified client certificate satisfies auth on its own. The TLS layer
+        // stamps this header from the connection's peer cert and always strips
+        // any client-supplied value first, so it can't be spoofed.
+        if headers
+            .get(crate::MTLS_HEADER)
+            .is_some_and(|value| value == "1")
+        {
+            return Ok(());
+        }
+
         let Some(expected) = auth.bearer_token.as_deref() else {
             return Ok(());
         };
@@ -3608,6 +3689,249 @@ v4:
             response.json::<serde_json::Value>().await?["error"]["code"],
             "not_found"
         );
+
+        token.cancel();
+        Ok(())
+    }
+
+    // ---- TLS / mTLS -------------------------------------------------------
+
+    struct TestPki {
+        server_cert: String,
+        server_key: String,
+        ca_cert: String,
+        /// client cert + key concatenated (a reqwest Identity PEM)
+        client_identity: String,
+    }
+
+    /// Generate a self-signed server cert (with a 127.0.0.1 IP SAN), a CA, and a
+    /// client cert signed by that CA.
+    fn gen_pki() -> TestPki {
+        use rcgen::{BasicConstraints, CertificateParams, IsCa, KeyPair, SanType};
+
+        let mut server_params = CertificateParams::new(vec![]).unwrap();
+        server_params.subject_alt_names = vec![SanType::IpAddress("127.0.0.1".parse().unwrap())];
+        let server_key = KeyPair::generate().unwrap();
+        let server_cert = server_params.self_signed(&server_key).unwrap();
+
+        let mut ca_params = CertificateParams::new(vec![]).unwrap();
+        ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+        let ca_key = KeyPair::generate().unwrap();
+        let ca_cert = ca_params.self_signed(&ca_key).unwrap();
+
+        let client_params = CertificateParams::new(vec![]).unwrap();
+        let client_key = KeyPair::generate().unwrap();
+        let client_cert = client_params
+            .signed_by(&client_key, &ca_cert, &ca_key)
+            .unwrap();
+
+        TestPki {
+            server_cert: server_cert.pem(),
+            server_key: server_key.serialize_pem(),
+            ca_cert: ca_cert.pem(),
+            client_identity: format!("{}{}", client_cert.pem(), client_key.serialize_pem()),
+        }
+    }
+
+    fn unique() -> u64 {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static N: AtomicU64 = AtomicU64::new(0);
+        N.fetch_add(1, Ordering::Relaxed)
+    }
+
+    /// Write the server cert/key (and optionally the client CA) to a temp dir and
+    /// return a `TlsConfig` pointing at them.
+    fn write_tls_files(
+        pki: &TestPki,
+        with_client_ca: bool,
+        require_client_auth: bool,
+    ) -> crate::tls::TlsConfig {
+        let dir =
+            std::env::temp_dir().join(format!("dora-tls-{}-{}", std::process::id(), unique()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cert = dir.join("cert.pem");
+        std::fs::write(&cert, &pki.server_cert).unwrap();
+        let key = dir.join("key.pem");
+        std::fs::write(&key, &pki.server_key).unwrap();
+        let client_ca = with_client_ca.then(|| {
+            let ca = dir.join("ca.pem");
+            std::fs::write(&ca, &pki.ca_cert).unwrap();
+            ca
+        });
+        crate::tls::TlsConfig {
+            cert,
+            key,
+            client_ca,
+            require_client_auth,
+            reload_interval: Duration::from_secs(60),
+        }
+    }
+
+    /// Spawn the API over TLS on an ephemeral port using `tls::serve` directly.
+    async fn spawn_tls_api(
+        mut auth: ApiAuth,
+        tls: crate::tls::TlsConfig,
+    ) -> anyhow::Result<(SocketAddr, CancellationToken)> {
+        // mirror ExternalApi::with_tls: advertise mtls when a client-CA is set
+        auth.mtls_enabled = tls.client_ca.is_some();
+        let mgr = Arc::new(IpManager::new(SqliteDb::new("sqlite::memory:").await?)?);
+        let cfg = Arc::new(DhcpConfig::default());
+        let state = models::blank_health();
+        *state.lock() = Health::Good;
+        let token = CancellationToken::new();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let addr = listener.local_addr()?;
+        let app = api_router::<SqliteDb>(
+            state,
+            ApiState {
+                started_at: SystemTime::now(),
+            },
+            auth,
+            cfg,
+            mgr,
+            SharedMode::default(),
+            RuntimeReservations::new(),
+            token.clone(),
+            Duration::from_secs(30),
+        );
+        let tls_state = crate::tls::TlsState::load(tls)?;
+        let sd = token.clone();
+        tokio::spawn(async move {
+            if let Err(err) = crate::tls::serve(listener, tls_state, app, sd).await {
+                tracing::error!(?err, "test TLS API returned error");
+            }
+        });
+        Ok((addr, token))
+    }
+
+    // TLS termination: the API is reachable over HTTPS with the server cert.
+    #[tokio::test]
+    async fn test_tls_serves_https() -> anyhow::Result<()> {
+        let pki = gen_pki();
+        let (addr, token) =
+            spawn_tls_api(ApiAuth::disabled(), write_tls_files(&pki, false, false)).await?;
+        let client = reqwest::Client::builder()
+            .add_root_certificate(reqwest::Certificate::from_pem(pki.server_cert.as_bytes())?)
+            .build()?;
+        let body: serde_json::Value = client
+            .get(format!("https://{addr}/health"))
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        assert_eq!(body["status"], "alive");
+        token.cancel();
+        Ok(())
+    }
+
+    // A verified client certificate authenticates a request even when a bearer
+    // token is configured and none is sent (mTLS OR bearer).
+    #[tokio::test]
+    async fn test_mtls_client_cert_authenticates() -> anyhow::Result<()> {
+        let pki = gen_pki();
+        let (addr, token) = spawn_tls_api(
+            ApiAuth::bearer("secret"),
+            write_tls_files(&pki, true, false),
+        )
+        .await?;
+        let client = reqwest::Client::builder()
+            .add_root_certificate(reqwest::Certificate::from_pem(pki.server_cert.as_bytes())?)
+            .identity(reqwest::Identity::from_pem(pki.client_identity.as_bytes())?)
+            .build()?;
+        // protected endpoint, no Authorization header — mTLS carries it
+        let resp = client
+            .get(format!("https://{addr}/v1/server"))
+            .send()
+            .await?;
+        assert_eq!(resp.status(), reqwest::StatusCode::OK);
+        let body: serde_json::Value = resp.json().await?;
+        // server advertises mtls in its auth methods
+        let methods = body["api"]["auth"].as_array().unwrap();
+        assert!(methods.iter().any(|m| m == "mtls"));
+        token.cancel();
+        Ok(())
+    }
+
+    // Without a client cert, a protected endpoint still requires the bearer token
+    // (mTLS is optional), and a spoofed marker header is ignored.
+    #[tokio::test]
+    async fn test_no_client_cert_requires_bearer() -> anyhow::Result<()> {
+        let pki = gen_pki();
+        let (addr, token) = spawn_tls_api(
+            ApiAuth::bearer("secret"),
+            write_tls_files(&pki, true, false),
+        )
+        .await?;
+        let client = reqwest::Client::builder()
+            .add_root_certificate(reqwest::Certificate::from_pem(pki.server_cert.as_bytes())?)
+            .build()?;
+        // no cert, no bearer, and a forged marker header -> still 401
+        let unauth = client
+            .get(format!("https://{addr}/v1/server"))
+            .header(crate::MTLS_HEADER, "1")
+            .send()
+            .await?;
+        assert_eq!(unauth.status(), reqwest::StatusCode::UNAUTHORIZED);
+        // with the bearer token -> ok
+        let ok = client
+            .get(format!("https://{addr}/v1/server"))
+            .bearer_auth("secret")
+            .send()
+            .await?;
+        assert_eq!(ok.status(), reqwest::StatusCode::OK);
+        token.cancel();
+        Ok(())
+    }
+
+    // The spoof-protection also holds over plaintext: a client-supplied marker
+    // header is stripped, so it can't bypass the bearer requirement.
+    #[tokio::test]
+    async fn test_spoofed_mtls_header_stripped_plaintext() -> anyhow::Result<()> {
+        let (addr, token, _mode, _mgr) =
+            spawn_test_api_full(Health::Good, ApiAuth::bearer("secret")).await?;
+        let resp = reqwest::Client::new()
+            .get(format!("http://{addr}/v1/server"))
+            .header(crate::MTLS_HEADER, "1")
+            .send()
+            .await?;
+        assert_eq!(resp.status(), reqwest::StatusCode::UNAUTHORIZED);
+        token.cancel();
+        Ok(())
+    }
+
+    // Mandatory mTLS: a client-CA with no bearer requires a client cert at the
+    // TLS layer, so a certless client can't even complete the handshake (it
+    // can't reach the open API), while a valid client cert connects.
+    #[tokio::test]
+    async fn test_mandatory_mtls_requires_client_cert() -> anyhow::Result<()> {
+        let pki = gen_pki();
+        let (addr, token) =
+            spawn_tls_api(ApiAuth::disabled(), write_tls_files(&pki, true, true)).await?;
+        let root = reqwest::Certificate::from_pem(pki.server_cert.as_bytes())?;
+
+        // no client cert -> handshake is rejected
+        let certless = reqwest::Client::builder()
+            .add_root_certificate(root.clone())
+            .build()?;
+        assert!(
+            certless
+                .get(format!("https://{addr}/health"))
+                .send()
+                .await
+                .is_err()
+        );
+
+        // valid client cert -> connects and is authorized
+        let client = reqwest::Client::builder()
+            .add_root_certificate(root)
+            .identity(reqwest::Identity::from_pem(pki.client_identity.as_bytes())?)
+            .build()?;
+        let resp = client
+            .get(format!("https://{addr}/v1/server"))
+            .send()
+            .await?;
+        assert_eq!(resp.status(), reqwest::StatusCode::OK);
 
         token.cancel();
         Ok(())

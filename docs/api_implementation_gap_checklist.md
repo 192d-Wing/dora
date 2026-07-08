@@ -18,10 +18,10 @@ items annotated `— partial:` are started but incomplete.
 ## Authentication
 
 - [x] Add Bearer token authentication for sensitive endpoints. — via `DORA_API_TOKEN`.
-- [ ] Add mTLS authentication support, either in-process or through documented proxy integration.
-- [ ] Accept either Bearer token or valid mTLS client certificate. — Bearer only.
-- [ ] Keep only `GET /health`, `GET /ready`, and `GET /openapi.json` public. — partial: `/ping` and the metrics endpoints are also public.
-- [ ] Add authorization tests for public, authenticated, and rejected requests. — partial: rejected (401) cases covered; full matrix not.
+- [x] Add mTLS authentication support, either in-process or through documented proxy integration. — in-process rustls TLS termination with optional client-cert (mTLS) verification against hot-reloaded trust anchors; server cert/key + client-CA are files (from external ACME/TAMP), polled and hot-swapped on rotation.
+- [x] Accept either Bearer token or valid mTLS client certificate. — a verified client cert satisfies auth on its own; otherwise the Bearer token is required. The TLS layer stamps a trusted (unspoofable) marker header the `authorize` check reads.
+- [ ] Keep only `GET /health`, `GET /ready`, and `GET /openapi.json` public. — partial: the metrics endpoints are also public.
+- [x] Add authorization tests for public, authenticated, and rejected requests. — bearer accept/reject, mTLS accept, mTLS-absent-falls-back-to-bearer, and spoofed-marker rejection (TLS and plaintext).
 
 ## Health And Server Metadata
 
