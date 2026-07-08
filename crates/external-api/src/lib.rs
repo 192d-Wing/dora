@@ -23,7 +23,10 @@ use std::{
 };
 
 use anyhow::Result;
-use axum::{Router, extract::Extension, routing};
+use axum::{
+    Router, extract::Extension, http::HeaderValue, middleware::map_response, response::Response,
+    routing,
+};
 
 use ip_manager::{IpManager, Storage};
 use tokio::{net::TcpListener, sync::mpsc, task::JoinHandle};
@@ -225,7 +228,6 @@ fn api_router<S: Storage>(
         .route("/ready", routing::get(handlers::ready))
         .route("/openapi.json", routing::get(handlers::openapi_json))
         .route("/v1/server", routing::get(handlers::server_info))
-        .route("/ping", routing::get(handlers::ping))
         .route(
             "/v1/metrics/summary",
             routing::get(handlers::metrics_summary),
@@ -240,7 +242,19 @@ fn api_router<S: Storage>(
         .route("/v1/leases", routing::get(handlers::leases::<S>))
         .route("/v1/leases/v4", routing::get(handlers::leases_v4::<S>))
         .route("/v1/leases/v6", routing::get(handlers::leases_v6::<S>))
+        .route(
+            "/v1/reservations/v4",
+            routing::get(handlers::reservations_v4),
+        )
+        .route(
+            "/v1/reservations/v6",
+            routing::get(handlers::reservations_v6),
+        )
         .route("/v1/config", routing::get(handlers::config))
+        // guarantee every response carries an X-Request-ID header (handlers that
+        // put a request_id in the body already set a matching one; this backfills
+        // the rest)
+        .layer(map_response(ensure_request_id_header))
         .layer(TraceLayer::new_for_http())
         .layer(TimeoutLayer::with_status_code(
             axum::http::StatusCode::REQUEST_TIMEOUT,
@@ -251,6 +265,17 @@ fn api_router<S: Storage>(
         .layer(Extension(auth))
         .layer(Extension(ip_mgr))
         .layer(Extension(cfg))
+}
+
+/// Backfill an `X-Request-ID` header on any response that doesn't already have
+/// one, so every API response is traceable (RFC-less but standard practice).
+async fn ensure_request_id_header(mut response: Response) -> Response {
+    if !response.headers().contains_key("x-request-id")
+        && let Ok(value) = HeaderValue::from_str(&handlers::request_id())
+    {
+        response.headers_mut().insert("x-request-id", value);
+    }
+    response
 }
 
 mod handlers {
@@ -271,6 +296,7 @@ mod handlers {
     };
     use chrono::{DateTime, Utc};
     use config::DhcpConfig;
+    use config::wire::v4::Condition;
     use dora_core::metrics::{START_TIME, UPTIME};
     use ip_manager::{IpManager, Storage};
     use ipnet::Ipv4Net;
@@ -284,7 +310,8 @@ mod handlers {
         MetricSample, MetricsDetailed, MetricsSummary, OpenMetricsJson, PaginationMeta,
         ProtocolMetricsSummary, ReadinessCheck, ReadinessResponse, ReadinessStatus, ReserveIp,
         ServerApiInfo, ServerInfo, ServerMode, ServerResult, State, V4Lease, V4LeaseListResponse,
-        V6Lease, V6LeaseListResponse,
+        V4Reservation, V4ReservationListResponse, V6Lease, V6LeaseListResponse, V6Reservation,
+        V6ReservationListResponse,
     };
 
     const OPENAPI_YAML: &str = include_str!("../../../docs/openapi.yaml");
@@ -815,6 +842,72 @@ mod handlers {
         Ok(axum::Json(V6LeaseListResponse { meta, items }))
     }
 
+    pub(crate) async fn reservations_v4(
+        headers: HeaderMap,
+        Extension(auth): Extension<crate::ApiAuth>,
+        Extension(cfg): Extension<Arc<DhcpConfig>>,
+        Query(query): Query<LeaseListQuery>,
+    ) -> ServerResult<impl IntoResponse> {
+        authorize(&headers, &auth)?;
+        let request_id = request_id();
+        let mut items = Vec::new();
+        for net in cfg.v4().networks().values() {
+            let network = net.full_subnet().to_string();
+            for res in net.get_reservations() {
+                items.push(V4Reservation {
+                    family: "v4".to_string(),
+                    ip: res.ip().to_string(),
+                    network: Some(network.clone()),
+                    source: "config".to_string(),
+                    match_on: res.condition().clone(),
+                });
+            }
+        }
+        // filters
+        if let Some(network) = query.network.as_deref() {
+            items.retain(|r| r.network.as_deref() == Some(network));
+        }
+        if let Some(ip) = query.ip.as_deref() {
+            items.retain(|r| r.ip == ip);
+        }
+        if let Some(client_id) = query.client_id.as_deref() {
+            items.retain(|r| reservation_match_id(&r.match_on).as_deref() == Some(client_id));
+        }
+        items.sort_by(|a, b| a.ip.cmp(&b.ip));
+
+        let (meta, items) = paginate(items, &query);
+        Ok((
+            request_id_header(&request_id)?,
+            axum::Json(V4ReservationListResponse { meta, items }),
+        ))
+    }
+
+    /// dora has no DHCPv6 host reservations in the config today; runtime v6
+    /// reservations arrive with the reservations write API. Return an empty page.
+    pub(crate) async fn reservations_v6(
+        headers: HeaderMap,
+        Extension(auth): Extension<crate::ApiAuth>,
+        Query(query): Query<LeaseListQuery>,
+    ) -> ServerResult<impl IntoResponse> {
+        authorize(&headers, &auth)?;
+        let request_id = request_id();
+        let (meta, items) = paginate(Vec::<V6Reservation>::new(), &query);
+        Ok((
+            request_id_header(&request_id)?,
+            axum::Json(V6ReservationListResponse { meta, items }),
+        ))
+    }
+
+    /// The identifier a reservation matches on, for the `client_id` filter: the
+    /// hex chaddr for a MAC match (matching how lease `client_id` is encoded),
+    /// else `None`.
+    fn reservation_match_id(condition: &Condition) -> Option<String> {
+        match condition {
+            Condition::Mac(mac) => Some(mac.to_string().replace([':', '-'], "").to_lowercase()),
+            Condition::Options(_) => None,
+        }
+    }
+
     #[derive(Debug, Default, Deserialize)]
     pub(crate) struct LeaseListQuery {
         pub(crate) limit: Option<usize>,
@@ -1213,10 +1306,6 @@ mod handlers {
             Ok(_) => Ok(resp.status(StatusCode::OK).body(Body::from(buf))?),
         }
     }
-
-    pub(crate) async fn ping() -> impl IntoResponse {
-        StatusCode::OK
-    }
 }
 
 /// Various models for API responses
@@ -1578,6 +1667,62 @@ pub mod models {
         /// reservation condition
         #[serde(rename = "match")]
         pub condition: Condition,
+    }
+
+    /// DHCPv4 reservation list response.
+    #[derive(Serialize, Deserialize, Debug, PartialEq, Clone, Eq)]
+    pub struct V4ReservationListResponse {
+        /// Pagination metadata.
+        pub meta: PaginationMeta,
+        /// DHCPv4 reservations.
+        pub items: Vec<V4Reservation>,
+    }
+
+    /// DHCPv4 reservation item.
+    #[derive(Serialize, Deserialize, Debug, PartialEq, Clone, Eq)]
+    pub struct V4Reservation {
+        /// Address family (always `v4`).
+        pub family: String,
+        /// Reserved IPv4 address.
+        pub ip: String,
+        /// Owning network.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub network: Option<String>,
+        /// `config` (from the config file) or `runtime` (via the API).
+        pub source: String,
+        /// The match predicate (chaddr or options).
+        #[serde(rename = "match")]
+        pub match_on: Condition,
+    }
+
+    /// DHCPv6 reservation list response.
+    #[derive(Serialize, Deserialize, Debug, PartialEq, Clone, Eq)]
+    pub struct V6ReservationListResponse {
+        /// Pagination metadata.
+        pub meta: PaginationMeta,
+        /// DHCPv6 reservations.
+        pub items: Vec<V6Reservation>,
+    }
+
+    /// DHCPv6 reservation item.
+    #[derive(Serialize, Deserialize, Debug, PartialEq, Clone, Eq)]
+    pub struct V6Reservation {
+        /// Address family (always `v6`).
+        pub family: String,
+        /// Reserved IPv6 address, if any.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub ip: Option<String>,
+        /// Reserved delegated prefix, if any.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub prefix: Option<String>,
+        /// Owning network.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub network: Option<String>,
+        /// `config` or `runtime`.
+        pub source: String,
+        /// The match predicate.
+        #[serde(rename = "match")]
+        pub match_on: serde_json::Value,
     }
 
     pub(crate) fn blank_health() -> State {
@@ -2187,6 +2332,86 @@ v4:
         assert!(body["error"]["message"].is_string());
         assert_eq!(body["error"]["request_id"], header_id);
 
+        token.cancel();
+        Ok(())
+    }
+
+    // /v1/reservations/v4 lists config reservations; /v6 is empty for now.
+    #[tokio::test]
+    async fn test_reservations_endpoints() -> anyhow::Result<()> {
+        static RES_YAML: &str = r#"
+v4:
+  networks:
+    192.168.5.0/24:
+      ranges:
+        - start: 192.168.5.2
+          end: 192.168.5.250
+          config: { lease_time: { default: 3600 } }
+          options: { values: {} }
+      reservations:
+        - ip: 192.168.5.166
+          match: { chaddr: f8:1a:67:1f:c9:7d }
+          config: { lease_time: { default: 3600 } }
+          options: { values: {} }
+"#;
+        let cfg = Arc::new(DhcpConfig::parse_str(RES_YAML)?);
+        let (addr, token) =
+            spawn_test_api_with_config(Health::Good, ApiAuth::disabled(), cfg).await?;
+
+        let response = reqwest::get(format!("http://{addr}/v1/reservations/v4"))
+            .await?
+            .error_for_status()?;
+        assert!(response.headers().get("x-request-id").is_some());
+        let body: serde_json::Value = response.json().await?;
+        assert_eq!(body["meta"]["total"], 1);
+        let item = &body["items"][0];
+        assert_eq!(item["family"], "v4");
+        assert_eq!(item["ip"], "192.168.5.166");
+        assert_eq!(item["source"], "config");
+        assert_eq!(item["match"]["chaddr"], "f8:1a:67:1f:c9:7d");
+
+        // client_id filter (hex chaddr)
+        let filtered: serde_json::Value = reqwest::get(format!(
+            "http://{addr}/v1/reservations/v4?client_id=f81a671fc97d"
+        ))
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+        assert_eq!(filtered["meta"]["total"], 1);
+        let none: serde_json::Value = reqwest::get(format!(
+            "http://{addr}/v1/reservations/v4?client_id=deadbeef"
+        ))
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+        assert_eq!(none["meta"]["total"], 0);
+
+        // v6 reservations are empty today
+        let v6: serde_json::Value = reqwest::get(format!("http://{addr}/v1/reservations/v6"))
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        assert_eq!(v6["items"].as_array().unwrap().len(), 0);
+
+        token.cancel();
+        Ok(())
+    }
+
+    // the map_response middleware backfills X-Request-ID on responses whose
+    // handler doesn't set it (e.g. the lease list).
+    #[tokio::test]
+    async fn test_request_id_backfilled_on_all_responses() -> anyhow::Result<()> {
+        let (addr, token) = spawn_test_api(Health::Good).await?;
+        let response = reqwest::get(format!("http://{addr}/v1/leases/v4"))
+            .await?
+            .error_for_status()?;
+        assert!(
+            response.headers().get("x-request-id").is_some(),
+            "every response must carry X-Request-ID"
+        );
         token.cancel();
         Ok(())
     }

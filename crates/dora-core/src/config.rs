@@ -70,7 +70,7 @@ pub mod cli {
         /// the v6 address to listen on
         #[clap(long, env, value_parser, default_value = DEFAULT_V6_ADDR)]
         pub v6_addr: SocketAddr,
-        /// the v6 address to listen on
+        /// the management HTTP API address to listen on
         #[clap(long, env, value_parser, default_value = DEFAULT_EXTERNAL_API)]
         pub external_api: SocketAddr,
         /// default timeout, dora will respond within this window or drop
