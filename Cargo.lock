@@ -733,7 +733,7 @@ dependencies = [
  "hex",
  "hickory-net",
  "rand 0.10.2",
- "ring 0.16.20",
+ "ring 0.17.14",
  "thiserror 2.0.18",
  "tracing",
  "tracing-test",
