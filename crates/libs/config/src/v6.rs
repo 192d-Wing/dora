@@ -648,6 +648,9 @@ mod tests {
     use std::path::Path;
 
     pub static TEST_SERVER_ID_FILE_PATH: &str = "./server_id"; //can not use include_str because sometimes it doesn't exist.
+    /// Serializes the tests that read/write the shared `./server_id` file so they
+    /// don't race each other under a threaded test runner (e.g. cargo llvm-cov).
+    static SERVER_ID_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     pub static CONFIG_V6_YAML: &str = include_str!("../sample/config_v6.yaml");
     pub static CONFIG_V6_LL_YAML: &str = include_str!("../sample/config_v6_LL.yaml");
     pub static CONFIG_V6_EN_YAML: &str = include_str!("../sample/config_v6_EN.yaml");
@@ -808,6 +811,7 @@ v6:
     /// test if v6_config can generate a server_id; and if it can dump it to a file
     #[test]
     fn test_v6_config() {
+        let _serial = SERVER_ID_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let path = Path::new(TEST_SERVER_ID_FILE_PATH);
         if path.exists() {
             std::fs::remove_file(path).unwrap();
@@ -834,6 +838,7 @@ v6:
     /// test if we can generate a different server_id using different config rather than using the config file that exists
     #[test]
     fn test_v6_generate_different_server_id() {
+        let _serial = SERVER_ID_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let cfg1 = Config::new(CONFIG_V6_YAML).unwrap();
         let cfg2 = Config::new(CONFIG_V6_LL_YAML).unwrap();
         let server_id1 = cfg1.v6().unwrap().server_id();
@@ -845,6 +850,7 @@ v6:
     /// test if we can generate EN type server_id
     #[test]
     fn test_v6_generate_en_server_id() {
+        let _serial = SERVER_ID_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let cfg = Config::new(CONFIG_V6_EN_YAML).unwrap();
         let server_id = cfg.v6().unwrap().server_id();
         println!("server_id: {:?}", server_id);
@@ -852,6 +858,7 @@ v6:
     /// test if we can generate UUID type server_id
     #[test]
     fn test_v6_generate_uuid_server_id() {
+        let _serial = SERVER_ID_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let cfg = Config::new(CONFIG_V6_UUID_YAML).unwrap();
         let server_id = cfg.v6().unwrap().server_id();
         println!("server_id: {:?}", server_id);
@@ -859,6 +866,7 @@ v6:
     /// test if wen can generate server_id without persisting it to a file
     #[test]
     fn test_v6_generate_server_id_without_persist() {
+        let _serial = SERVER_ID_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let server_id_path = Path::new(TEST_SERVER_ID_FILE_PATH);
         if server_id_path.exists() {
             std::fs::remove_file(server_id_path).unwrap();
