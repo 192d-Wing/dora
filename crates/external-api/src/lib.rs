@@ -16,7 +16,11 @@
 #![deny(rustdoc::broken_intra_doc_links)]
 #![allow(clippy::cognitive_complexity, clippy::too_many_arguments)]
 
-use std::{net::SocketAddr, sync::Arc, time::Duration};
+use std::{
+    net::SocketAddr,
+    sync::Arc,
+    time::{Duration, SystemTime},
+};
 
 use anyhow::Result;
 use axum::{Router, extract::Extension, routing};
@@ -52,8 +56,14 @@ pub struct ExternalApi<S> {
     rx: mpsc::Receiver<Health>,
     addr: SocketAddr,
     state: State,
+    api_state: ApiState,
     ip_mgr: Arc<IpManager<S>>,
     cfg: Arc<DhcpConfig>,
+}
+
+#[derive(Debug, Clone)]
+struct ApiState {
+    started_at: SystemTime,
 }
 
 impl<S: Storage> ExternalApi<S> {
@@ -67,6 +77,9 @@ impl<S: Storage> ExternalApi<S> {
             rx,
             addr,
             state,
+            api_state: ApiState {
+                started_at: SystemTime::now(),
+            },
             ip_mgr,
             cfg,
         }
@@ -98,12 +111,13 @@ impl<S: Storage> ExternalApi<S> {
     async fn run(
         addr: SocketAddr,
         state: State,
+        api_state: ApiState,
         cfg: Arc<DhcpConfig>,
         ip_mgr: Arc<IpManager<S>>,
         token: CancellationToken,
     ) -> Result<()> {
         const TIMEOUT: u64 = 30;
-        let service = api_router::<S>(state, cfg, ip_mgr, Duration::from_secs(TIMEOUT));
+        let service = api_router::<S>(state, api_state, cfg, ip_mgr, Duration::from_secs(TIMEOUT));
 
         let tcp = TcpListener::bind(&addr).await?;
         tracing::debug!(%addr, "external API listening");
@@ -120,6 +134,7 @@ impl<S: Storage> ExternalApi<S> {
     /// changes
     pub fn start(mut self, token: CancellationToken) -> JoinHandle<()> {
         let state = self.state.clone();
+        let api_state = self.api_state.clone();
         let addr = self.addr;
         let ip_mgr = self.ip_mgr.clone();
         let cfg = self.cfg.clone();
@@ -128,7 +143,7 @@ impl<S: Storage> ExternalApi<S> {
         tokio::spawn(async move {
             // `run` will exit when cancel token completes
             tokio::select! {
-                r = ExternalApi::run(addr, state, cfg, ip_mgr, token) => {
+                r = ExternalApi::run(addr, state, api_state, cfg, ip_mgr, token) => {
                     if let Err(err) = r {
                         error!(?err, "external api task returned error")
                     }
@@ -149,6 +164,7 @@ impl<S: Storage> ExternalApi<S> {
 
 fn api_router<S: Storage>(
     state: State,
+    api_state: ApiState,
     cfg: Arc<DhcpConfig>,
     ip_mgr: Arc<IpManager<S>>,
     timeout: Duration,
@@ -159,6 +175,7 @@ fn api_router<S: Storage>(
         .route("/health", routing::get(handlers::health))
         .route("/ready", routing::get(handlers::ready))
         .route("/openapi.json", routing::get(handlers::openapi_json))
+        .route("/v1/server", routing::get(handlers::server_info))
         .route("/ping", routing::get(handlers::ping))
         .route(
             "/v1/metrics/summary",
@@ -179,6 +196,7 @@ fn api_router<S: Storage>(
             timeout,
         ))
         .layer(Extension(state))
+        .layer(Extension(api_state))
         .layer(Extension(ip_mgr))
         .layer(Extension(cfg))
 }
@@ -210,7 +228,8 @@ mod handlers {
     use crate::models::{
         Health, HealthResponse, Histogram, HistogramBucket, MetricFamily, MetricSample,
         MetricsDetailed, MetricsSummary, OpenMetricsJson, ProtocolMetricsSummary, ReadinessCheck,
-        ReadinessResponse, ReadinessStatus, ReserveIp, ServerResult, State,
+        ReadinessResponse, ReadinessStatus, ReserveIp, ServerApiInfo, ServerInfo, ServerMode,
+        ServerResult, State,
     };
 
     const OPENAPI_YAML: &str = include_str!("../../../docs/openapi.yaml");
@@ -290,6 +309,27 @@ mod handlers {
                     .into_iter()
                     .map(metric_family_to_json)
                     .collect(),
+            }),
+        ))
+    }
+
+    pub(crate) async fn server_info(
+        Extension(api_state): Extension<crate::ApiState>,
+    ) -> ServerResult<impl IntoResponse> {
+        let request_id = request_id();
+        let started_at = DateTime::<Utc>::from(api_state.started_at).to_rfc3339();
+        Ok((
+            request_id_header(&request_id)?,
+            axum::Json(ServerInfo {
+                id: std::env::var("DORA_ID").unwrap_or_else(|_| "dora_id".to_string()),
+                version: env!("CARGO_PKG_VERSION").to_string(),
+                started_at,
+                mode: ServerMode::Normal,
+                api: ServerApiInfo {
+                    version: "v1".to_string(),
+                    auth: Vec::new(),
+                },
+                request_id,
             }),
         ))
     }
@@ -883,6 +923,46 @@ pub mod models {
         pub value: f64,
     }
 
+    /// Server metadata and runtime state.
+    #[derive(Serialize, Deserialize, Debug, PartialEq, Clone, Eq)]
+    pub struct ServerInfo {
+        /// Server instance id.
+        pub id: String,
+        /// Server version.
+        pub version: String,
+        /// Server start timestamp.
+        pub started_at: String,
+        /// Server mode.
+        pub mode: ServerMode,
+        /// API metadata.
+        pub api: ServerApiInfo,
+        /// Server-generated request id.
+        pub request_id: String,
+    }
+
+    /// Server mode.
+    #[derive(Serialize, Deserialize, Debug, PartialEq, Copy, Clone, Eq)]
+    #[serde(rename_all = "snake_case")]
+    pub enum ServerMode {
+        /// Normal serving mode.
+        Normal,
+        /// Maintenance mode.
+        Maintenance,
+        /// Drain mode.
+        Drain,
+        /// Shutting down.
+        ShuttingDown,
+    }
+
+    /// API metadata.
+    #[derive(Serialize, Deserialize, Debug, PartialEq, Clone, Eq)]
+    pub struct ServerApiInfo {
+        /// API version.
+        pub version: String,
+        /// Enabled authentication mechanisms.
+        pub auth: Vec<String>,
+    }
+
     /// leases table
     #[derive(Serialize, Deserialize, Default, Debug, PartialEq, Clone, Eq)]
     pub struct Leases {
@@ -990,7 +1070,15 @@ mod tests {
         let token = CancellationToken::new();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         let addr = listener.local_addr()?;
-        let app = api_router::<SqliteDb>(state, cfg, mgr, Duration::from_secs(30));
+        let app = api_router::<SqliteDb>(
+            state,
+            ApiState {
+                started_at: SystemTime::now(),
+            },
+            cfg,
+            mgr,
+            Duration::from_secs(30),
+        );
         let shutdown = token.clone();
 
         tokio::spawn(async move {
@@ -1185,6 +1273,32 @@ v4:
                 .iter()
                 .any(|family| family["name"] == "uptime")
         );
+
+        token.cancel();
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_server_info() -> anyhow::Result<()> {
+        let (addr, token) = spawn_test_api(Health::Good).await?;
+        let response = reqwest::get(format!("http://{addr}/v1/server"))
+            .await?
+            .error_for_status()?;
+        let header_request_id = response
+            .headers()
+            .get("x-request-id")
+            .expect("x-request-id header")
+            .to_str()?
+            .to_string();
+        let body: serde_json::Value = response.json().await?;
+
+        assert_eq!(body["id"], "dora_id");
+        assert_eq!(body["version"], env!("CARGO_PKG_VERSION"));
+        assert_eq!(body["mode"], "normal");
+        assert_eq!(body["api"]["version"], "v1");
+        assert!(body["api"]["auth"].as_array().is_some());
+        assert!(body["started_at"].as_str().is_some_and(|v| !v.is_empty()));
+        assert_eq!(body["request_id"], header_request_id);
 
         token.cancel();
         Ok(())
