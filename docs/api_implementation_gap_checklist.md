@@ -74,9 +74,9 @@ items annotated `— partial:` are started but incomplete.
 - [x] Implement reload config. — `POST /v1/actions/reload` (validates the on-disk config, then graceful restart to adopt it).
 - [x] Implement activate config. — `POST /v1/actions/activate-config` (writes the candidate atomically + graceful restart), mTLS-gated.
 - [x] Implement rollback config. — `POST /v1/actions/rollback-config` (re-activates a prior version), mTLS-gated.
-- [ ] Implement release lease.
-- [ ] Allow per-request DDNS cleanup on lease release.
-- [ ] Implement trigger DDNS update and cleanup.
+- [x] Implement release lease. — `POST /v1/actions/release-lease` releases the lease from the store (v4 + v6), by explicit `client_id` or the id of the lease at the address.
+- [x] Allow per-request DDNS cleanup on lease release. — `ddns_cleanup: true` removes the lease's reverse (PTR) DNS record (v4; forward cleanup needs the hostname, use trigger-ddns-update).
+- [x] Implement trigger DDNS update and cleanup. — `POST /v1/actions/trigger-ddns-update` (`operation: update|cleanup`) via a context-free DDNS path exposed from the `ddns` crate (v4).
 - [x] Implement create/update/delete reservation actions. — `POST /v1/actions/{create,update,delete}-reservation`, enforced in the v4 + v6 datapath.
 - [x] Implement maintenance mode. — `POST /v1/actions/maintenance-mode` (sync); suppresses new leases and renewals.
 - [x] Implement drain mode. — `POST /v1/actions/drain` (sync); suppresses new leases, keeps renewals.
@@ -101,6 +101,6 @@ items annotated `— partial:` are started but incomplete.
 
 - [x] Update README to remove stale `0.0.0.0:3333` external API default. — now documents `127.0.0.1:3333` and the v1 endpoint surface.
 - [x] Update `crates/bin/README.md` to show `127.0.0.1:3333`. — and fixed the `--external-api` help text (was mislabeled "the v6 address").
-- [ ] Document the breaking cleanup from legacy routes to the OAS v1 API.
-- [ ] Document auth deployment patterns for Bearer token and mTLS.
-- [ ] Document operational risk for config, reservations, drain, and shutdown actions.
+- [x] Document the breaking cleanup from legacy routes to the OAS v1 API. — see `docs/management-api.md` (Route surface).
+- [x] Document auth deployment patterns for Bearer token and mTLS. — see `docs/management-api.md` (Authentication / TLS deployment).
+- [x] Document operational risk for config, reservations, drain, and shutdown actions. — see `docs/management-api.md` (Operational risk).

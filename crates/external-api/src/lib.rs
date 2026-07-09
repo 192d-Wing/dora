@@ -383,6 +383,14 @@ fn api_router<S: Storage>(
             "/v1/actions/delete-reservation",
             routing::post(handlers::delete_reservation::<S>),
         )
+        .route(
+            "/v1/actions/release-lease",
+            routing::post(handlers::release_lease::<S>),
+        )
+        .route(
+            "/v1/actions/trigger-ddns-update",
+            routing::post(handlers::trigger_ddns::<S>),
+        )
         .layer(TraceLayer::new_for_http())
         .layer(TimeoutLayer::with_status_code(
             axum::http::StatusCode::REQUEST_TIMEOUT,
@@ -475,10 +483,11 @@ mod handlers {
         HealthResponse, Histogram, HistogramBucket, MaintenanceModeRequest, MetricFamily,
         MetricSample, MetricsDetailed, MetricsSummary, OpenMetricsJson, Operation,
         OperationAccepted, OperationLinks, PaginationMeta, ProtocolMetricsSummary, ReadinessCheck,
-        ReadinessResponse, ReadinessStatus, ReloadRequest, ReservationMutationRequest, ReserveIp,
-        RollbackConfigRequest, ServerApiInfo, ServerInfo, ServerResult, ShutdownRequest, State,
-        V4Lease, V4LeaseListResponse, V4Reservation, V4ReservationListResponse, V6Lease,
-        V6LeaseListResponse, V6Reservation, V6ReservationListResponse, ValidationMessage,
+        ReadinessResponse, ReadinessStatus, ReleaseLeaseRequest, ReloadRequest,
+        ReservationMutationRequest, ReserveIp, RollbackConfigRequest, ServerApiInfo, ServerInfo,
+        ServerResult, ShutdownRequest, State, TriggerDdnsRequest, V4Lease, V4LeaseListResponse,
+        V4Reservation, V4ReservationListResponse, V6Lease, V6LeaseListResponse, V6Reservation,
+        V6ReservationListResponse, ValidationMessage,
     };
 
     const OPENAPI_YAML: &str = include_str!("../../../docs/openapi.yaml");
@@ -2455,6 +2464,205 @@ mod handlers {
         }
     }
 
+    // ---- lease / DDNS actions ---------------------------------------------
+
+    /// `POST /v1/actions/release-lease` — release a lease from the store, and
+    /// optionally remove its reverse (PTR) DNS record.
+    pub(crate) async fn release_lease<S: Storage>(
+        headers: HeaderMap,
+        Extension(auth): Extension<crate::ApiAuth>,
+        Extension(ip_mgr): Extension<Arc<IpManager<S>>>,
+        Extension(cfg): Extension<Arc<DhcpConfig>>,
+        body: Bytes,
+    ) -> ServerResult<axum::response::Response> {
+        authorize(&headers, &auth)?;
+        let request_id = request_id();
+        let req: ReleaseLeaseRequest = parse_required_body(&body)?;
+        let ip: IpAddr = req.ip.parse().map_err(|_| {
+            crate::models::ServerError::bad_request(format!("invalid ip {}", req.ip))
+        })?;
+        if !matches!(
+            (req.family.as_str(), ip),
+            ("v4", IpAddr::V4(_)) | ("v6", IpAddr::V6(_))
+        ) {
+            return Err(crate::models::ServerError::bad_request(
+                "family does not match ip",
+            ));
+        }
+
+        // resolve the client id: explicit, else the id of the lease at `ip`
+        let id: Vec<u8> = match &req.client_id {
+            Some(cid) => hex::decode(cid)
+                .map_err(|_| crate::models::ServerError::bad_request("client_id must be hex"))?,
+            None => ip_mgr
+                .get(ip)
+                .await?
+                .as_ref()
+                .and_then(|s| s.as_ref().id().map(|i| i.to_vec()))
+                .ok_or_else(|| crate::models::ServerError::not_found("no lease at that address"))?,
+        };
+
+        let released = ip_mgr.release_ip(ip, &id).await?;
+        if released.is_none() {
+            return Err(crate::models::ServerError::not_found(
+                "no matching lease to release",
+            ));
+        }
+
+        // best-effort reverse DDNS cleanup (v4 only; forward needs the hostname)
+        let mut ddns_status = "skipped";
+        if req.ddns_cleanup
+            && let IpAddr::V4(v4) = ip
+            && let Some(ddns_cfg) = cfg.v4().ddns()
+        {
+            match ddns::apply(
+                ddns_cfg,
+                ddns::dhcid::DhcId::client_id(id.clone()),
+                v4,
+                Duration::ZERO,
+                None,
+                true,
+            )
+            .await
+            {
+                Ok(()) => ddns_status = "ok",
+                Err(err) => {
+                    warn!(?err, "DDNS cleanup on lease release failed");
+                    ddns_status = "failed";
+                }
+            }
+        }
+
+        let result =
+            serde_json::json!({ "family": req.family, "ip": req.ip, "ddns_cleanup": ddns_status });
+        let operation_id = record_sync_action(
+            &ip_mgr,
+            "release-lease",
+            actor(&auth),
+            serde_json::json!({ "family": req.family, "ip": req.ip, "ddns_cleanup": req.ddns_cleanup }),
+            result.clone(),
+        )
+        .await?;
+        reservation_response(
+            &request_id,
+            req.r#async,
+            &operation_id,
+            "release-lease",
+            result,
+        )
+    }
+
+    /// `POST /v1/actions/trigger-ddns-update` — perform an out-of-band DDNS
+    /// update or cleanup for an address (v4 only).
+    pub(crate) async fn trigger_ddns<S: Storage>(
+        headers: HeaderMap,
+        Extension(auth): Extension<crate::ApiAuth>,
+        Extension(ip_mgr): Extension<Arc<IpManager<S>>>,
+        Extension(cfg): Extension<Arc<DhcpConfig>>,
+        body: Bytes,
+    ) -> ServerResult<axum::response::Response> {
+        use std::str::FromStr;
+        authorize(&headers, &auth)?;
+        let request_id = request_id();
+        let req: TriggerDdnsRequest = parse_required_body(&body)?;
+        let cleanup = match req.operation.as_str() {
+            "update" => false,
+            "cleanup" => true,
+            other => {
+                return Err(crate::models::ServerError::bad_request(format!(
+                    "operation must be 'update' or 'cleanup', got '{other}'"
+                )));
+            }
+        };
+        let ip: IpAddr = req.ip.parse().map_err(|_| {
+            crate::models::ServerError::bad_request(format!("invalid ip {}", req.ip))
+        })?;
+        if !matches!(
+            (req.family.as_str(), ip),
+            ("v4", IpAddr::V4(_)) | ("v6", IpAddr::V6(_))
+        ) {
+            return Err(crate::models::ServerError::bad_request(
+                "family does not match ip",
+            ));
+        }
+        let IpAddr::V4(v4) = ip else {
+            return Err(crate::models::ServerError::bad_request(
+                "DDNS is only supported for v4 addresses",
+            ));
+        };
+        let ddns_cfg = cfg
+            .v4()
+            .ddns()
+            .ok_or_else(|| crate::models::ServerError::conflict("DDNS is not configured"))?;
+
+        let domain = req
+            .hostname
+            .as_deref()
+            .map(dora_core::dhcproto::Name::from_str)
+            .transpose()
+            .map_err(|_| crate::models::ServerError::bad_request("invalid hostname"))?;
+        if !cleanup && domain.is_none() {
+            return Err(crate::models::ServerError::bad_request(
+                "hostname is required for a DDNS update",
+            ));
+        }
+        // the DHCID is required whenever a forward name is targeted
+        if domain.is_some() && req.client_id.is_none() {
+            return Err(crate::models::ServerError::bad_request(
+                "client_id is required when a hostname is given",
+            ));
+        }
+        // Build the DHCID with the identifier type the server used at lease time
+        // (defaults to client_id). Using the wrong type produces a DHCID that
+        // won't match the record, so a forward cleanup would find nothing.
+        let id_bytes = req
+            .client_id
+            .as_deref()
+            .map(hex::decode)
+            .transpose()
+            .map_err(|_| crate::models::ServerError::bad_request("client_id must be hex"))?
+            .unwrap_or_default();
+        let id = match req.id_type.as_deref() {
+            None | Some("client_id") => ddns::dhcid::DhcId::client_id(id_bytes),
+            Some("chaddr") => ddns::dhcid::DhcId::chaddr(id_bytes),
+            Some("duid") => ddns::dhcid::DhcId::duid(id_bytes),
+            Some(other) => {
+                return Err(crate::models::ServerError::bad_request(format!(
+                    "id_type must be chaddr, client_id, or duid, got '{other}'"
+                )));
+            }
+        };
+
+        // manual DDNS updates use a default TTL (there is no lease context here)
+        const DDNS_TTL: Duration = Duration::from_secs(3600);
+        ddns::apply(ddns_cfg, id, v4, DDNS_TTL, domain, cleanup)
+            .await
+            .map_err(|err| {
+                crate::models::ServerError::new(
+                    StatusCode::BAD_GATEWAY,
+                    "ddns_failed",
+                    anyhow::anyhow!(err),
+                )
+            })?;
+
+        let result = serde_json::json!({ "operation": req.operation, "status": "ok" });
+        let operation_id = record_sync_action(
+            &ip_mgr,
+            "trigger-ddns-update",
+            actor(&auth),
+            serde_json::json!({ "operation": req.operation, "family": req.family, "ip": req.ip }),
+            result.clone(),
+        )
+        .await?;
+        reservation_response(
+            &request_id,
+            req.r#async,
+            &operation_id,
+            "trigger-ddns-update",
+            result,
+        )
+    }
+
     pub(crate) async fn metrics(
         headers: HeaderMap,
         Extension(auth): Extension<crate::ApiAuth>,
@@ -2922,6 +3130,51 @@ pub mod models {
     #[derive(Deserialize, Debug, Default)]
     #[serde(deny_unknown_fields)]
     pub struct ReloadRequest {
+        /// Return `202` with an operation instead of `200`.
+        #[serde(default, rename = "async")]
+        pub r#async: bool,
+    }
+
+    /// Request body for `POST /v1/actions/release-lease`.
+    #[derive(Deserialize, Debug)]
+    #[serde(deny_unknown_fields)]
+    pub struct ReleaseLeaseRequest {
+        /// `v4` or `v6`.
+        pub family: String,
+        /// The leased address to release.
+        pub ip: String,
+        /// Hex client identifier; if omitted, the lease at `ip` is released.
+        #[serde(default)]
+        pub client_id: Option<String>,
+        /// Also remove the lease's reverse (PTR) DNS record (v4 only).
+        #[serde(default)]
+        pub ddns_cleanup: bool,
+        /// Return `202` with an operation instead of `200`.
+        #[serde(default, rename = "async")]
+        pub r#async: bool,
+    }
+
+    /// Request body for `POST /v1/actions/trigger-ddns-update`.
+    #[derive(Deserialize, Debug)]
+    #[serde(deny_unknown_fields)]
+    pub struct TriggerDdnsRequest {
+        /// `update` (add A/PTR) or `cleanup` (remove them).
+        pub operation: String,
+        /// `v4` or `v6` (DDNS is v4-only today).
+        pub family: String,
+        /// The leased address.
+        pub ip: String,
+        /// The FQDN; required for `update` and for forward-zone `cleanup`.
+        #[serde(default)]
+        pub hostname: Option<String>,
+        /// Hex client identifier; required when a `hostname` is given (DHCID).
+        #[serde(default)]
+        pub client_id: Option<String>,
+        /// How to interpret `client_id` when forming the DHCID (must match what
+        /// the server used at lease time): `chaddr`, `client_id` (default), or
+        /// `duid`.
+        #[serde(default)]
+        pub id_type: Option<String>,
         /// Return `202` with an operation instead of `200`.
         #[serde(default, rename = "async")]
         pub r#async: bool,
@@ -4676,6 +4929,69 @@ v4:
             .send()
             .await?;
         assert_eq!(ok.status(), reqwest::StatusCode::OK);
+
+        token.cancel();
+        Ok(())
+    }
+
+    // ---- lease / DDNS actions ---------------------------------------------
+
+    // releasing a lease that isn't present is a 404; a family/ip mismatch is 400.
+    #[tokio::test]
+    async fn test_release_lease_validation() -> anyhow::Result<()> {
+        let (addr, token) = spawn_test_api(Health::Good).await?;
+        let client = reqwest::Client::new();
+
+        let missing = client
+            .post(format!("http://{addr}/v1/actions/release-lease"))
+            .json(
+                &serde_json::json!({ "family": "v4", "ip": "192.168.0.50", "client_id": "aabbcc" }),
+            )
+            .send()
+            .await?;
+        assert_eq!(missing.status(), reqwest::StatusCode::NOT_FOUND);
+
+        let mismatch = client
+            .post(format!("http://{addr}/v1/actions/release-lease"))
+            .json(&serde_json::json!({ "family": "v6", "ip": "192.168.0.50" }))
+            .send()
+            .await?;
+        assert_eq!(mismatch.status(), reqwest::StatusCode::BAD_REQUEST);
+
+        token.cancel();
+        Ok(())
+    }
+
+    // trigger-ddns rejects a bad operation (400) and a v6 address (400), and
+    // reports 409 when DDNS isn't configured.
+    #[tokio::test]
+    async fn test_trigger_ddns_validation() -> anyhow::Result<()> {
+        let (addr, token) = spawn_test_api(Health::Good).await?;
+        let client = reqwest::Client::new();
+
+        let bad_op = client
+            .post(format!("http://{addr}/v1/actions/trigger-ddns-update"))
+            .json(&serde_json::json!({ "operation": "nope", "family": "v4", "ip": "192.168.0.50" }))
+            .send()
+            .await?;
+        assert_eq!(bad_op.status(), reqwest::StatusCode::BAD_REQUEST);
+
+        let v6 = client
+            .post(format!("http://{addr}/v1/actions/trigger-ddns-update"))
+            .json(
+                &serde_json::json!({ "operation": "cleanup", "family": "v6", "ip": "2001:db8::1" }),
+            )
+            .send()
+            .await?;
+        assert_eq!(v6.status(), reqwest::StatusCode::BAD_REQUEST);
+
+        // default test config has no DDNS -> 409
+        let no_ddns = client
+            .post(format!("http://{addr}/v1/actions/trigger-ddns-update"))
+            .json(&serde_json::json!({ "operation": "cleanup", "family": "v4", "ip": "192.168.0.50" }))
+            .send()
+            .await?;
+        assert_eq!(no_ddns.status(), reqwest::StatusCode::CONFLICT);
 
         token.cancel();
         Ok(())

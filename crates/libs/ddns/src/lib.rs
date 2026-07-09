@@ -241,6 +241,65 @@ impl DdnsUpdate {
     }
 }
 
+/// Perform a DDNS update (add) or cleanup (remove) for a lease *outside* the DHCP
+/// request path — used by the management API's `trigger-ddns-update` action and
+/// the `ddns_cleanup` option of `release-lease`. Attempts the forward and reverse
+/// zones per the configured servers (TSIG-signed when a key is set). Best-effort:
+/// the caller decides whether a DNS/network error fails the action.
+///
+/// Forward is applied before reverse; if the forward zone commits and the reverse
+/// zone then errors, the forward change persists and the call returns `Err`
+/// (inherent to updating two independent DNS servers).
+pub async fn apply(
+    cfg: &Ddns,
+    id: DhcId,
+    leased: Ipv4Addr,
+    lease_length: Duration,
+    domain: Option<Name>,
+    cleanup: bool,
+) -> Result<(), DdnsError> {
+    let lease_length = lease_length.as_secs() as u32;
+
+    // forward zone needs the hostname (A + DHCID live at it). An update without a
+    // hostname is a caller error; a cleanup without one does reverse-only.
+    if let Some(domain) = &domain {
+        if let Some(srv) = cfg.match_longest_forward(domain) {
+            let tsig = srv.key.as_ref().map(|key| tsigner(key, cfg)).transpose()?;
+            let mut client = Updater::new(srv.ip, tsig).await?;
+            let zone = srv.name.clone();
+            if cleanup {
+                client
+                    .forward_cleanup(zone, domain.clone(), id.clone(), leased)
+                    .await?;
+            } else {
+                client
+                    .forward(zone, domain.clone(), id.clone(), leased, lease_length)
+                    .await?;
+            }
+        }
+    } else if !cleanup {
+        return Err(DdnsError::NoUpdate);
+    }
+
+    // reverse zone: cleanup is keyed only by the address; an update needs the name
+    let rev = Name::from_str(&crate::update::reverse_ip(leased))
+        .expect("reverse_ip always yields a valid in-addr.arpa name");
+    if let Some(srv) = cfg.match_longest_reverse(&rev) {
+        let tsig = srv.key.as_ref().map(|key| tsigner(key, cfg)).transpose()?;
+        let mut client = Updater::new(srv.ip, tsig).await?;
+        let zone = srv.name.clone();
+        if cleanup {
+            client.reverse_cleanup(zone, leased).await?;
+        } else if let Some(domain) = domain {
+            client
+                .reverse(zone, domain, id, leased, lease_length)
+                .await?;
+        }
+    }
+
+    Ok(())
+}
+
 #[derive(thiserror::Error, Debug)]
 pub enum TsigError {
     #[error("key not found {key_name:?}")]

@@ -952,6 +952,7 @@ dependencies = [
  "axum",
  "chrono",
  "config",
+ "ddns",
  "dora-core",
  "hex",
  "hyper 1.10.1",
