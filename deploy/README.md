@@ -5,6 +5,10 @@ with the DHCP servers behind an **anycast VIP** and the management API on a
 separate **site-local** address. Works on both full Kubernetes and K3s via
 overlays.
 
+> For a step-by-step deployment walkthrough with `kubectl`, see
+> [docs/kubernetes_deploy.md](../docs/kubernetes_deploy.md). This file is the
+> reference for what the manifests contain.
+
 ## Architecture
 
 | Workload | k8s name | dora role | Exposure |
