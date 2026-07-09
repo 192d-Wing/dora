@@ -1,0 +1,23 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Namespaces are set explicitly on each namespaced resource (the Cilium LB-IPAM
+# and BGP resources are cluster-scoped and must NOT be namespaced), so this base
+# deliberately does not use the global `namespace:` transformer.
+resources:
+  - namespace.yaml
+  - dora-config.yaml
+  - db-secret.yaml
+  - db.yaml
+  - v4.yaml
+  - v6.yaml
+  - api.yaml
+  - cilium-lb-ipam.yaml
+  - cilium-bgp.yaml
+
+# Point every dora workload at your built image. Override per environment, e.g.
+#   cd deploy/overlays/k8s && kustomize edit set image dora=registry1.dso.mil/ironbank/.../dora:1.2.3
+images:
+  - name: dora
+    newName: dora
+    newTag: latest

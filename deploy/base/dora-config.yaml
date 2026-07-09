@@ -1,0 +1,48 @@
+# dora's DHCP config, mounted read-only at /etc/dora/config.yaml in every dora
+# workload (v4, v6, api). All three roles parse the same config; the API also
+# uses it to serve /v1/config and to validate config candidates.
+#
+# NOTE: dora resolves the interface names below to interfaces that exist in the
+# pod's network namespace at startup, so `interfaces:` must name an interface
+# present in the pod (here `eth0`, the default pod interface). DHCP requests
+# arrive relayed (unicast) via the anycast VIP Service, and dora selects the
+# network by the relay's giaddr / link-address rather than the receiving NIC.
+#
+# This is an EXAMPLE. Replace the networks/ranges/options with your site's.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dora-config
+  namespace: dora
+data:
+  config.yaml: |
+    v4:
+        interfaces:
+            - eth0
+        networks:
+            192.168.1.0/24:
+                ranges:
+                    - start: 192.168.1.100
+                      end: 192.168.1.200
+                      config:
+                          lease_time:
+                              default: 3600
+                      options:
+                          values:
+                              3:
+                                  type: ip
+                                  value: 192.168.1.1
+                              6:
+                                  type: ip
+                                  value: 192.168.1.1
+    v6:
+        interfaces:
+            - eth0
+        networks:
+            2001:db8:1::/64:
+                config:
+                    preferred_lifetime: 3600
+                    valid_lifetime: 7200
+                ranges:
+                    - start: 2001:db8:1::1000
+                      end: 2001:db8:1::2000
