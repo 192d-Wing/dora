@@ -1,0 +1,114 @@
+# usg-dora-api: the management/observability HTTP API role (`dora --role api`).
+#
+# Exposed on a SEPARATE, site-local LoadBalancer IP (not the DHCP anycast VIP),
+# from its own Cilium LB-IPAM pool. It reads/writes the same Postgres as the
+# servers, so it can list leases, manage runtime reservations, and drive the
+# config lifecycle for the whole deployment.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: usg-dora-api
+  namespace: dora
+  labels: &labels
+    app.kubernetes.io/name: usg-dora-api
+    app.kubernetes.io/component: api
+    app.kubernetes.io/part-of: usg-dora
+    dora.io/workload: usg-dora-api
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: usg-dora-api
+  template:
+    metadata:
+      labels: *labels
+    spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: usg-dora-api
+                topologyKey: kubernetes.io/hostname
+      containers:
+        - name: dora
+          image: dora:latest
+          args:
+            - "--role"
+            - "api"
+            - "-c"
+            - "/etc/dora/config.yaml"
+            - "--external-api"
+            - "0.0.0.0:3333"
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: dora-db
+                  key: DATABASE_URL
+            # Optional bearer token; create the `dora-api` secret to enable it.
+            # For production prefer mTLS: mount server cert/key + a client-CA and
+            # set --external-api-tls-cert/-key/-client-ca (see docs/management-api.md).
+            - name: DORA_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: dora-api
+                  key: token
+                  optional: true
+            - name: DORA_LOG
+              value: info
+          ports:
+            - name: http
+              containerPort: 3333
+              protocol: TCP
+          volumeMounts:
+            - name: config
+              mountPath: /etc/dora
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              memory: 256Mi
+      volumes:
+        - name: config
+          configMap:
+            name: dora-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: usg-dora-api
+  namespace: dora
+  labels:
+    app.kubernetes.io/name: usg-dora-api
+    app.kubernetes.io/part-of: usg-dora
+    # selected by the site-local CiliumLoadBalancerIPPool (distinct from anycast)
+    dora.io/lb-pool: site-local
+  annotations:
+    io.cilium/lb-ipam-ips: "10.201.0.10"
+spec:
+  type: LoadBalancer
+  externalTrafficPolicy: Local
+  selector:
+    app.kubernetes.io/name: usg-dora-api
+  ports:
+    - name: http
+      port: 3333
+      targetPort: http
+      protocol: TCP

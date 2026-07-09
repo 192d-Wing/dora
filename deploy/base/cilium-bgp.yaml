@@ -1,0 +1,66 @@
+# Cilium BGP control plane: advertise the dora LoadBalancer Service IPs to the
+# upstream router so the DHCP VIPs are reachable as true anycast (ECMP across the
+# nodes running each server), and the API's site-local IP is routable inside the
+# site.
+#
+# This uses the BGP Control Plane v2 API (Cilium >= 1.16; enable
+# `bgpControlPlane.enabled=true`). For Cilium 1.14/1.15 use the older
+# `CiliumBGPPeeringPolicy` instead (see deploy/README.md).
+#
+# EDIT the ASNs and peer address for your network before applying.
+apiVersion: cilium.io/v2alpha1
+kind: CiliumBGPClusterConfig
+metadata:
+  name: dora-bgp
+spec:
+  # which nodes speak BGP; empty selector = all nodes. Narrow this if only some
+  # nodes peer with the router.
+  nodeSelector:
+    matchLabels: {}
+  bgpInstances:
+    - name: dora
+      localASN: 65010 # EDIT: this cluster's ASN
+      peers:
+        - name: upstream-router
+          peerASN: 65000 # EDIT: the upstream router's ASN
+          peerAddress: "10.0.0.1" # EDIT: the router's IP
+          peerConfigRef:
+            name: dora-peer
+---
+apiVersion: cilium.io/v2alpha1
+kind: CiliumBGPPeerConfig
+metadata:
+  name: dora-peer
+spec:
+  families:
+    - afi: ipv4
+      safi: unicast
+      advertisements:
+        matchLabels:
+          advertise: dora-services
+    - afi: ipv6
+      safi: unicast
+      advertisements:
+        matchLabels:
+          advertise: dora-services
+---
+apiVersion: cilium.io/v2alpha1
+kind: CiliumBGPAdvertisement
+metadata:
+  name: dora-services
+  labels:
+    advertise: dora-services
+spec:
+  advertisements:
+    - advertisementType: Service
+      service:
+        addresses:
+          - LoadBalancerIP
+      # advertise both the anycast VIPs and the site-local API IP
+      selector:
+        matchExpressions:
+          - key: dora.io/lb-pool
+            operator: In
+            values:
+              - anycast
+              - site-local

@@ -1,0 +1,99 @@
+# usg-dora-v4_server: the DHCPv4 server role (`dora --role v4`).
+#
+# Fronted by an anycast VIP (see the LoadBalancer Service below + Cilium
+# LB-IPAM/BGP). DHCPv4 relays are configured to forward to that VIP; BGP ECMP
+# steers each relay to the nearest ready replica.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: usg-dora-v4-server
+  namespace: dora
+  labels: &labels
+    app.kubernetes.io/name: usg-dora-v4-server
+    app.kubernetes.io/component: dhcpv4
+    app.kubernetes.io/part-of: usg-dora
+    # the underscore form the operators use; k8s object names can't contain '_'
+    dora.io/workload: usg-dora-v4_server
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: usg-dora-v4-server
+  template:
+    metadata:
+      labels: *labels
+    spec:
+      # spread replicas across nodes so the anycast VIP has multiple next-hops
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: usg-dora-v4-server
+                topologyKey: kubernetes.io/hostname
+      containers:
+        - name: dora
+          image: dora:latest
+          args:
+            - "--role"
+            - "v4"
+            - "-c"
+            - "/etc/dora/config.yaml"
+            - "--v4-addr"
+            - "0.0.0.0:67"
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: dora-db
+                  key: DATABASE_URL
+            - name: DORA_LOG
+              value: info
+          ports:
+            - name: dhcpv4
+              containerPort: 67
+              protocol: UDP
+          volumeMounts:
+            - name: config
+              mountPath: /etc/dora
+              readOnly: true
+          resources:
+            requests:
+              cpu: 100m
+              memory: 64Mi
+            limits:
+              memory: 256Mi
+      volumes:
+        - name: config
+          configMap:
+            name: dora-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: usg-dora-v4-server
+  namespace: dora
+  labels:
+    app.kubernetes.io/name: usg-dora-v4-server
+    app.kubernetes.io/part-of: usg-dora
+    # selected by the anycast CiliumLoadBalancerIPPool
+    dora.io/lb-pool: anycast
+  annotations:
+    # request the stable anycast VIP relays are pointed at (must be in the pool)
+    io.cilium/lb-ipam-ips: "203.0.113.10"
+spec:
+  type: LoadBalancer
+  # a v4 server needs a v4 VIP
+  ipFamilyPolicy: SingleStack
+  ipFamilies: [IPv4]
+  # anycast correctness: only nodes with a ready pod attract/advertise the VIP
+  externalTrafficPolicy: Local
+  selector:
+    app.kubernetes.io/name: usg-dora-v4-server
+  ports:
+    - name: dhcpv4
+      port: 67
+      targetPort: dhcpv4
+      protocol: UDP
