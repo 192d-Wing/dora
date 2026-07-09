@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use async_trait::async_trait;
 use sqlx::{
-    ConnectOptions, Postgres,
+    ConnectOptions, Connection, PgConnection, Postgres,
     postgres::{PgConnectOptions, PgPool},
 };
 use tracing::debug;
@@ -65,13 +65,8 @@ impl PostgresDb {
         let n = COUNTER.fetch_add(1, Ordering::SeqCst);
         let db_name = format!("dora_test_{}_{}", std::process::id(), n);
 
-        // connect to the admin/base DB and create the fresh test database
-        let admin = PgPool::connect(&base_url).await?;
-        // CREATE DATABASE cannot run inside a transaction
-        sqlx::query(&format!("CREATE DATABASE {db_name}"))
-            .execute(&admin)
-            .await?;
-        admin.close().await;
+        // create the fresh test database (serialized cluster-wide, see helper)
+        create_database(&db_name, false).await?;
 
         // build a new URL pointing at the fresh database by swapping the path
         // segment (the part after the last '/', before any query string)
@@ -94,15 +89,40 @@ impl PostgresDb {
 /// dev DB). Migrations are run by the spawned dora process on startup, not here.
 #[doc(hidden)]
 pub async fn create_test_database(db_name: &str) -> Result<(), sqlx::Error> {
-    let admin = PgPool::connect(&admin_base_url()).await?;
-    // CREATE/DROP DATABASE cannot run inside a transaction
-    sqlx::query(&format!("DROP DATABASE IF EXISTS {db_name} WITH (FORCE)"))
-        .execute(&admin)
+    create_database(db_name, true).await
+}
+
+/// Create database `db_name` (optionally dropping any prior one first), on a
+/// single admin connection holding a cluster-wide advisory lock.
+///
+/// `CREATE DATABASE` copies `template1`, and two of them running at once can
+/// transiently fail with SQLSTATE 55006 ("source database ... is being accessed
+/// by other users"). Parallel test processes each provision their own database,
+/// so we serialize the operation with `pg_advisory_lock` on a fixed key: Postgres
+/// itself queues concurrent callers server-side (no client-side polling). The
+/// session lock is released automatically when the connection closes.
+///
+/// Uses a single [`PgConnection`] (not a pool) so the lock and the `CREATE` run
+/// on the same session — a pool could route them to different connections and
+/// the lock would not apply. Neither statement may run inside a transaction.
+async fn create_database(db_name: &str, drop_first: bool) -> Result<(), sqlx::Error> {
+    // arbitrary fixed key shared by all callers; "dora" in hex
+    const CREATE_DB_LOCK: i64 = 0x646f_7261;
+    let mut admin = PgConnection::connect(&admin_base_url()).await?;
+    sqlx::query("SELECT pg_advisory_lock($1)")
+        .bind(CREATE_DB_LOCK)
+        .execute(&mut admin)
         .await?;
+    if drop_first {
+        sqlx::query(&format!("DROP DATABASE IF EXISTS {db_name} WITH (FORCE)"))
+            .execute(&mut admin)
+            .await?;
+    }
     sqlx::query(&format!("CREATE DATABASE {db_name}"))
-        .execute(&admin)
+        .execute(&mut admin)
         .await?;
-    admin.close().await;
+    // closing the session releases the advisory lock
+    admin.close().await?;
     Ok(())
 }
 

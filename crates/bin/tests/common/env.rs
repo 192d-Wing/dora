@@ -78,6 +78,12 @@ fn block_on<F: std::future::Future>(fut: F) -> F::Output {
 
 /// Derive a valid Postgres identifier from the test's legacy `.db` filename,
 /// e.g. `basic.db` -> `dora_it_basic_db`. Non-alphanumeric bytes become `_`.
+///
+/// The name is deterministic (not per-run unique), so two dora-bin tests using
+/// the same config filename share a database name. That is safe only because the
+/// dora-bin package is pinned to nextest's single-threaded `serial-integration`
+/// group (see .config/nextest.toml) and `start()` drops+recreates the database;
+/// concurrent runs would otherwise clobber each other.
 fn pg_db_name(db: &str) -> String {
     let sanitized: String = db
         .chars()
@@ -89,6 +95,13 @@ fn pg_db_name(db: &str) -> String {
 /// Build the connection URL dora (inside the netns) uses to reach Postgres: take
 /// the admin `DATABASE_URL`'s credentials but point at `DORA_TEST_DB_HOST` (the
 /// host end of the veth, reachable from the namespace) and the per-test database.
+///
+/// In CI the `postgres:16` service publishes `5432`, so Docker's DNAT accepts the
+/// connection on the veth host IP. For a LOCAL run, Postgres must listen on (and
+/// accept from) `DORA_TEST_DB_HOST` — a stock `localhost`-only Postgres will
+/// refuse dora's connection even though the harness creates the DB fine over
+/// localhost. Set `DORA_TEST_DB_HOST` to a reachable address if 192.168.2.99 is
+/// not bound.
 fn pg_url_for(db_name: &str) -> String {
     let base = env::var("DATABASE_URL")
         .unwrap_or_else(|_| "postgres://dora:dora@localhost:5432/dora".to_string());
