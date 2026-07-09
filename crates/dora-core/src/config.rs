@@ -37,8 +37,9 @@ pub mod cli {
     pub static DEFAULT_CONFIG_PATH: &str = "/var/lib/dora/config.yaml";
     /// update default polling interval
     pub const DEFAULT_POLL: u64 = 60;
-    /// default leases file path
-    pub const DEFAULT_DATABASE_URL: &str = "/var/lib/dora/leases.db";
+    /// default database connection string (Postgres). Override in production via
+    /// `--database-url` / `DATABASE_URL` (e.g. `postgres://usg-dora-db/dora`).
+    pub const DEFAULT_DATABASE_URL: &str = "postgres://dora:dora@localhost/dora";
     /// default dora id
     pub const DEFAULT_DORA_ID: &str = "dora_id";
     /// default log level. Can use this argument or DORA_LOG env var
@@ -111,8 +112,9 @@ pub mod cli {
         /// set the log level. All valid RUST_LOG arguments are accepted
         #[clap(long, env, value_parser, default_value = DEFAULT_DORA_LOG)]
         pub dora_log: String,
-        /// Path to the database use "sqlite::memory:" for in mem db ex. "em.db"
-        /// NOTE: in memory sqlite db connection idle timeout is 5 mins
+        /// Postgres connection string for the lease/state store, e.g.
+        /// `postgres://user:pass@host:5432/dbname`. dora runs the embedded
+        /// migrations against it on startup.
         #[clap(short, env, value_parser, default_value = DEFAULT_DATABASE_URL)]
         pub database_url: String,
     }

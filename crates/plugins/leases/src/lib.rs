@@ -578,7 +578,7 @@ pub fn dhcid(cfg: &config::v4::Config, msg: &Message) -> DhcId {
 #[cfg(test)]
 mod tests {
     use dora_core::dhcproto::v4;
-    use ip_manager::sqlite::SqliteDb;
+    use ip_manager::postgres::PostgresDb;
     use tracing_test::traced_test;
 
     use super::*;
@@ -598,7 +598,7 @@ mod tests {
     async fn test_request() -> Result<()> {
         let cfg = DhcpConfig::parse_str(SAMPLE_YAML).unwrap();
         // println!("{cfg:#?}");
-        let mgr = Arc::new(IpManager::new(SqliteDb::new("sqlite::memory:").await?)?);
+        let mgr = Arc::new(IpManager::new(PostgresDb::new_test().await?)?);
         let leases = Leases::new(Arc::new(cfg.clone()), mgr);
         let mut ctx = message_type::util::blank_ctx(
             "192.168.0.1:67".parse()?,
@@ -622,7 +622,7 @@ mod tests {
     #[traced_test]
     async fn test_discover() -> Result<()> {
         let cfg = DhcpConfig::parse_str(SAMPLE_YAML).unwrap();
-        let mgr = Arc::new(IpManager::new(SqliteDb::new("sqlite::memory:").await?)?);
+        let mgr = Arc::new(IpManager::new(PostgresDb::new_test().await?)?);
         let leases = Leases::new(Arc::new(cfg.clone()), mgr);
         let mut ctx = message_type::util::blank_ctx(
             "192.168.0.1:67".parse()?,
@@ -658,7 +658,7 @@ mod tests {
     #[traced_test]
     async fn test_release() -> Result<()> {
         let cfg = DhcpConfig::parse_str(SAMPLE_YAML).unwrap();
-        let mgr = IpManager::new(SqliteDb::new("sqlite::memory:").await?)?;
+        let mgr = IpManager::new(PostgresDb::new_test().await?)?;
         let leases = Leases::new(Arc::new(cfg.clone()), Arc::new(mgr));
         let mut ctx = message_type::util::blank_ctx(
             "192.168.0.1:67".parse()?,
@@ -753,9 +753,9 @@ mod tests {
         Ok(ctx)
     }
 
-    async fn new_leases() -> Result<Leases<SqliteDb>> {
+    async fn new_leases() -> Result<Leases<PostgresDb>> {
         let cfg = DhcpConfig::parse_str(SAMPLE_YAML).unwrap();
-        let mgr = Arc::new(IpManager::new(SqliteDb::new("sqlite::memory:").await?)?);
+        let mgr = Arc::new(IpManager::new(PostgresDb::new_test().await?)?);
         Ok(Leases::new(Arc::new(cfg), mgr))
     }
 

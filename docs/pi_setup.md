@@ -138,13 +138,13 @@ You may wish to save this minimal config to `pi.yaml` to try it out, or see [exa
 
 Run dora:
 
-After you have saved the above minimal config to `pi.yaml` in the workspace on the Pi, go ahead and [setup the sqlx database](../README.md#buildrun) if you haven't already. You should then be able to run the following (you may also need to substitute your path to the dora binary for `./dora` depending on whether you compiled it directly on the Pi or copied it from elsewhere):
+After you have saved the above minimal config to `pi.yaml` in the workspace on the Pi, make sure you have a PostgreSQL reachable from the Pi and a `DATABASE_URL` for it (see [Building/running](../README.md#buildrun)); dora runs its migrations on startup. You should then be able to run the following (you may also need to substitute your path to the dora binary for `./dora` depending on whether you compiled it directly on the Pi or copied it from elsewhere):
 
 ```
-sudo DORA_LOG="debug" ./dora -c pi.yaml -d em.db
+sudo DORA_LOG="debug" ./dora -c pi.yaml -d postgres://user:pass@localhost/dora
 ```
 
-You can delete `rm em.*` to wipe the database and start fresh.
+To wipe leases and start fresh, drop and recreate the database (e.g. `dropdb dora && createdb dora`).
 
 1. Run hostapd
 

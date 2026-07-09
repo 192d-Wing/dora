@@ -1,5 +1,5 @@
 use std::{
-    env, fs,
+    env,
     process::{Child, Command, Stdio},
     thread,
 };
@@ -7,7 +7,7 @@ use std::{
 #[derive(Debug)]
 pub(crate) struct DhcpServerEnv {
     daemon: Child,
-    db: String,
+    db_name: String,
     netns: String,
     veth_cli: String,
     // veth_srv: String,
@@ -29,11 +29,22 @@ impl DhcpServerEnv {
         remove_test_veth_nics(veth_cli);
         remove_test_net_namespace(netns);
 
+        // dora is Postgres-only, so provision a transient database for this test.
+        // The harness creates it over the admin `DATABASE_URL` (localhost), while
+        // the dora process — which runs inside the network namespace and cannot
+        // reach the host's loopback — connects to the same server over the veth at
+        // `DORA_TEST_DB_HOST` (the host side of the veth pair). Both addresses hit
+        // the same Postgres, so the database created here is visible to dora.
+        let db_name = pg_db_name(db);
+        block_on(ip_manager::postgres::create_test_database(&db_name))
+            .expect("failed to create test database");
+        let db_url = pg_url_for(&db_name);
+
         create_test_net_namespace(netns);
         create_test_veth_nics(netns, srv_ip, veth_cli, veth_srv);
         Self {
-            daemon: start_dhcp_server(config, netns, db),
-            db: db.to_owned(),
+            daemon: start_dhcp_server(config, netns, &db_url),
+            db_name,
             netns: netns.to_owned(),
             veth_cli: veth_cli.to_owned(),
             // veth_srv: veth_srv.to_owned(),
@@ -44,20 +55,47 @@ impl DhcpServerEnv {
 
 impl Drop for DhcpServerEnv {
     fn drop(&mut self) {
-        let db = &self.db;
         stop_dhcp_server(&mut self.daemon);
         remove_test_veth_nics(&self.veth_cli);
         remove_test_net_namespace(&self.netns);
-        if let Err(err) = fs::remove_file(db) {
-            eprintln!("{err:?}");
-        }
-        if let Err(err) = fs::remove_file(format!("{db}-shm")) {
-            eprintln!("{err:?}");
-        }
-        if let Err(err) = fs::remove_file(format!("{db}-wal")) {
-            eprintln!("{err:?}");
+        // best-effort: the daemon is dead, so its connection is gone; WITH (FORCE)
+        // in drop_test_database evicts any that lingers.
+        if let Err(err) = block_on(ip_manager::postgres::drop_test_database(&self.db_name)) {
+            eprintln!("failed to drop test database {}: {err:?}", self.db_name);
         }
     }
+}
+
+/// Run a future to completion on a throwaway current-thread runtime (the harness
+/// itself is synchronous; only the DB provisioning is async).
+fn block_on<F: std::future::Future>(fut: F) -> F::Output {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("failed to build test runtime")
+        .block_on(fut)
+}
+
+/// Derive a valid Postgres identifier from the test's legacy `.db` filename,
+/// e.g. `basic.db` -> `dora_it_basic_db`. Non-alphanumeric bytes become `_`.
+fn pg_db_name(db: &str) -> String {
+    let sanitized: String = db
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect();
+    format!("dora_it_{}", sanitized.to_ascii_lowercase())
+}
+
+/// Build the connection URL dora (inside the netns) uses to reach Postgres: take
+/// the admin `DATABASE_URL`'s credentials but point at `DORA_TEST_DB_HOST` (the
+/// host end of the veth, reachable from the namespace) and the per-test database.
+fn pg_url_for(db_name: &str) -> String {
+    let base = env::var("DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://dora:dora@localhost:5432/dora".to_string());
+    // credentials portion, i.e. everything before the '@' host segment
+    let creds = base.split('@').next().unwrap_or("postgres://dora:dora");
+    let host = env::var("DORA_TEST_DB_HOST").unwrap_or_else(|_| "192.168.2.99".to_string());
+    format!("{creds}@{host}/{db_name}")
 }
 
 const SUDO: &str = "sudo";
@@ -96,12 +134,12 @@ fn remove_test_veth_nics(veth_cli: &str) {
     run_cmd_ignore_failure(&format!("{SUDO} ip link del {veth_cli}"));
 }
 
-fn start_dhcp_server(config: &str, netns: &str, db: &str) -> Child {
+fn start_dhcp_server(config: &str, netns: &str, db_url: &str) -> Child {
     let workspace_root = env::var("WORKSPACE_ROOT").unwrap_or_else(|_| "..".to_owned());
     let bin_path = env!("CARGO_BIN_EXE_dora");
     let config_path = format!("{workspace_root}/bin/tests/test_configs/{config}");
     let dora_debug = format!(
-        "{bin_path} -d={db} --config-path={config_path} --threads=2 --dora-log=debug --v4-addr=0.0.0.0:9900",
+        "{bin_path} -d={db_url} --config-path={config_path} --threads=2 --dora-log=debug --v4-addr=0.0.0.0:9900",
     );
     let cmd = format!("{SUDO} ip netns exec {netns} {dora_debug}");
 

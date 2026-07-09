@@ -79,6 +79,26 @@ jobs:
   test:
     name: Test Suite
     runs-on: ubuntu-latest
+    # dora is Postgres-only; the test suite connects to a real database (each
+    # test provisions its own transient DB via PostgresDb::new_test), so CI
+    # runs a Postgres service. Builds stay offline via SQLX_OFFLINE + the
+    # committed sqlx-data.json; only the running tests need this service.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: dora
+          POSTGRES_PASSWORD: dora
+          POSTGRES_DB: dora
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgres://dora:dora@localhost:5432/dora
     steps:
       - name: Checkout sources
         uses: actions/checkout@v7
@@ -158,8 +178,25 @@ jobs:
   coverage:
     name: Run coverage
     runs-on: ubuntu-latest
+    # See the `test` job: the suite is Postgres-backed, so coverage needs the
+    # same service and DATABASE_URL.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: dora
+          POSTGRES_PASSWORD: dora
+          POSTGRES_DB: dora
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     env:
       CARGO_INCREMENTAL: "0"
+      DATABASE_URL: postgres://dora:dora@localhost:5432/dora
     steps:
       - name: Checkout sources
         uses: actions/checkout@v7

@@ -20,6 +20,6 @@ CREATE TABLE IF NOT EXISTS runtime_reservations(
     prefix     TEXT,
     network    TEXT,
     match_json TEXT    NOT NULL,
-    created_at INTEGER NOT NULL,
+    created_at BIGINT  NOT NULL,
     PRIMARY KEY (family, ip)
 );

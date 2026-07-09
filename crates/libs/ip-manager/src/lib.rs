@@ -20,7 +20,7 @@ use chrono::{SecondsFormat, offset::Utc};
 use thiserror::Error;
 use tracing::{debug, error, info, trace, warn};
 
-pub mod sqlite;
+pub mod postgres;
 
 mod pool;
 pub use pool::{NetworkParams, Pool};
@@ -70,8 +70,8 @@ pub enum IpState {
     Reserve,
 }
 
-/// our sqlite impl doesn't properly support enums, so this
-/// converts our 3 state system into 2 bools.
+/// the storage schema represents lease state as two booleans rather than an
+/// enum, so this converts our 3 state system into 2 bools.
 impl From<IpState> for (bool, bool) {
     fn from(state: IpState) -> Self {
         match state {
@@ -544,8 +544,8 @@ where
         let subnet = network.subnet();
         // family-neutral exclusion set for the storage layer
         let exclusions: HashSet<IpAddr> = range.exclusions();
-        // unfortunately the sqlite connection is sometimes unreliable under high contention, meaning
-        // we need to make a few attempts to get an address.
+        // allocation can lose a race under high contention (two clients picking
+        // the same candidate address), so we make a few attempts to get an address.
         let mut attempts = 0;
         loop {
             let ip_range = range.start()..=range.end();
@@ -1060,7 +1060,7 @@ mod tests {
     use std::net::Ipv4Addr;
 
     use super::*;
-    use crate::sqlite::SqliteDb;
+    use crate::postgres::PostgresDb;
     use config::LeaseTime;
     use config::v4::{NetRange, Network};
     use tracing_test::traced_test;
@@ -1072,7 +1072,7 @@ mod tests {
     #[tokio::test]
     #[traced_test]
     async fn test_first_available() -> Result<()> {
-        let mgr = IpManager::new(SqliteDb::new("sqlite::memory:").await?)?;
+        let mgr = IpManager::new(PostgresDb::new_test().await?)?;
         let range = NetRange::new(
             Ipv4Addr::new(192, 168, 1, 100)..=Ipv4Addr::new(192, 168, 1, 255),
             LeaseTime::new(
@@ -1133,7 +1133,7 @@ mod tests {
     #[tokio::test]
     #[traced_test]
     async fn test_reserve_first() -> Result<()> {
-        let mgr = IpManager::new(SqliteDb::new("sqlite::memory:").await?)?;
+        let mgr = IpManager::new(PostgresDb::new_test().await?)?;
         let range = NetRange::new(
             Ipv4Addr::new(192, 168, 1, 100)..=Ipv4Addr::new(192, 168, 1, 255),
             LeaseTime::new(
@@ -1193,7 +1193,7 @@ mod tests {
     #[tokio::test]
     #[traced_test]
     async fn test_first_available_ack() -> Result<()> {
-        let mgr = IpManager::new(SqliteDb::new("sqlite::memory:").await?)?;
+        let mgr = IpManager::new(PostgresDb::new_test().await?)?;
         let range = NetRange::new(
             Ipv4Addr::new(192, 168, 1, 100)..=Ipv4Addr::new(192, 168, 1, 255),
             LeaseTime::new(
@@ -1231,7 +1231,7 @@ mod tests {
     #[tokio::test]
     #[traced_test]
     async fn test_lease() -> Result<()> {
-        let mgr = IpManager::new(SqliteDb::new("sqlite::memory:").await?)?;
+        let mgr = IpManager::new(PostgresDb::new_test().await?)?;
         let range = NetRange::new(
             Ipv4Addr::new(192, 168, 1, 100)..=Ipv4Addr::new(192, 168, 1, 255),
             LeaseTime::new(
@@ -1265,7 +1265,7 @@ mod tests {
     #[tokio::test]
     #[traced_test]
     async fn test_select_all() -> Result<()> {
-        let mgr = IpManager::new(SqliteDb::new("sqlite::memory:").await?)?;
+        let mgr = IpManager::new(PostgresDb::new_test().await?)?;
         let range = NetRange::new(
             Ipv4Addr::new(192, 168, 1, 100)..=Ipv4Addr::new(192, 168, 1, 255),
             LeaseTime::new(
@@ -1320,7 +1320,7 @@ mod tests {
     #[tokio::test]
     #[traced_test]
     async fn test_lease_authoritative() -> Result<()> {
-        let mgr = IpManager::new(SqliteDb::new("sqlite::memory:").await?)?;
+        let mgr = IpManager::new(PostgresDb::new_test().await?)?;
         let range = NetRange::new(
             Ipv4Addr::new(192, 168, 1, 100)..=Ipv4Addr::new(192, 168, 1, 255),
             LeaseTime::new(
@@ -1371,7 +1371,7 @@ mod tests {
     #[tokio::test]
     #[traced_test]
     async fn test_multiple_ranges() -> Result<()> {
-        let mgr = IpManager::new(SqliteDb::new("sqlite::memory:").await?)?;
+        let mgr = IpManager::new(PostgresDb::new_test().await?)?;
         let range_a = NetRange::new(
             Ipv4Addr::new(192, 168, 1, 100)..=Ipv4Addr::new(192, 168, 1, 255),
             LeaseTime::new(
@@ -1445,7 +1445,7 @@ mod tests {
     #[tokio::test]
     #[traced_test]
     async fn test_fill_range() -> Result<()> {
-        let mgr = IpManager::new(SqliteDb::new("sqlite::memory:").await?)?;
+        let mgr = IpManager::new(PostgresDb::new_test().await?)?;
         let range = NetRange::new(
             Ipv4Addr::new(192, 168, 1, 100)..=Ipv4Addr::new(192, 168, 1, 255),
             LeaseTime::new(
@@ -1484,7 +1484,7 @@ mod tests {
     #[tokio::test]
     #[traced_test]
     async fn test_release_ip() -> Result<()> {
-        let mgr = IpManager::new(SqliteDb::new("sqlite::memory:").await?)?;
+        let mgr = IpManager::new(PostgresDb::new_test().await?)?;
         let range = NetRange::new(
             Ipv4Addr::new(192, 168, 1, 100)..=Ipv4Addr::new(192, 168, 1, 255),
             LeaseTime::new(
@@ -1542,7 +1542,7 @@ mod tests {
     #[tokio::test]
     #[traced_test]
     async fn test_probate_ip() -> Result<()> {
-        let mgr = IpManager::new(SqliteDb::new("sqlite::memory:").await?)?;
+        let mgr = IpManager::new(PostgresDb::new_test().await?)?;
         let range = NetRange::new(
             Ipv4Addr::new(192, 168, 1, 100)..=Ipv4Addr::new(192, 168, 1, 255),
             LeaseTime::new(
@@ -1598,7 +1598,7 @@ mod tests {
     #[tokio::test]
     #[traced_test]
     async fn test_ping_fail() -> Result<()> {
-        let mgr = IpManager::new(SqliteDb::new("sqlite::memory:").await?)?;
+        let mgr = IpManager::new(PostgresDb::new_test().await?)?;
         let range = NetRange::new(
             Ipv4Addr::new(192, 168, 1, 100)..=Ipv4Addr::new(192, 168, 1, 255),
             LeaseTime::new(
@@ -1638,7 +1638,7 @@ mod tests {
     #[tokio::test]
     #[traced_test]
     async fn test_bad_lookup() -> Result<()> {
-        let mgr = IpManager::new(SqliteDb::new("sqlite::memory:").await?)?;
+        let mgr = IpManager::new(PostgresDb::new_test().await?)?;
         let range = NetRange::new(
             Ipv4Addr::new(192, 168, 1, 100)..=Ipv4Addr::new(192, 168, 1, 255),
             LeaseTime::new(
@@ -1671,7 +1671,7 @@ mod tests {
         let (_subnet, net) = cfg.v6().get_first().expect("a v6 network");
         let range = &net.ranges()[0];
 
-        let mgr = IpManager::new(SqliteDb::new("sqlite::memory:").await?)?;
+        let mgr = IpManager::new(PostgresDb::new_test().await?)?;
         let exp = SystemTime::now() + Duration::from_secs(60);
 
         // first two clients get sequential addresses from the pool start
@@ -1705,7 +1705,7 @@ mod tests {
         let (_subnet, net) = cfg.v6().get_first().expect("a v6 network");
         let range = &net.ranges()[0];
 
-        let mgr = IpManager::new(SqliteDb::new("sqlite::memory:").await?)?;
+        let mgr = IpManager::new(PostgresDb::new_test().await?)?;
         let now = SystemTime::now();
         let ip = mgr
             .reserve_first(
@@ -1743,7 +1743,7 @@ mod tests {
         let pool = &net.pd_pools()[0]; // 2001:db8:100::/56 delegating /64
         let subnet = IpAddr::V6(net.full_subnet().network());
 
-        let mgr = IpManager::new(SqliteDb::new("sqlite::memory:").await?)?;
+        let mgr = IpManager::new(PostgresDb::new_test().await?)?;
         let exp = SystemTime::now() + Duration::from_secs(60);
 
         // sequential clients get consecutive /64s from the pool start

@@ -21,9 +21,9 @@ CREATE TABLE IF NOT EXISTS operations(
     result        TEXT,
     error_code    TEXT,
     error_message TEXT,
-    created_at    INTEGER NOT NULL,
-    started_at    INTEGER,
-    completed_at  INTEGER
+    created_at    BIGINT  NOT NULL,
+    started_at    BIGINT,
+    completed_at  BIGINT
 );
 -- listing/pruning is newest-first by creation time
 CREATE INDEX IF NOT EXISTS idx_operations_created_at ON operations (created_at);
