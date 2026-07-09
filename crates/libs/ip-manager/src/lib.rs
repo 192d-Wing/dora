@@ -209,6 +209,43 @@ pub trait Storage: Send + Sync + 'static {
     ) -> Result<Option<RuntimeReservationRecord>, Self::Error>;
     /// list all runtime reservations (used to warm the in-memory store on startup)
     async fn list_reservations(&self) -> Result<Vec<RuntimeReservationRecord>, Self::Error>;
+
+    // ---- config candidates --------------------------------------------------
+    /// insert or replace a staged config candidate, keyed by candidate_id
+    async fn upsert_config_candidate(
+        &self,
+        candidate: &ConfigCandidateRecord,
+    ) -> Result<(), Self::Error>;
+    /// fetch a config candidate by id
+    async fn get_config_candidate(
+        &self,
+        candidate_id: &str,
+    ) -> Result<Option<ConfigCandidateRecord>, Self::Error>;
+    /// list config candidates, newest first
+    async fn list_config_candidates(&self) -> Result<Vec<ConfigCandidateRecord>, Self::Error>;
+    /// the currently active candidate (status `activated`), if any
+    async fn active_config_candidate(&self) -> Result<Option<ConfigCandidateRecord>, Self::Error>;
+    /// atomically supersede the current active candidate and mark `candidate_id`
+    /// activated (one transaction, so the single active marker is never split)
+    async fn activate_config_candidate(
+        &self,
+        candidate_id: &str,
+        activated_at: SystemTime,
+    ) -> Result<(), Self::Error>;
+}
+
+/// A persisted staged config candidate (one row of `config_candidates`).
+/// `document` is the config text (YAML); `validation` is a JSON array of
+/// validation messages. Both are opaque to the storage layer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfigCandidateRecord {
+    pub candidate_id: String,
+    pub status: String,
+    pub document: String,
+    pub message: Option<String>,
+    pub validation: Option<String>,
+    pub created_at: SystemTime,
+    pub activated_at: Option<SystemTime>,
 }
 
 /// A persisted runtime (API-managed) host reservation (one row of the
@@ -677,6 +714,48 @@ where
         &self,
     ) -> Result<Vec<RuntimeReservationRecord>, IpError<T::Error>> {
         Ok(self.store.list_reservations().await?)
+    }
+
+    /// insert or replace a config candidate
+    pub async fn upsert_config_candidate(
+        &self,
+        candidate: &ConfigCandidateRecord,
+    ) -> Result<(), IpError<T::Error>> {
+        Ok(self.store.upsert_config_candidate(candidate).await?)
+    }
+
+    /// fetch a config candidate by id
+    pub async fn get_config_candidate(
+        &self,
+        candidate_id: &str,
+    ) -> Result<Option<ConfigCandidateRecord>, IpError<T::Error>> {
+        Ok(self.store.get_config_candidate(candidate_id).await?)
+    }
+
+    /// list config candidates, newest first
+    pub async fn list_config_candidates(
+        &self,
+    ) -> Result<Vec<ConfigCandidateRecord>, IpError<T::Error>> {
+        Ok(self.store.list_config_candidates().await?)
+    }
+
+    /// the currently active config candidate, if any
+    pub async fn active_config_candidate(
+        &self,
+    ) -> Result<Option<ConfigCandidateRecord>, IpError<T::Error>> {
+        Ok(self.store.active_config_candidate().await?)
+    }
+
+    /// atomically supersede the current active candidate and activate another
+    pub async fn activate_config_candidate(
+        &self,
+        candidate_id: &str,
+        activated_at: SystemTime,
+    ) -> Result<(), IpError<T::Error>> {
+        Ok(self
+            .store
+            .activate_config_candidate(candidate_id, activated_at)
+            .await?)
     }
 
     pub async fn get(&self, ip: IpAddr) -> Result<Option<State>, IpError<T::Error>> {

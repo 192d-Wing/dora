@@ -61,19 +61,19 @@ items annotated `— partial:` are started but incomplete.
 
 - [x] Change `/v1/config` to return structured redacted JSON, not YAML-as-string.
 - [x] Keep secret redaction guarantees for DDNS TSIG data.
-- [ ] Add full config management: read, validate, update, activate, reload, and rollback. — only read is implemented.
-- [ ] Add versioned staged config candidates.
-- [ ] Add candidate validation results.
-- [ ] Add rollback-capable activation history.
-- [ ] Ensure config writes are atomic.
-- [ ] Define file locking or single-writer behavior for concurrent config updates.
+- [x] Add full config management: read, validate, update, activate, reload, and rollback. — `GET/PUT /v1/config`, `GET/POST /v1/config/candidates`, `GET /v1/config/candidates/{id}`, and `reload`/`activate-config`/`rollback-config` actions. Config-write endpoints require mTLS when a client-CA is configured (GitOps), else Bearer.
+- [x] Add versioned staged config candidates. — DB-backed `config_candidates`; each candidate's id is its version.
+- [x] Add candidate validation results. — candidates are validated by parsing as a `DhcpConfig`; `ValidationMessage[]` recorded and returned.
+- [x] Add rollback-capable activation history. — activated candidates retain `activated_at`; `rollback-config` re-activates a prior version by id.
+- [x] Ensure config writes are atomic. — the config file is written via temp-file + fsync + rename.
+- [x] Define file locking or single-writer behavior for concurrent config updates. — activate/rollback hold a process-wide async write lock, serializing config writes; the datapath adopts the new config via graceful restart.
 
 ## Automation Actions
 
-- [x] Add action-oriented endpoints under `/v1/actions`. — partial: `maintenance-mode`, `drain`, `shutdown`, and `{create,update,delete}-reservation` implemented; config/lease/DDNS actions pending in later phases.
-- [ ] Implement reload config.
-- [ ] Implement activate config.
-- [ ] Implement rollback config.
+- [x] Add action-oriented endpoints under `/v1/actions`. — partial: `maintenance-mode`, `drain`, `shutdown`, `{create,update,delete}-reservation`, and `reload`/`activate-config`/`rollback-config` implemented; lease/DDNS actions pending in the final phase.
+- [x] Implement reload config. — `POST /v1/actions/reload` (validates the on-disk config, then graceful restart to adopt it).
+- [x] Implement activate config. — `POST /v1/actions/activate-config` (writes the candidate atomically + graceful restart), mTLS-gated.
+- [x] Implement rollback config. — `POST /v1/actions/rollback-config` (re-activates a prior version), mTLS-gated.
 - [ ] Implement release lease.
 - [ ] Allow per-request DDNS cleanup on lease release.
 - [ ] Implement trigger DDNS update and cleanup.

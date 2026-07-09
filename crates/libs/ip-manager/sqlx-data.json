@@ -18,6 +18,16 @@
     },
     "query": "\n            UPDATE leases_v6\n            SET leased = ?4, expires_at = ?5, probation = ?6, client_id = ?7\n            WHERE prefix_len = 128 AND addr IN\n               (\n                    SELECT addr FROM leases_v6\n                    WHERE prefix_len = 128\n                      AND ((expires_at > ?1) AND (client_id = ?2) AND (addr = ?3))\n                    ORDER BY addr LIMIT 1\n               )\n            RETURNING addr\n            "
   },
+  "04e6e302bbdb584e27a02b1130ff76c7af0e271931c870553d910bf51e0ed40f": {
+    "describe": {
+      "columns": [],
+      "nullable": [],
+      "parameters": {
+        "Right": 0
+      }
+    },
+    "query": "UPDATE config_candidates SET status = 'superseded' WHERE status = 'activated'"
+  },
   "0ed87a7db669b203bea70d30069fd27c97d74931053e69d39d5487075d575976": {
     "describe": {
       "columns": [
@@ -90,6 +100,16 @@
     },
     "query": "SELECT * FROM leases_v6 WHERE addr = ?1 AND client_id = ?2 AND prefix_len = 128"
   },
+  "113ca4eb68ef6da780071767b1e9fd56d3a4626d2bd44162f614ede50f72ea3b": {
+    "describe": {
+      "columns": [],
+      "nullable": [],
+      "parameters": {
+        "Right": 2
+      }
+    },
+    "query": "UPDATE config_candidates SET status = 'activated', activated_at = ?2 WHERE candidate_id = ?1"
+  },
   "11e2e48bae3b1518cd3dbcb34917e576fadcfb113f257266ec033faf27647fce": {
     "describe": {
       "columns": [
@@ -107,6 +127,70 @@
       }
     },
     "query": "SELECT COUNT(addr) as count_addr FROM leases_v6 WHERE leased = ?1 AND probation = ?2 AND expires_at > ?3"
+  },
+  "1462f0aaf2ec7a31a98d5365247bf2929cf4943a19c9ce9daeb0d8feb93006d4": {
+    "describe": {
+      "columns": [],
+      "nullable": [],
+      "parameters": {
+        "Right": 7
+      }
+    },
+    "query": "INSERT OR REPLACE INTO config_candidates (candidate_id, status, document, message, validation, created_at, activated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)"
+  },
+  "16d0a1030dd3030c6c0fa561ca1ee135a2a64960ccdb1915a88b15a60dd6298a": {
+    "describe": {
+      "columns": [
+        {
+          "name": "candidate_id!",
+          "ordinal": 0,
+          "type_info": "Text"
+        },
+        {
+          "name": "status!",
+          "ordinal": 1,
+          "type_info": "Text"
+        },
+        {
+          "name": "document!",
+          "ordinal": 2,
+          "type_info": "Text"
+        },
+        {
+          "name": "message?",
+          "ordinal": 3,
+          "type_info": "Text"
+        },
+        {
+          "name": "validation?",
+          "ordinal": 4,
+          "type_info": "Text"
+        },
+        {
+          "name": "created_at!",
+          "ordinal": 5,
+          "type_info": "Int64"
+        },
+        {
+          "name": "activated_at?",
+          "ordinal": 6,
+          "type_info": "Int64"
+        }
+      ],
+      "nullable": [
+        false,
+        false,
+        false,
+        true,
+        true,
+        false,
+        true
+      ],
+      "parameters": {
+        "Right": 0
+      }
+    },
+    "query": "SELECT candidate_id AS \"candidate_id!\", status AS \"status!\",\n                      document AS \"document!\", message AS \"message?\",\n                      validation AS \"validation?\", created_at AS \"created_at!\",\n                      activated_at AS \"activated_at?\"\n               FROM config_candidates ORDER BY created_at DESC"
   },
   "213e6a9396363f674b098e5b92d9a1a032ae1c82803238ab5fa322da082db50b": {
     "describe": {
@@ -305,6 +389,60 @@
       }
     },
     "query": "SELECT * FROM leases_v6 WHERE addr = ?1 AND prefix_len = 128"
+  },
+  "56054e920dd6390bfb7a2bb59c84b7f683ab64952a598c1f8e2841d84f0506b4": {
+    "describe": {
+      "columns": [
+        {
+          "name": "candidate_id!",
+          "ordinal": 0,
+          "type_info": "Text"
+        },
+        {
+          "name": "status!",
+          "ordinal": 1,
+          "type_info": "Text"
+        },
+        {
+          "name": "document!",
+          "ordinal": 2,
+          "type_info": "Text"
+        },
+        {
+          "name": "message?",
+          "ordinal": 3,
+          "type_info": "Text"
+        },
+        {
+          "name": "validation?",
+          "ordinal": 4,
+          "type_info": "Text"
+        },
+        {
+          "name": "created_at!",
+          "ordinal": 5,
+          "type_info": "Int64"
+        },
+        {
+          "name": "activated_at?",
+          "ordinal": 6,
+          "type_info": "Int64"
+        }
+      ],
+      "nullable": [
+        false,
+        false,
+        false,
+        true,
+        true,
+        false,
+        true
+      ],
+      "parameters": {
+        "Right": 0
+      }
+    },
+    "query": "SELECT candidate_id AS \"candidate_id!\", status AS \"status!\",\n                      document AS \"document!\", message AS \"message?\",\n                      validation AS \"validation?\", created_at AS \"created_at!\",\n                      activated_at AS \"activated_at?\"\n               FROM config_candidates WHERE status = 'activated'\n               ORDER BY activated_at DESC LIMIT 1"
   },
   "59eb7cdd3666b851164b3edbd05f40a021c9394ae2bc881cd39d8ce51d47c6eb": {
     "describe": {
@@ -1069,6 +1207,60 @@
       }
     },
     "query": "\n            UPDATE leases_v6\n            SET client_id = ?4, leased = ?5, expires_at = ?6, probation = FALSE\n            WHERE prefix_len = 128 AND addr IN\n               (\n                   SELECT addr FROM leases_v6\n                   WHERE prefix_len = 128\n                     AND (((expires_at < ?1) AND (addr >= ?2 AND addr <= ?3)) OR (client_id = ?4))\n                   ORDER BY addr LIMIT 1\n               )\n            RETURNING addr\n            "
+  },
+  "debd44b05d504f59c5b2b35f45d0b0f82348e8ded9c20a512f189fbadcb96b6e": {
+    "describe": {
+      "columns": [
+        {
+          "name": "candidate_id!",
+          "ordinal": 0,
+          "type_info": "Text"
+        },
+        {
+          "name": "status!",
+          "ordinal": 1,
+          "type_info": "Text"
+        },
+        {
+          "name": "document!",
+          "ordinal": 2,
+          "type_info": "Text"
+        },
+        {
+          "name": "message?",
+          "ordinal": 3,
+          "type_info": "Text"
+        },
+        {
+          "name": "validation?",
+          "ordinal": 4,
+          "type_info": "Text"
+        },
+        {
+          "name": "created_at!",
+          "ordinal": 5,
+          "type_info": "Int64"
+        },
+        {
+          "name": "activated_at?",
+          "ordinal": 6,
+          "type_info": "Int64"
+        }
+      ],
+      "nullable": [
+        false,
+        false,
+        false,
+        true,
+        true,
+        false,
+        true
+      ],
+      "parameters": {
+        "Right": 1
+      }
+    },
+    "query": "SELECT candidate_id AS \"candidate_id!\", status AS \"status!\",\n                      document AS \"document!\", message AS \"message?\",\n                      validation AS \"validation?\", created_at AS \"created_at!\",\n                      activated_at AS \"activated_at?\"\n               FROM config_candidates WHERE candidate_id = ?1"
   },
   "eda60b173904af51894fc1b08d849dddf57718c0b8df89cd9af5f1a82dec5f17": {
     "describe": {
