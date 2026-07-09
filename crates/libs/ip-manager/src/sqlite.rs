@@ -750,6 +750,30 @@ impl Storage for SqliteDb {
             activated_at: r.activated_at.map(util::to_systime),
         }))
     }
+
+    async fn activate_config_candidate(
+        &self,
+        candidate_id: &str,
+        activated_at: SystemTime,
+    ) -> Result<(), Self::Error> {
+        let ts = util::systime_epoch(activated_at);
+        let mut tx = self.inner.begin().await?;
+        sqlx::query!(
+            "UPDATE config_candidates SET status = 'superseded' WHERE status = 'activated'"
+        )
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query!(
+            "UPDATE config_candidates SET status = 'activated', activated_at = ?2 \
+             WHERE candidate_id = ?1",
+            candidate_id,
+            ts,
+        )
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(())
+    }
 }
 
 mod util {

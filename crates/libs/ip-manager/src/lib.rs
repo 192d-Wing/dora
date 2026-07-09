@@ -225,6 +225,13 @@ pub trait Storage: Send + Sync + 'static {
     async fn list_config_candidates(&self) -> Result<Vec<ConfigCandidateRecord>, Self::Error>;
     /// the currently active candidate (status `activated`), if any
     async fn active_config_candidate(&self) -> Result<Option<ConfigCandidateRecord>, Self::Error>;
+    /// atomically supersede the current active candidate and mark `candidate_id`
+    /// activated (one transaction, so the single active marker is never split)
+    async fn activate_config_candidate(
+        &self,
+        candidate_id: &str,
+        activated_at: SystemTime,
+    ) -> Result<(), Self::Error>;
 }
 
 /// A persisted staged config candidate (one row of `config_candidates`).
@@ -737,6 +744,18 @@ where
         &self,
     ) -> Result<Option<ConfigCandidateRecord>, IpError<T::Error>> {
         Ok(self.store.active_config_candidate().await?)
+    }
+
+    /// atomically supersede the current active candidate and activate another
+    pub async fn activate_config_candidate(
+        &self,
+        candidate_id: &str,
+        activated_at: SystemTime,
+    ) -> Result<(), IpError<T::Error>> {
+        Ok(self
+            .store
+            .activate_config_candidate(candidate_id, activated_at)
+            .await?)
     }
 
     pub async fn get(&self, ip: IpAddr) -> Result<Option<State>, IpError<T::Error>> {

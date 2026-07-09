@@ -18,6 +18,16 @@
     },
     "query": "\n            UPDATE leases_v6\n            SET leased = ?4, expires_at = ?5, probation = ?6, client_id = ?7\n            WHERE prefix_len = 128 AND addr IN\n               (\n                    SELECT addr FROM leases_v6\n                    WHERE prefix_len = 128\n                      AND ((expires_at > ?1) AND (client_id = ?2) AND (addr = ?3))\n                    ORDER BY addr LIMIT 1\n               )\n            RETURNING addr\n            "
   },
+  "04e6e302bbdb584e27a02b1130ff76c7af0e271931c870553d910bf51e0ed40f": {
+    "describe": {
+      "columns": [],
+      "nullable": [],
+      "parameters": {
+        "Right": 0
+      }
+    },
+    "query": "UPDATE config_candidates SET status = 'superseded' WHERE status = 'activated'"
+  },
   "0ed87a7db669b203bea70d30069fd27c97d74931053e69d39d5487075d575976": {
     "describe": {
       "columns": [
@@ -89,6 +99,16 @@
       }
     },
     "query": "SELECT * FROM leases_v6 WHERE addr = ?1 AND client_id = ?2 AND prefix_len = 128"
+  },
+  "113ca4eb68ef6da780071767b1e9fd56d3a4626d2bd44162f614ede50f72ea3b": {
+    "describe": {
+      "columns": [],
+      "nullable": [],
+      "parameters": {
+        "Right": 2
+      }
+    },
+    "query": "UPDATE config_candidates SET status = 'activated', activated_at = ?2 WHERE candidate_id = ?1"
   },
   "11e2e48bae3b1518cd3dbcb34917e576fadcfb113f257266ec033faf27647fce": {
     "describe": {

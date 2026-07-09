@@ -2083,17 +2083,39 @@ mod handlers {
     }
 
     /// Atomically replace `path`'s contents (write a sibling temp file, fsync,
-    /// rename) so a reader never sees a half-written config.
+    /// rename) so a reader never sees a half-written config. Resolves a symlinked
+    /// path so the real file is replaced (not the link), preserves the existing
+    /// file's permissions so a secret-bearing config isn't widened, and cleans up
+    /// the temp file on failure.
     fn atomic_write(path: &std::path::Path, contents: &[u8]) -> std::io::Result<()> {
         use std::io::Write;
-        let dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+        // follow a symlink (e.g. a k8s mount) to the real file, so rename doesn't
+        // replace the link with a plain file; if it doesn't exist yet, use as-is
+        let target = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+        let dir = target.parent().unwrap_or_else(|| std::path::Path::new("."));
         let tmp = dir.join(format!(".{}.tmp", new_candidate_id()));
-        {
+
+        let write = || -> std::io::Result<()> {
             let mut file = std::fs::File::create(&tmp)?;
             file.write_all(contents)?;
             file.sync_all()?;
+            drop(file);
+            // preserve the existing config's permissions — never widen a file that
+            // may hold TSIG key material
+            #[cfg(unix)]
+            if let Ok(meta) = std::fs::metadata(&target) {
+                use std::os::unix::fs::PermissionsExt;
+                let mode = meta.permissions().mode();
+                let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(mode));
+            }
+            std::fs::rename(&tmp, &target)
+        };
+
+        let result = write();
+        if result.is_err() {
+            let _ = std::fs::remove_file(&tmp);
         }
-        std::fs::rename(&tmp, path)
+        result
     }
 
     /// Write the candidate's document to the config file atomically and record
@@ -2107,7 +2129,7 @@ mod handlers {
     async fn activate<S: Storage>(
         ip_mgr: &IpManager<S>,
         cfg: &DhcpConfig,
-        mut candidate: ConfigCandidateRecord,
+        candidate: &ConfigCandidateRecord,
     ) -> ServerResult<()> {
         let _guard = CONFIG_WRITE_LOCK.lock().await;
         let path = cfg.path().ok_or_else(|| {
@@ -2118,7 +2140,10 @@ mod handlers {
             )
         })?;
         // re-validate immediately before writing, so we never persist a config
-        // the server can't boot from
+        // the server can't boot from. NOTE: this is parse-level validation (the
+        // same as the on-disk loader) — it does not bind interfaces/sockets, so a
+        // syntactically valid config that fails at that layer would surface on the
+        // restart; a full dry-run boot is a possible follow-up.
         config::DhcpConfig::parse_str(&candidate.document).map_err(|err| {
             crate::models::ServerError::conflict(format!("candidate no longer parses: {err:#}"))
         })?;
@@ -2129,16 +2154,11 @@ mod handlers {
                 anyhow::anyhow!(err),
             )
         })?;
-        // supersede the previously-active candidate
-        if let Some(mut prev) = ip_mgr.active_config_candidate().await?
-            && prev.candidate_id != candidate.candidate_id
-        {
-            prev.status = "superseded".to_string();
-            ip_mgr.upsert_config_candidate(&prev).await?;
-        }
-        candidate.status = "activated".to_string();
-        candidate.activated_at = Some(SystemTime::now());
-        ip_mgr.upsert_config_candidate(&candidate).await?;
+        // supersede the previous active candidate and mark this one activated in
+        // one transaction, so the single active marker is never split
+        ip_mgr
+            .activate_config_candidate(&candidate.candidate_id, SystemTime::now())
+            .await?;
         Ok(())
     }
 
@@ -2299,7 +2319,7 @@ mod handlers {
                 "cannot activate an invalid candidate",
             ));
         }
-        activate(&ip_mgr, &cfg, candidate).await?;
+        activate(&ip_mgr, &cfg, &candidate).await?;
         let operation_id = schedule_config_restart(
             &ip_mgr,
             shutdown,
@@ -2346,7 +2366,7 @@ mod handlers {
                 "version was never activated",
             ));
         }
-        activate(&ip_mgr, &cfg, candidate).await?;
+        activate(&ip_mgr, &cfg, &candidate).await?;
         let operation_id = schedule_config_restart(
             &ip_mgr,
             shutdown,
