@@ -4,3 +4,8 @@
 *.sh text eol=lf
 Containerfile text eol=lf
 entrypoint.sh text eol=lf
+
+# Vendored Swagger UI dist assets: keep byte-identical to the upstream download
+# (no line-ending conversion) so they match the documented re-vendor steps.
+crates/external-api/assets/swagger-ui/swagger-ui-bundle.js -text
+crates/external-api/assets/swagger-ui/swagger-ui.css -text

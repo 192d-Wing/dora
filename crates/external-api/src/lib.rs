@@ -3,8 +3,9 @@
 //! This crate serves dora's JSON management/observability API: health and
 //! readiness, server metadata, metrics, lease and reservation listings, and the
 //! (redacted) running config. The full contract is `docs/openapi.yaml`, also
-//! served at `GET /openapi.json`. Public routes are `/health`, `/ready`, and
-//! `/openapi.json`; the rest are gated by a Bearer token when configured.
+//! served at `GET /openapi.json` and rendered by a self-contained Swagger UI at
+//! `GET /docs`. Public routes are `/health`, `/ready`, `/openapi.json`, and the
+//! `/docs` assets; the rest are gated by a Bearer token when configured.
 #![warn(
     missing_debug_implementations,
     missing_docs,
@@ -310,6 +311,15 @@ fn api_router<S: Storage>(
         .route("/health", routing::get(handlers::health))
         .route("/ready", routing::get(handlers::ready))
         .route("/openapi.json", routing::get(handlers::openapi_json))
+        .route("/docs", routing::get(handlers::docs_html))
+        .route(
+            "/docs/swagger-ui-bundle.js",
+            routing::get(handlers::swagger_ui_bundle_js),
+        )
+        .route(
+            "/docs/swagger-ui.css",
+            routing::get(handlers::swagger_ui_css),
+        )
         .route("/v1/server", routing::get(handlers::server_info))
         .route(
             "/v1/metrics/summary",
@@ -539,6 +549,41 @@ mod handlers {
             request_id_header(&request_id)?,
             axum::Json(yaml_to_json(yaml)),
         ))
+    }
+
+    // Swagger UI is served self-contained (assets vendored into the binary) so
+    // it works in the air-gapped hardened container with no CDN. Like
+    // `openapi.json`, these are public — read-only docs, no data exposure.
+    const SWAGGER_UI_HTML: &str = include_str!("../assets/swagger-ui/index.html");
+    const SWAGGER_UI_JS: &str = include_str!("../assets/swagger-ui/swagger-ui-bundle.js");
+    const SWAGGER_UI_CSS: &str = include_str!("../assets/swagger-ui/swagger-ui.css");
+
+    pub(crate) async fn docs_html() -> impl IntoResponse {
+        (
+            [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
+            SWAGGER_UI_HTML,
+        )
+    }
+
+    pub(crate) async fn swagger_ui_bundle_js() -> impl IntoResponse {
+        (
+            [
+                (header::CONTENT_TYPE, "text/javascript; charset=utf-8"),
+                // version-pinned to the binary; safe to cache aggressively
+                (header::CACHE_CONTROL, "public, max-age=86400, immutable"),
+            ],
+            SWAGGER_UI_JS,
+        )
+    }
+
+    pub(crate) async fn swagger_ui_css() -> impl IntoResponse {
+        (
+            [
+                (header::CONTENT_TYPE, "text/css; charset=utf-8"),
+                (header::CACHE_CONTROL, "public, max-age=86400, immutable"),
+            ],
+            SWAGGER_UI_CSS,
+        )
     }
 
     pub(crate) async fn metrics_summary(
@@ -3754,6 +3799,48 @@ v4:
         assert!(body["paths"]["/health"].is_object());
         assert!(body["paths"]["/ready"].is_object());
         assert!(body["paths"]["/openapi.json"].is_object());
+        token.cancel();
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_swagger_ui_docs_public() -> anyhow::Result<()> {
+        // no bearer token is sent — the docs page and its assets must be public
+        let (addr, token) = spawn_test_api(Health::Good).await?;
+
+        let page = reqwest::get(format!("http://{addr}/docs"))
+            .await?
+            .error_for_status()?;
+        assert_eq!(
+            page.headers()[reqwest::header::CONTENT_TYPE],
+            "text/html; charset=utf-8"
+        );
+        let html = page.text().await?;
+        assert!(html.contains("swagger-ui"), "expected the Swagger UI shell");
+        assert!(
+            html.contains("/openapi.json"),
+            "docs page should point Swagger UI at the spec"
+        );
+
+        let js = reqwest::get(format!("http://{addr}/docs/swagger-ui-bundle.js"))
+            .await?
+            .error_for_status()?;
+        assert!(
+            js.headers()[reqwest::header::CONTENT_TYPE]
+                .to_str()?
+                .contains("javascript")
+        );
+        assert!(!js.text().await?.is_empty(), "bundle should be non-empty");
+
+        let css = reqwest::get(format!("http://{addr}/docs/swagger-ui.css"))
+            .await?
+            .error_for_status()?;
+        assert!(
+            css.headers()[reqwest::header::CONTENT_TYPE]
+                .to_str()?
+                .contains("css")
+        );
+
         token.cancel();
         Ok(())
     }
