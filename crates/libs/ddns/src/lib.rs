@@ -246,6 +246,10 @@ impl DdnsUpdate {
 /// the `ddns_cleanup` option of `release-lease`. Attempts the forward and reverse
 /// zones per the configured servers (TSIG-signed when a key is set). Best-effort:
 /// the caller decides whether a DNS/network error fails the action.
+///
+/// Forward is applied before reverse; if the forward zone commits and the reverse
+/// zone then errors, the forward change persists and the call returns `Err`
+/// (inherent to updating two independent DNS servers).
 pub async fn apply(
     cfg: &Ddns,
     id: DhcId,

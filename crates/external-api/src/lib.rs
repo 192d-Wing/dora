@@ -2577,6 +2577,14 @@ mod handlers {
         let ip: IpAddr = req.ip.parse().map_err(|_| {
             crate::models::ServerError::bad_request(format!("invalid ip {}", req.ip))
         })?;
+        if !matches!(
+            (req.family.as_str(), ip),
+            ("v4", IpAddr::V4(_)) | ("v6", IpAddr::V6(_))
+        ) {
+            return Err(crate::models::ServerError::bad_request(
+                "family does not match ip",
+            ));
+        }
         let IpAddr::V4(v4) = ip else {
             return Err(crate::models::ServerError::bad_request(
                 "DDNS is only supported for v4 addresses",
@@ -2604,14 +2612,26 @@ mod handlers {
                 "client_id is required when a hostname is given",
             ));
         }
-        let id = req
+        // Build the DHCID with the identifier type the server used at lease time
+        // (defaults to client_id). Using the wrong type produces a DHCID that
+        // won't match the record, so a forward cleanup would find nothing.
+        let id_bytes = req
             .client_id
             .as_deref()
             .map(hex::decode)
             .transpose()
             .map_err(|_| crate::models::ServerError::bad_request("client_id must be hex"))?
-            .map(ddns::dhcid::DhcId::client_id)
-            .unwrap_or_else(|| ddns::dhcid::DhcId::client_id(Vec::new()));
+            .unwrap_or_default();
+        let id = match req.id_type.as_deref() {
+            None | Some("client_id") => ddns::dhcid::DhcId::client_id(id_bytes),
+            Some("chaddr") => ddns::dhcid::DhcId::chaddr(id_bytes),
+            Some("duid") => ddns::dhcid::DhcId::duid(id_bytes),
+            Some(other) => {
+                return Err(crate::models::ServerError::bad_request(format!(
+                    "id_type must be chaddr, client_id, or duid, got '{other}'"
+                )));
+            }
+        };
 
         // manual DDNS updates use a default TTL (there is no lease context here)
         const DDNS_TTL: Duration = Duration::from_secs(3600);
@@ -3150,6 +3170,11 @@ pub mod models {
         /// Hex client identifier; required when a `hostname` is given (DHCID).
         #[serde(default)]
         pub client_id: Option<String>,
+        /// How to interpret `client_id` when forming the DHCID (must match what
+        /// the server used at lease time): `chaddr`, `client_id` (default), or
+        /// `duid`.
+        #[serde(default)]
+        pub id_type: Option<String>,
         /// Return `202` with an operation instead of `200`.
         #[serde(default, rename = "async")]
         pub r#async: bool,

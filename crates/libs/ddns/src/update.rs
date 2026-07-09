@@ -122,6 +122,12 @@ impl Updater {
 
     /// Remove the reverse PTR + DHCID records for `leased`'s in-addr.arpa name.
     /// Keyed only by the address, so no hostname/DHCID is needed.
+    ///
+    /// CAVEAT: unlike [`Self::forward_cleanup`] this is NOT DHCID-gated (the
+    /// reverse record has no per-client name to hash), so if the address has
+    /// been re-leased to another client this would remove that client's PTR.
+    /// Callers should only reverse-cleanup an address they just released. This
+    /// matches ISC dhcpd's reverse-cleanup behavior.
     pub async fn reverse_cleanup(
         &mut self,
         zone: Name,
@@ -138,9 +144,11 @@ impl Updater {
         let request = DnsRequest::new(message, DnsRequestOptions::default());
         let resp = self.client.send_message(request).first_answer().await?;
         match resp.response_code {
-            // NoError = deleted; NXDomain/NXRRSet = the record was already gone,
-            // which for a cleanup is the desired end state
-            ResponseCode::NoError | ResponseCode::NXDomain => Ok(()),
+            // NoError = deleted. NXDomain (name absent) and NXRRSet (the DHCID
+            // prerequisite didn't match, or the RRset was already gone) both mean
+            // there is nothing of ours left to remove — the desired end state for
+            // an idempotent, DHCID-gated cleanup.
+            ResponseCode::NoError | ResponseCode::NXDomain | ResponseCode::NXRRSet => Ok(()),
             rc => Err(UpdateError::ResponseCode(rc)),
         }
     }
