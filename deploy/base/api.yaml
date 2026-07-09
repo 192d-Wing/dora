@@ -34,7 +34,7 @@ spec:
                 topologyKey: kubernetes.io/hostname
       containers:
         - name: dora
-          image: dora:latest
+          image: usg-dora:latest
           args:
             - "--role"
             - "api"
