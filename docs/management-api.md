@@ -15,7 +15,16 @@ Two mechanisms, and a request is authorized if **either** succeeds:
   request presenting a certificate that verifies against the trust anchors is
   authorized without a bearer token.
 
-Public routes (no auth): `GET /health`, `GET /ready`, `GET /openapi.json`.
+Public routes (no auth): `GET /health`, `GET /ready`, `GET /openapi.json`, and
+`GET /docs` (interactive Swagger UI + its assets).
+
+### Interactive docs
+
+`GET /docs` serves a [Swagger UI](https://github.com/swagger-api/swagger-ui)
+page rendering the live contract from `GET /openapi.json`. The assets are
+vendored into the binary (no CDN), so the page works in an air-gapped
+deployment. Use the **Authorize** button to supply a Bearer token before trying
+authenticated endpoints from the browser.
 
 ### TLS / mTLS deployment
 
