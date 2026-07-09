@@ -105,6 +105,45 @@ impl Updater {
             Err(UpdateError::ResponseCode(resp.response_code))
         }
     }
+
+    /// Remove the forward A + DHCID records for `name` (RFC 4703 §5.5), but only
+    /// if the DHCID matches this client's, so we never delete another client's
+    /// records. NXDOMAIN/NXRRSET (already gone) is treated as success.
+    pub async fn forward_cleanup(
+        &mut self,
+        zone: Name,
+        domain: Name,
+        duid: DhcId,
+        leased: Ipv4Addr,
+    ) -> Result<(), UpdateError> {
+        let message = cleanup_forward(zone, domain, duid, leased, false)?;
+        self.send_delete(message).await
+    }
+
+    /// Remove the reverse PTR + DHCID records for `leased`'s in-addr.arpa name.
+    /// Keyed only by the address, so no hostname/DHCID is needed.
+    pub async fn reverse_cleanup(
+        &mut self,
+        zone: Name,
+        leased: Ipv4Addr,
+    ) -> Result<(), UpdateError> {
+        let message = cleanup_reverse(zone, leased, false)?;
+        self.send_delete(message).await
+    }
+
+    async fn send_delete(
+        &mut self,
+        message: hickory_proto::op::Message,
+    ) -> Result<(), UpdateError> {
+        let request = DnsRequest::new(message, DnsRequestOptions::default());
+        let resp = self.client.send_message(request).first_answer().await?;
+        match resp.response_code {
+            // NoError = deleted; NXDomain/NXRRSet = the record was already gone,
+            // which for a cleanup is the desired end state
+            ResponseCode::NoError | ResponseCode::NXDomain => Ok(()),
+            rc => Err(UpdateError::ResponseCode(rc)),
+        }
+    }
 }
 
 impl Drop for Updater {
@@ -221,6 +260,71 @@ pub fn delete(
     message.add_update(dhcid_record);
 
     trace!(?message, "created delete message");
+    Ok(message)
+}
+
+/// Build a forward-zone cleanup: delete the A RR + DHCID RRset at `name`, gated
+/// on a prerequisite that our DHCID is present (so another client's identically
+/// named records are never removed). RFC 4703 §5.5 / RFC 2136 §2.5.
+pub fn cleanup_forward(
+    zone_origin: Name,
+    name: Name,
+    duid: DhcId,
+    leased: Ipv4Addr,
+    use_edns: bool,
+) -> Result<hickory_proto::op::Message, NameError> {
+    use hickory_proto::{
+        op::UpdateMessage,
+        rr::{RData, Record, rdata::NULL},
+    };
+
+    let mut message = update_msg(zone_origin, use_edns);
+
+    // prerequisite: the DHCID RR at `name` equals ours (value-dependent, class IN)
+    let dhcid = NULL::with(duid.rdata(&name)?);
+    let dhcid_prereq = Record::from_rdata(
+        name.clone(),
+        0,
+        RData::Unknown {
+            code: Unknown(49),
+            rdata: dhcid.clone(),
+        },
+    );
+    message.add_pre_requisite(dhcid_prereq);
+
+    // delete this specific A RR (class NONE), and the DHCID RRset (class ANY)
+    let mut a_del = Record::from_rdata(name.clone(), 0, A(leased).into_rdata());
+    a_del.dns_class = DNSClass::NONE;
+    let mut dhcid_del = Record::update0(name, 0, RecordType::Unknown(49));
+    dhcid_del.dns_class = DNSClass::ANY;
+    message.add_update(a_del);
+    message.add_update(dhcid_del);
+
+    trace!(?message, "created forward cleanup message");
+    Ok(message)
+}
+
+/// Build a reverse-zone cleanup: delete the PTR + DHCID RRsets at the leased
+/// address's in-addr.arpa name.
+pub fn cleanup_reverse(
+    zone_origin: Name,
+    leased: Ipv4Addr,
+    use_edns: bool,
+) -> Result<hickory_proto::op::Message, NameError> {
+    use hickory_proto::{op::UpdateMessage, rr::Record};
+
+    let rev_ip = Name::from_str(&reverse_ip(leased))?;
+    let mut message = update_msg(zone_origin, use_edns);
+
+    // delete the PTR and DHCID RRsets at the reverse name (class ANY, ttl 0)
+    let mut ptr_del = Record::update0(rev_ip.clone(), 0, RecordType::PTR);
+    ptr_del.dns_class = DNSClass::ANY;
+    let mut dhcid_del = Record::update0(rev_ip, 0, RecordType::Unknown(49));
+    dhcid_del.dns_class = DNSClass::ANY;
+    message.add_update(ptr_del);
+    message.add_update(dhcid_del);
+
+    trace!(?message, "created reverse cleanup message");
     Ok(message)
 }
 
