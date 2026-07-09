@@ -333,10 +333,34 @@ fn api_router<S: Storage>(
             "/v1/reservations/v6",
             routing::get(handlers::reservations_v6),
         )
-        .route("/v1/config", routing::get(handlers::config))
+        .route(
+            "/v1/config",
+            routing::get(handlers::config::<S>).put(handlers::create_config_candidate::<S>),
+        )
+        .route(
+            "/v1/config/candidates",
+            routing::get(handlers::list_config_candidates::<S>)
+                .post(handlers::create_config_candidate::<S>),
+        )
+        .route(
+            "/v1/config/candidates/:candidate_id",
+            routing::get(handlers::get_config_candidate::<S>),
+        )
         .route(
             "/v1/operations/:operation_id",
             routing::get(handlers::get_operation::<S>),
+        )
+        .route(
+            "/v1/actions/reload",
+            routing::post(handlers::reload_config::<S>),
+        )
+        .route(
+            "/v1/actions/activate-config",
+            routing::post(handlers::activate_config::<S>),
+        )
+        .route(
+            "/v1/actions/rollback-config",
+            routing::post(handlers::rollback_config::<S>),
         )
         .route(
             "/v1/actions/maintenance-mode",
@@ -434,7 +458,8 @@ mod handlers {
     use dora_core::metrics::{START_TIME, UPTIME};
     use dora_core::mode::{ServerMode, SharedMode};
     use ip_manager::{
-        IpManager, OperationRecord, OperationStatus, RuntimeReservationRecord, Storage,
+        ConfigCandidateRecord, IpManager, OperationRecord, OperationStatus,
+        RuntimeReservationRecord, Storage,
     };
     use ipnet::Ipv4Net;
     use prometheus::{Encoder, ProtobufEncoder, TextEncoder};
@@ -445,14 +470,15 @@ mod handlers {
     use tracing::{error, warn};
 
     use crate::models::{
-        ActionResult, ConfigDocument, DeleteReservationRequest, DrainRequest, Health,
+        ActionResult, ActivateConfigRequest, ConfigCandidate, ConfigCandidateListResponse,
+        ConfigDocument, ConfigUpdateRequest, DeleteReservationRequest, DrainRequest, Health,
         HealthResponse, Histogram, HistogramBucket, MaintenanceModeRequest, MetricFamily,
         MetricSample, MetricsDetailed, MetricsSummary, OpenMetricsJson, Operation,
         OperationAccepted, OperationLinks, PaginationMeta, ProtocolMetricsSummary, ReadinessCheck,
-        ReadinessResponse, ReadinessStatus, ReservationMutationRequest, ReserveIp, ServerApiInfo,
-        ServerInfo, ServerResult, ShutdownRequest, State, V4Lease, V4LeaseListResponse,
-        V4Reservation, V4ReservationListResponse, V6Lease, V6LeaseListResponse, V6Reservation,
-        V6ReservationListResponse,
+        ReadinessResponse, ReadinessStatus, ReloadRequest, ReservationMutationRequest, ReserveIp,
+        RollbackConfigRequest, ServerApiInfo, ServerInfo, ServerResult, ShutdownRequest, State,
+        V4Lease, V4LeaseListResponse, V4Reservation, V4ReservationListResponse, V6Lease,
+        V6LeaseListResponse, V6Reservation, V6ReservationListResponse, ValidationMessage,
     };
 
     const OPENAPI_YAML: &str = include_str!("../../../docs/openapi.yaml");
@@ -1917,10 +1943,11 @@ mod handlers {
         )
     }
 
-    pub(crate) async fn config(
+    pub(crate) async fn config<S: Storage>(
         headers: HeaderMap,
         Extension(auth): Extension<crate::ApiAuth>,
         Extension(cfg): Extension<Arc<DhcpConfig>>,
+        Extension(ip_mgr): Extension<Arc<IpManager<S>>>,
     ) -> ServerResult<impl IntoResponse> {
         authorize(&headers, &auth)?;
         let request_id = request_id();
@@ -1935,10 +1962,16 @@ mod handlers {
         // into the typed wire config, blank out every secret, and re-serialize. If
         // it cannot be parsed we return an error rather than risk leaking secrets.
         let redacted = redact_config(&raw).context("failed to render config for display")?;
+        // the active version is the id of the activated candidate, if any
+        let version = ip_mgr
+            .active_config_candidate()
+            .await?
+            .map(|c| c.candidate_id)
+            .unwrap_or_else(|| "bootstrap".to_string());
         Ok((
             request_id_header(&request_id)?,
             axum::Json(ConfigDocument {
-                version: "v1".to_string(),
+                version,
                 redacted: true,
                 document: serde_json::to_value(redacted)?,
             }),
@@ -1966,6 +1999,440 @@ mod handlers {
             }
         }
         Ok(cfg)
+    }
+
+    // ---- config lifecycle -------------------------------------------------
+
+    /// grace before an activate/rollback/reload restarts the process, so the
+    /// `202` response can flush first
+    const CONFIG_RESTART_GRACE: Duration = Duration::from_secs(2);
+
+    /// Require privileged auth for config-lifecycle writes: a verified client
+    /// cert (mTLS) when a client-CA is configured (production / GitOps), else the
+    /// Bearer token (dev / no client-CA). This is how config pushes are gated to
+    /// the GitOps orchestrator's certificate in production.
+    fn authorize_privileged(headers: &HeaderMap, auth: &crate::ApiAuth) -> ServerResult<()> {
+        if auth.mtls_enabled {
+            if headers.get(crate::MTLS_HEADER).is_some_and(|v| v == "1") {
+                Ok(())
+            } else {
+                Err(crate::models::ServerError::forbidden(
+                    "this endpoint requires client-certificate (mTLS) authentication",
+                ))
+            }
+        } else {
+            authorize(headers, auth)
+        }
+    }
+
+    fn new_candidate_id() -> String {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|e| e.as_nanos())
+            .unwrap_or_default();
+        let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+        format!("cfg-{nanos:x}-{seq:x}")
+    }
+
+    /// Validate a candidate document by parsing it as a `DhcpConfig`. Returns the
+    /// status (`valid`/`invalid`), any validation messages, and the text to
+    /// persist / write to disk on activation.
+    fn validate_document(document: &serde_json::Value) -> (String, Vec<ValidationMessage>, String) {
+        let text = serde_json::to_string_pretty(document).unwrap_or_default();
+        match config::DhcpConfig::parse_str(&text) {
+            Ok(_) => ("valid".to_string(), Vec::new(), text),
+            Err(err) => (
+                "invalid".to_string(),
+                vec![ValidationMessage {
+                    level: "error".to_string(),
+                    path: None,
+                    message: format!("{err:#}"),
+                }],
+                text,
+            ),
+        }
+    }
+
+    /// Map a stored candidate to the API shape. The document is redacted (and
+    /// omitted if it can't be parsed) so secrets are never returned.
+    fn candidate_to_json(record: ConfigCandidateRecord, include_document: bool) -> ConfigCandidate {
+        let to_rfc3339 = |t: SystemTime| DateTime::<Utc>::from(t).to_rfc3339();
+        let validation: Vec<ValidationMessage> = record
+            .validation
+            .as_deref()
+            .and_then(|s| serde_json::from_str(s).ok())
+            .unwrap_or_default();
+        let document = if include_document {
+            redact_config(&record.document)
+                .ok()
+                .and_then(|c| serde_json::to_value(c).ok())
+        } else {
+            None
+        };
+        ConfigCandidate {
+            candidate_id: record.candidate_id,
+            status: record.status,
+            created_at: to_rfc3339(record.created_at),
+            activated_at: record.activated_at.map(to_rfc3339),
+            message: record.message,
+            validation,
+            document,
+        }
+    }
+
+    /// Atomically replace `path`'s contents (write a sibling temp file, fsync,
+    /// rename) so a reader never sees a half-written config.
+    fn atomic_write(path: &std::path::Path, contents: &[u8]) -> std::io::Result<()> {
+        use std::io::Write;
+        let dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+        let tmp = dir.join(format!(".{}.tmp", new_candidate_id()));
+        {
+            let mut file = std::fs::File::create(&tmp)?;
+            file.write_all(contents)?;
+            file.sync_all()?;
+        }
+        std::fs::rename(&tmp, path)
+    }
+
+    /// Write the candidate's document to the config file atomically and record
+    /// the activation in the DB (superseding the previous active candidate).
+    /// Serializes config writes (activate / rollback) process-wide, so two
+    /// concurrent activations can't interleave the file write and the DB
+    /// active-marker update (single-writer behavior).
+    static CONFIG_WRITE_LOCK: std::sync::LazyLock<tokio::sync::Mutex<()>> =
+        std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
+
+    async fn activate<S: Storage>(
+        ip_mgr: &IpManager<S>,
+        cfg: &DhcpConfig,
+        mut candidate: ConfigCandidateRecord,
+    ) -> ServerResult<()> {
+        let _guard = CONFIG_WRITE_LOCK.lock().await;
+        let path = cfg.path().ok_or_else(|| {
+            crate::models::ServerError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                anyhow::anyhow!("server has no config file path"),
+            )
+        })?;
+        // re-validate immediately before writing, so we never persist a config
+        // the server can't boot from
+        config::DhcpConfig::parse_str(&candidate.document).map_err(|err| {
+            crate::models::ServerError::conflict(format!("candidate no longer parses: {err:#}"))
+        })?;
+        atomic_write(path, candidate.document.as_bytes()).map_err(|err| {
+            crate::models::ServerError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                anyhow::anyhow!(err),
+            )
+        })?;
+        // supersede the previously-active candidate
+        if let Some(mut prev) = ip_mgr.active_config_candidate().await?
+            && prev.candidate_id != candidate.candidate_id
+        {
+            prev.status = "superseded".to_string();
+            ip_mgr.upsert_config_candidate(&prev).await?;
+        }
+        candidate.status = "activated".to_string();
+        candidate.activated_at = Some(SystemTime::now());
+        ip_mgr.upsert_config_candidate(&candidate).await?;
+        Ok(())
+    }
+
+    /// Record an accepted operation and schedule a graceful restart (so the
+    /// datapath adopts the freshly-written config). Returns the operation id.
+    async fn schedule_config_restart<S: Storage>(
+        ip_mgr: &Arc<IpManager<S>>,
+        shutdown: CancellationToken,
+        action: &str,
+        actor: Option<String>,
+        input: serde_json::Value,
+    ) -> ServerResult<String> {
+        let operation_id = new_operation_id();
+        let now = SystemTime::now();
+        let record = OperationRecord {
+            operation_id: operation_id.clone(),
+            action: action.to_string(),
+            status: OperationStatus::Accepted,
+            actor,
+            input_summary: Some(input.to_string()),
+            result: None,
+            error_code: None,
+            error_message: None,
+            created_at: now,
+            started_at: None,
+            completed_at: None,
+        };
+        ip_mgr.insert_operation(&record).await?;
+        let ip_mgr = Arc::clone(ip_mgr);
+        tokio::spawn(async move {
+            let mut record = record;
+            record.status = OperationStatus::Running;
+            record.started_at = Some(SystemTime::now());
+            let _ = ip_mgr.update_operation(&record).await;
+            tokio::time::sleep(CONFIG_RESTART_GRACE).await;
+            record.status = OperationStatus::Succeeded;
+            record.completed_at = Some(SystemTime::now());
+            record.result = Some(serde_json::json!({ "restarted": true }).to_string());
+            let _ = ip_mgr.update_operation(&record).await;
+            shutdown.cancel();
+        });
+        Ok(operation_id)
+    }
+
+    /// `PUT /v1/config` / `POST /v1/config/candidates` — stage + validate a
+    /// candidate configuration.
+    pub(crate) async fn create_config_candidate<S: Storage>(
+        headers: HeaderMap,
+        Extension(auth): Extension<crate::ApiAuth>,
+        Extension(ip_mgr): Extension<Arc<IpManager<S>>>,
+        body: Bytes,
+    ) -> ServerResult<axum::response::Response> {
+        authorize_privileged(&headers, &auth)?;
+        let request_id = request_id();
+        let req: ConfigUpdateRequest = parse_required_body(&body)?;
+        let (status, validation, text) = validate_document(&req.document);
+        let candidate_id = new_candidate_id();
+        let record = ConfigCandidateRecord {
+            candidate_id: candidate_id.clone(),
+            status: status.clone(),
+            document: text,
+            message: req.message,
+            validation: Some(serde_json::to_string(&validation).unwrap_or_default()),
+            created_at: SystemTime::now(),
+            activated_at: None,
+        };
+        ip_mgr.upsert_config_candidate(&record).await?;
+        // best-effort audit trail
+        let _ = record_sync_action(
+            &ip_mgr,
+            "stage-config",
+            actor(&auth),
+            serde_json::json!({ "candidate_id": candidate_id }),
+            serde_json::json!({ "candidate_id": candidate_id, "status": status }),
+        )
+        .await;
+        Ok((
+            StatusCode::ACCEPTED,
+            request_id_header(&request_id)?,
+            axum::Json(OperationAccepted {
+                operation_id: candidate_id.clone(),
+                status: "accepted".to_string(),
+                links: Some(OperationLinks {
+                    self_link: Some(format!("/v1/config/candidates/{candidate_id}")),
+                }),
+            }),
+        )
+            .into_response())
+    }
+
+    /// `GET /v1/config/candidates` — list candidates (newest first, documents omitted).
+    pub(crate) async fn list_config_candidates<S: Storage>(
+        headers: HeaderMap,
+        Extension(auth): Extension<crate::ApiAuth>,
+        Extension(ip_mgr): Extension<Arc<IpManager<S>>>,
+        Query(query): Query<LeaseListQuery>,
+    ) -> ServerResult<impl IntoResponse> {
+        authorize(&headers, &auth)?;
+        let request_id = request_id();
+        let items: Vec<ConfigCandidate> = ip_mgr
+            .list_config_candidates()
+            .await?
+            .into_iter()
+            .map(|r| candidate_to_json(r, false))
+            .collect();
+        let (meta, items) = paginate(items, &query);
+        Ok((
+            request_id_header(&request_id)?,
+            axum::Json(ConfigCandidateListResponse { meta, items }),
+        ))
+    }
+
+    /// `GET /v1/config/candidates/{candidate_id}` — one candidate (redacted document).
+    pub(crate) async fn get_config_candidate<S: Storage>(
+        headers: HeaderMap,
+        Extension(auth): Extension<crate::ApiAuth>,
+        Extension(ip_mgr): Extension<Arc<IpManager<S>>>,
+        Path(candidate_id): Path<String>,
+    ) -> ServerResult<impl IntoResponse> {
+        authorize(&headers, &auth)?;
+        let request_id = request_id();
+        let record = ip_mgr
+            .get_config_candidate(&candidate_id)
+            .await?
+            .ok_or_else(|| {
+                crate::models::ServerError::not_found(format!("candidate {candidate_id} not found"))
+            })?;
+        Ok((
+            request_id_header(&request_id)?,
+            axum::Json(candidate_to_json(record, true)),
+        ))
+    }
+
+    /// `POST /v1/actions/activate-config` — activate a valid candidate (writes the
+    /// config file, records history, restarts to adopt it).
+    pub(crate) async fn activate_config<S: Storage>(
+        headers: HeaderMap,
+        Extension(auth): Extension<crate::ApiAuth>,
+        Extension(ip_mgr): Extension<Arc<IpManager<S>>>,
+        Extension(cfg): Extension<Arc<DhcpConfig>>,
+        Extension(shutdown): Extension<CancellationToken>,
+        body: Bytes,
+    ) -> ServerResult<axum::response::Response> {
+        authorize_privileged(&headers, &auth)?;
+        let request_id = request_id();
+        let req: ActivateConfigRequest = parse_required_body(&body)?;
+        let candidate = ip_mgr
+            .get_config_candidate(&req.candidate_id)
+            .await?
+            .ok_or_else(|| {
+                crate::models::ServerError::not_found(format!(
+                    "candidate {} not found",
+                    req.candidate_id
+                ))
+            })?;
+        if candidate.status == "invalid" {
+            return Err(crate::models::ServerError::conflict(
+                "cannot activate an invalid candidate",
+            ));
+        }
+        activate(&ip_mgr, &cfg, candidate).await?;
+        let operation_id = schedule_config_restart(
+            &ip_mgr,
+            shutdown,
+            "activate-config",
+            actor(&auth),
+            serde_json::json!({ "candidate_id": req.candidate_id }),
+        )
+        .await?;
+        Ok((
+            StatusCode::ACCEPTED,
+            request_id_header(&request_id)?,
+            axum::Json(OperationAccepted {
+                operation_id: operation_id.clone(),
+                status: "accepted".to_string(),
+                links: Some(OperationLinks {
+                    self_link: Some(format!("/v1/operations/{operation_id}")),
+                }),
+            }),
+        )
+            .into_response())
+    }
+
+    /// `POST /v1/actions/rollback-config` — re-activate a previously-activated
+    /// version (candidate id).
+    pub(crate) async fn rollback_config<S: Storage>(
+        headers: HeaderMap,
+        Extension(auth): Extension<crate::ApiAuth>,
+        Extension(ip_mgr): Extension<Arc<IpManager<S>>>,
+        Extension(cfg): Extension<Arc<DhcpConfig>>,
+        Extension(shutdown): Extension<CancellationToken>,
+        body: Bytes,
+    ) -> ServerResult<axum::response::Response> {
+        authorize_privileged(&headers, &auth)?;
+        let request_id = request_id();
+        let req: RollbackConfigRequest = parse_required_body(&body)?;
+        let candidate = ip_mgr
+            .get_config_candidate(&req.version)
+            .await?
+            .ok_or_else(|| {
+                crate::models::ServerError::not_found(format!("version {} not found", req.version))
+            })?;
+        if candidate.activated_at.is_none() {
+            return Err(crate::models::ServerError::conflict(
+                "version was never activated",
+            ));
+        }
+        activate(&ip_mgr, &cfg, candidate).await?;
+        let operation_id = schedule_config_restart(
+            &ip_mgr,
+            shutdown,
+            "rollback-config",
+            actor(&auth),
+            serde_json::json!({ "version": req.version }),
+        )
+        .await?;
+        Ok((
+            StatusCode::ACCEPTED,
+            request_id_header(&request_id)?,
+            axum::Json(OperationAccepted {
+                operation_id: operation_id.clone(),
+                status: "accepted".to_string(),
+                links: Some(OperationLinks {
+                    self_link: Some(format!("/v1/operations/{operation_id}")),
+                }),
+            }),
+        )
+            .into_response())
+    }
+
+    /// `POST /v1/actions/reload` — re-read the on-disk config by restarting (after
+    /// validating it still parses). Returns `202` (async) or `200`.
+    pub(crate) async fn reload_config<S: Storage>(
+        headers: HeaderMap,
+        Extension(auth): Extension<crate::ApiAuth>,
+        Extension(ip_mgr): Extension<Arc<IpManager<S>>>,
+        Extension(cfg): Extension<Arc<DhcpConfig>>,
+        Extension(shutdown): Extension<CancellationToken>,
+        body: Bytes,
+    ) -> ServerResult<axum::response::Response> {
+        authorize_privileged(&headers, &auth)?;
+        let request_id = request_id();
+        let req: ReloadRequest = parse_optional_body(&body)?;
+        // refuse to restart onto a broken on-disk config
+        let path = cfg.path().ok_or_else(|| {
+            crate::models::ServerError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                anyhow::anyhow!("server has no config file path"),
+            )
+        })?;
+        let raw = std::fs::read_to_string(path).map_err(|err| {
+            crate::models::ServerError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                anyhow::anyhow!(err),
+            )
+        })?;
+        config::DhcpConfig::parse_str(&raw).map_err(|err| {
+            crate::models::ServerError::conflict(format!("on-disk config is invalid: {err:#}"))
+        })?;
+        let operation_id = schedule_config_restart(
+            &ip_mgr,
+            shutdown,
+            "reload",
+            actor(&auth),
+            serde_json::json!({}),
+        )
+        .await?;
+        if req.r#async {
+            Ok((
+                StatusCode::ACCEPTED,
+                request_id_header(&request_id)?,
+                axum::Json(OperationAccepted {
+                    operation_id: operation_id.clone(),
+                    status: "accepted".to_string(),
+                    links: Some(OperationLinks {
+                        self_link: Some(format!("/v1/operations/{operation_id}")),
+                    }),
+                }),
+            )
+                .into_response())
+        } else {
+            Ok((
+                request_id_header(&request_id)?,
+                axum::Json(ActionResult {
+                    status: "succeeded".to_string(),
+                    action: "reload".to_string(),
+                    message: Some("reloading configuration via graceful restart".to_string()),
+                    result: None,
+                }),
+            )
+                .into_response())
+        }
     }
 
     pub(crate) async fn metrics(
@@ -2359,6 +2826,87 @@ pub mod models {
         pub document: serde_json::Value,
     }
 
+    /// Request body for staging a config candidate (`PUT /v1/config`,
+    /// `POST /v1/config/candidates`).
+    #[derive(Deserialize, Debug)]
+    #[serde(deny_unknown_fields)]
+    pub struct ConfigUpdateRequest {
+        /// The proposed configuration document.
+        pub document: serde_json::Value,
+        /// Optional operator note recorded with the candidate.
+        #[serde(default)]
+        pub message: Option<String>,
+    }
+
+    /// A single validation finding for a candidate.
+    #[derive(Serialize, Deserialize, Debug, Clone)]
+    pub struct ValidationMessage {
+        /// `info`, `warning`, or `error`.
+        pub level: String,
+        /// Optional config path the finding refers to.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub path: Option<String>,
+        /// Human-readable message.
+        pub message: String,
+    }
+
+    /// A staged configuration candidate.
+    #[derive(Serialize, Debug)]
+    pub struct ConfigCandidate {
+        /// Candidate id (also its version once activated).
+        pub candidate_id: String,
+        /// `staged`, `validating`, `valid`, `invalid`, `activated`, or `superseded`.
+        pub status: String,
+        /// Creation timestamp (RFC 3339).
+        pub created_at: String,
+        /// Activation timestamp (RFC 3339), if it has been activated.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub activated_at: Option<String>,
+        /// Optional operator note.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub message: Option<String>,
+        /// Validation findings.
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        pub validation: Vec<ValidationMessage>,
+        /// The candidate document (redacted).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub document: Option<serde_json::Value>,
+    }
+
+    /// Paginated candidate list.
+    #[derive(Serialize, Debug)]
+    pub struct ConfigCandidateListResponse {
+        /// Pagination metadata.
+        pub meta: PaginationMeta,
+        /// Candidates (newest first), documents omitted.
+        pub items: Vec<ConfigCandidate>,
+    }
+
+    /// Request body for `POST /v1/actions/activate-config`.
+    #[derive(Deserialize, Debug)]
+    #[serde(deny_unknown_fields)]
+    pub struct ActivateConfigRequest {
+        /// The candidate to activate.
+        pub candidate_id: String,
+    }
+
+    /// Request body for `POST /v1/actions/rollback-config`.
+    #[derive(Deserialize, Debug)]
+    #[serde(deny_unknown_fields)]
+    pub struct RollbackConfigRequest {
+        /// The previously-activated version (candidate id) to roll back to.
+        pub version: String,
+    }
+
+    /// Request body for `POST /v1/actions/reload` (all fields optional).
+    #[derive(Deserialize, Debug, Default)]
+    #[serde(deny_unknown_fields)]
+    pub struct ReloadRequest {
+        /// Return `202` with an operation instead of `200`.
+        #[serde(default, rename = "async")]
+        pub r#async: bool,
+    }
+
     /// Pagination metadata.
     #[derive(Serialize, Deserialize, Debug, PartialEq, Clone, Eq)]
     pub struct PaginationMeta {
@@ -2610,6 +3158,13 @@ pub mod models {
             Self::new(
                 axum::http::StatusCode::CONFLICT,
                 "conflict",
+                anyhow::anyhow!(message.into()),
+            )
+        }
+        pub(crate) fn forbidden(message: impl Into<String>) -> Self {
+            Self::new(
+                axum::http::StatusCode::FORBIDDEN,
+                "forbidden",
                 anyhow::anyhow!(message.into()),
             )
         }
@@ -3026,7 +3581,9 @@ v4:
         );
         let body: serde_json::Value = response.json().await?;
 
-        assert_eq!(body["version"], "v1");
+        // no candidate has been activated in this test, so the active version is
+        // the bootstrap (on-disk) config
+        assert_eq!(body["version"], "bootstrap");
         assert_eq!(body["redacted"], true);
         assert!(body["document"].is_object());
         assert!(body.to_string().contains("**REDACTED**"));
@@ -3932,6 +4489,173 @@ v4:
             .send()
             .await?;
         assert_eq!(resp.status(), reqwest::StatusCode::OK);
+
+        token.cancel();
+        Ok(())
+    }
+
+    // ---- config lifecycle -------------------------------------------------
+
+    fn sample_config_document() -> serde_json::Value {
+        yaml_serde::from_str(include_str!("../../libs/config/sample/config.yaml")).unwrap()
+    }
+
+    // stage a valid candidate -> it validates to `valid`.
+    #[tokio::test]
+    async fn test_stage_valid_config_candidate() -> anyhow::Result<()> {
+        let (addr, token) = spawn_test_api(Health::Good).await?;
+        let staged: serde_json::Value = reqwest::Client::new()
+            .put(format!("http://{addr}/v1/config"))
+            .json(&serde_json::json!({ "document": sample_config_document(), "message": "test" }))
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        assert_eq!(staged["status"], "accepted");
+        let id = staged["operation_id"].as_str().unwrap();
+        assert_eq!(
+            staged["links"]["self"],
+            format!("/v1/config/candidates/{id}")
+        );
+
+        let cand: serde_json::Value =
+            reqwest::get(format!("http://{addr}/v1/config/candidates/{id}"))
+                .await?
+                .json()
+                .await?;
+        assert_eq!(cand["candidate_id"], id);
+        assert_eq!(cand["status"], "valid");
+        token.cancel();
+        Ok(())
+    }
+
+    // an unparseable candidate validates to `invalid` with findings.
+    #[tokio::test]
+    async fn test_stage_invalid_config_candidate() -> anyhow::Result<()> {
+        let (addr, token) = spawn_test_api(Health::Good).await?;
+        let staged: serde_json::Value = reqwest::Client::new()
+            .post(format!("http://{addr}/v1/config/candidates"))
+            .json(&serde_json::json!({ "document": [1, 2, 3] }))
+            .send()
+            .await?
+            .json()
+            .await?;
+        let id = staged["operation_id"].as_str().unwrap();
+        let cand: serde_json::Value =
+            reqwest::get(format!("http://{addr}/v1/config/candidates/{id}"))
+                .await?
+                .json()
+                .await?;
+        assert_eq!(cand["status"], "invalid");
+        assert!(cand["validation"].as_array().is_some_and(|a| !a.is_empty()));
+        token.cancel();
+        Ok(())
+    }
+
+    // activate a candidate -> it becomes the active version reported by GET /v1/config.
+    #[tokio::test]
+    async fn test_activate_config_sets_active_version() -> anyhow::Result<()> {
+        let dir =
+            std::env::temp_dir().join(format!("dora-cfg-{}-{}", std::process::id(), unique()));
+        std::fs::create_dir_all(&dir)?;
+        let path = dir.join("config.yaml");
+        std::fs::write(&path, include_str!("../../libs/config/sample/config.yaml"))?;
+        let cfg = Arc::new(DhcpConfig::parse(&path)?);
+        let (addr, token) =
+            spawn_test_api_with_config(Health::Good, ApiAuth::disabled(), cfg).await?;
+        let client = reqwest::Client::new();
+
+        let staged: serde_json::Value = client
+            .put(format!("http://{addr}/v1/config"))
+            .json(&serde_json::json!({ "document": sample_config_document() }))
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        let id = staged["operation_id"].as_str().unwrap().to_string();
+
+        let act = client
+            .post(format!("http://{addr}/v1/actions/activate-config"))
+            .json(&serde_json::json!({ "candidate_id": id }))
+            .send()
+            .await?;
+        assert_eq!(act.status(), reqwest::StatusCode::ACCEPTED);
+
+        let cfg_doc: serde_json::Value = client
+            .get(format!("http://{addr}/v1/config"))
+            .send()
+            .await?
+            .json()
+            .await?;
+        assert_eq!(cfg_doc["version"], id);
+
+        token.cancel();
+        Ok(())
+    }
+
+    // activating an unknown candidate is 404; an invalid one is 409.
+    #[tokio::test]
+    async fn test_activate_rejects_missing_and_invalid() -> anyhow::Result<()> {
+        let (addr, token) = spawn_test_api(Health::Good).await?;
+        let client = reqwest::Client::new();
+
+        let missing = client
+            .post(format!("http://{addr}/v1/actions/activate-config"))
+            .json(&serde_json::json!({ "candidate_id": "nope" }))
+            .send()
+            .await?;
+        assert_eq!(missing.status(), reqwest::StatusCode::NOT_FOUND);
+
+        let staged: serde_json::Value = client
+            .post(format!("http://{addr}/v1/config/candidates"))
+            .json(&serde_json::json!({ "document": [1, 2, 3] }))
+            .send()
+            .await?
+            .json()
+            .await?;
+        let id = staged["operation_id"].as_str().unwrap();
+        let invalid = client
+            .post(format!("http://{addr}/v1/actions/activate-config"))
+            .json(&serde_json::json!({ "candidate_id": id }))
+            .send()
+            .await?;
+        assert_eq!(invalid.status(), reqwest::StatusCode::CONFLICT);
+
+        token.cancel();
+        Ok(())
+    }
+
+    // when mTLS is enabled (client-CA configured), config writes require a client
+    // cert (403 with only a bearer), while reads still accept the bearer.
+    #[tokio::test]
+    async fn test_config_write_requires_mtls_when_enabled() -> anyhow::Result<()> {
+        let auth = ApiAuth {
+            bearer_token: Some(std::sync::Arc::from("secret")),
+            mtls_enabled: true,
+        };
+        let (addr, token, _mode, _mgr) = spawn_test_api_full(Health::Good, auth).await?;
+        let client = reqwest::Client::new();
+
+        let forbidden = client
+            .put(format!("http://{addr}/v1/config"))
+            .bearer_auth("secret")
+            .json(&serde_json::json!({ "document": sample_config_document() }))
+            .send()
+            .await?;
+        assert_eq!(forbidden.status(), reqwest::StatusCode::FORBIDDEN);
+        assert_eq!(
+            forbidden.json::<serde_json::Value>().await?["error"]["code"],
+            "forbidden"
+        );
+
+        let ok = client
+            .get(format!("http://{addr}/v1/config/candidates"))
+            .bearer_auth("secret")
+            .send()
+            .await?;
+        assert_eq!(ok.status(), reqwest::StatusCode::OK);
 
         token.cancel();
         Ok(())

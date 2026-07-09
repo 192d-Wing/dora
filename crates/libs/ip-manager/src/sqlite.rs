@@ -14,7 +14,8 @@ use sqlx::{
 use tracing::debug;
 
 use crate::{
-    ClientInfo, IpState, OperationRecord, OperationStatus, RuntimeReservationRecord, State, Storage,
+    ClientInfo, ConfigCandidateRecord, IpState, OperationRecord, OperationStatus,
+    RuntimeReservationRecord, State, Storage,
 };
 
 #[derive(Debug)]
@@ -652,6 +653,102 @@ impl Storage for SqliteDb {
                 created_at: util::to_systime(r.created_at),
             })
             .collect())
+    }
+
+    async fn upsert_config_candidate(
+        &self,
+        candidate: &ConfigCandidateRecord,
+    ) -> Result<(), Self::Error> {
+        let message = candidate.message.as_deref();
+        let validation = candidate.validation.as_deref();
+        let created_at = util::systime_epoch(candidate.created_at);
+        let activated_at = candidate.activated_at.map(util::systime_epoch);
+        sqlx::query!(
+            "INSERT OR REPLACE INTO config_candidates \
+             (candidate_id, status, document, message, validation, created_at, activated_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            candidate.candidate_id,
+            candidate.status,
+            candidate.document,
+            message,
+            validation,
+            created_at,
+            activated_at,
+        )
+        .execute(&self.inner)
+        .await?;
+        Ok(())
+    }
+
+    async fn get_config_candidate(
+        &self,
+        candidate_id: &str,
+    ) -> Result<Option<ConfigCandidateRecord>, Self::Error> {
+        let row = sqlx::query!(
+            r#"SELECT candidate_id AS "candidate_id!", status AS "status!",
+                      document AS "document!", message AS "message?",
+                      validation AS "validation?", created_at AS "created_at!",
+                      activated_at AS "activated_at?"
+               FROM config_candidates WHERE candidate_id = ?1"#,
+            candidate_id,
+        )
+        .fetch_optional(&self.inner)
+        .await?;
+        Ok(row.map(|r| ConfigCandidateRecord {
+            candidate_id: r.candidate_id,
+            status: r.status,
+            document: r.document,
+            message: r.message,
+            validation: r.validation,
+            created_at: util::to_systime(r.created_at),
+            activated_at: r.activated_at.map(util::to_systime),
+        }))
+    }
+
+    async fn list_config_candidates(&self) -> Result<Vec<ConfigCandidateRecord>, Self::Error> {
+        let rows = sqlx::query!(
+            r#"SELECT candidate_id AS "candidate_id!", status AS "status!",
+                      document AS "document!", message AS "message?",
+                      validation AS "validation?", created_at AS "created_at!",
+                      activated_at AS "activated_at?"
+               FROM config_candidates ORDER BY created_at DESC"#
+        )
+        .fetch_all(&self.inner)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|r| ConfigCandidateRecord {
+                candidate_id: r.candidate_id,
+                status: r.status,
+                document: r.document,
+                message: r.message,
+                validation: r.validation,
+                created_at: util::to_systime(r.created_at),
+                activated_at: r.activated_at.map(util::to_systime),
+            })
+            .collect())
+    }
+
+    async fn active_config_candidate(&self) -> Result<Option<ConfigCandidateRecord>, Self::Error> {
+        let row = sqlx::query!(
+            r#"SELECT candidate_id AS "candidate_id!", status AS "status!",
+                      document AS "document!", message AS "message?",
+                      validation AS "validation?", created_at AS "created_at!",
+                      activated_at AS "activated_at?"
+               FROM config_candidates WHERE status = 'activated'
+               ORDER BY activated_at DESC LIMIT 1"#
+        )
+        .fetch_optional(&self.inner)
+        .await?;
+        Ok(row.map(|r| ConfigCandidateRecord {
+            candidate_id: r.candidate_id,
+            status: r.status,
+            document: r.document,
+            message: r.message,
+            validation: r.validation,
+            created_at: util::to_systime(r.created_at),
+            activated_at: r.activated_at.map(util::to_systime),
+        }))
     }
 }
 
