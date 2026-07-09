@@ -164,7 +164,11 @@ fn start_dhcp_server(config: &str, netns: &str, db_url: &str) -> Child {
         .spawn()
         .expect("Failed to start DHCP server");
 
-    thread::sleep(std::time::Duration::from_secs(1));
+    // Give dora time to come up before the test starts sending. It now connects
+    // to Postgres and runs migrations at startup, which is slower than the old
+    // in-memory SQLite, so wait a bit longer; the client's send-retries absorb
+    // any remaining slack. Then confirm it didn't crash on startup.
+    thread::sleep(std::time::Duration::from_secs(2));
     if let Ok(Some(ret)) = child.try_wait() {
         panic!("Failed to start DHCP server {ret:?}");
     }

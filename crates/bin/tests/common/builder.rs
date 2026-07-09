@@ -6,7 +6,13 @@ use mac_address::MacAddress;
 
 use super::utils;
 
-pub const SEND_COUNT: usize = 2;
+// Number of times the test client re-sends a message while waiting for a
+// response (see client.rs; each attempt waits `timeout` ms). A responsive dora
+// answers on the first send, so this only extends the budget while dora is still
+// starting — since it now connects to Postgres and runs migrations at startup,
+// that can take a couple of seconds under CI load. Kept generous to absorb that
+// without flaking (the old value of 2 ~= a 1s budget was too tight).
+pub const SEND_COUNT: usize = 6;
 
 #[derive(Builder, Debug, Clone)]
 #[builder(setter(into))]
