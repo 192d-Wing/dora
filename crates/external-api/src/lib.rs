@@ -569,8 +569,9 @@ mod handlers {
         (
             [
                 (header::CONTENT_TYPE, "text/javascript; charset=utf-8"),
-                // version-pinned to the binary; safe to cache aggressively
-                (header::CACHE_CONTROL, "public, max-age=86400, immutable"),
+                // modest cache; not `immutable` since the URL is unversioned and
+                // a re-vendor reuses the same filename (bounds staleness to 1h)
+                (header::CACHE_CONTROL, "public, max-age=3600"),
             ],
             SWAGGER_UI_JS,
         )
@@ -3805,8 +3806,19 @@ v4:
 
     #[tokio::test]
     async fn test_swagger_ui_docs_public() -> anyhow::Result<()> {
-        // no bearer token is sent — the docs page and its assets must be public
-        let (addr, token) = spawn_test_api(Health::Good).await?;
+        // Configure a bearer token so `authorize()` actually enforces auth, then
+        // hit the docs routes WITHOUT presenting it: they must serve, while a
+        // gated route (`/v1/server`) must 401. This proves the docs handlers are
+        // public by construction, not just because auth happens to be disabled.
+        let (addr, token) =
+            spawn_test_api_with_auth(Health::Good, ApiAuth::bearer("secret")).await?;
+
+        let gated = reqwest::get(format!("http://{addr}/v1/server")).await?;
+        assert_eq!(
+            gated.status(),
+            reqwest::StatusCode::UNAUTHORIZED,
+            "a gated route must reject an unauthenticated request in this test setup"
+        );
 
         let page = reqwest::get(format!("http://{addr}/docs"))
             .await?
