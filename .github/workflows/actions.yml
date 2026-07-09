@@ -231,18 +231,21 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           path-to-lcov: lcov.info
 
-  # Build the container image for both architectures. Each arch builds natively
-  # on its own runner (no QEMU). The runtime base is Iron Bank's hardened UBI 10,
-  # which requires authenticating to registry1.dso.mil with the REPO1_USER /
-  # REPO1 org secrets. Skipped on fork PRs, which cannot access those secrets,
-  # and on PRs that don't touch anything image-relevant (see the `changes` job).
+  # Build the container image for both architectures as a PR check (build only,
+  # never pushed). Each arch builds natively on its own runner (no QEMU). The
+  # runtime base is Iron Bank's hardened UBI 10, which requires authenticating to
+  # registry1.dso.mil with the REPO1_USER / REPO1 org secrets. Skipped on fork
+  # PRs (which cannot access those secrets) and on PRs that don't touch anything
+  # image-relevant (see the `changes` job). Pushes to main and `v*` tags are
+  # built AND published to GHCR by the separate `release.yml` workflow, so this
+  # job intentionally does not run on push (no duplicate build).
   docker:
     name: Container image (${{ matrix.platform }})
     needs: changes
     if: >-
-      github.event_name == 'push' ||
-      (github.event.pull_request.head.repo.full_name == github.repository &&
-       needs.changes.outputs.image == 'true')
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      needs.changes.outputs.image == 'true'
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
