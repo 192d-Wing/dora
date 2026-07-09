@@ -22,6 +22,7 @@ Options:
       --dora-id <DORA_ID>              ID of this instance [env: DORA_ID=] [default: dora_id]
       --dora-log <DORA_LOG>            set the log level. All valid RUST_LOG arguments are accepted [env: DORA_LOG=] [default: info]
   -d <DATABASE_URL>                    Postgres connection string for the lease/state store, e.g. postgres://user:pass@host:5432/dbname. dora runs the embedded migrations against it on startup [env: DATABASE_URL=] [default: postgres://dora:dora@localhost/dora]
+      --role <ROLES>                   which server roles this process runs; repeatable or comma-separated (e.g. --role v4 --role api, or --role v4,api). When unset, dora runs all roles (v4, v6, api) in one process. Splitting roles lets each container run just its part against the shared database [env: DORA_ROLE=] [possible values: v4, v6, api]
   -h, --help                           Print help
 ```
 

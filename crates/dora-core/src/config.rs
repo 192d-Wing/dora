@@ -117,6 +117,49 @@ pub mod cli {
         /// migrations against it on startup.
         #[clap(short, env, value_parser, default_value = DEFAULT_DATABASE_URL)]
         pub database_url: String,
+        /// which server roles this process runs; repeatable or comma-separated
+        /// (e.g. `--role v4 --role api`, or `--role v4,api`). When unset, dora
+        /// runs all roles in one process (the default). Splitting roles lets each
+        /// container run just its part (v4 server, v6 server, or the management
+        /// API) against the shared database.
+        #[clap(long = "role", env = "DORA_ROLE", value_enum, value_delimiter = ',')]
+        pub roles: Vec<Role>,
+    }
+
+    /// A server role this dora process can run, selected via `--role`.
+    #[derive(clap::ValueEnum, Copy, Clone, Debug, PartialEq, Eq)]
+    pub enum Role {
+        /// the DHCPv4 server
+        V4,
+        /// the DHCPv6 server
+        V6,
+        /// the management HTTP API
+        Api,
+    }
+
+    impl Config {
+        /// The roles this process should run: the explicit `--role` set, or all
+        /// roles when none were given (the default single-process deployment).
+        pub fn active_roles(&self) -> Vec<Role> {
+            if self.roles.is_empty() {
+                vec![Role::V4, Role::V6, Role::Api]
+            } else {
+                self.roles.clone()
+            }
+        }
+
+        /// whether this process runs the DHCPv4 server
+        pub fn runs_v4(&self) -> bool {
+            self.active_roles().contains(&Role::V4)
+        }
+        /// whether this process runs the DHCPv6 server
+        pub fn runs_v6(&self) -> bool {
+            self.active_roles().contains(&Role::V6)
+        }
+        /// whether this process runs the management HTTP API
+        pub fn runs_api(&self) -> bool {
+            self.active_roles().contains(&Role::Api)
+        }
     }
 
     impl Config {
@@ -133,6 +176,53 @@ pub mod cli {
         /// are we bound to the default dhcpv6 port?
         pub fn is_default_port_v6(&self) -> bool {
             self.v6_addr.port() == v6::SERVER_PORT
+        }
+    }
+
+    #[cfg(test)]
+    mod role_tests {
+        use super::{Config, Parser, Role};
+
+        fn parse(args: &[&str]) -> Config {
+            let mut full = vec!["dora"];
+            full.extend_from_slice(args);
+            Config::parse_from(full)
+        }
+
+        #[test]
+        fn default_runs_all_roles() {
+            let c = parse(&[]);
+            assert!(c.roles.is_empty(), "no roles given => empty field");
+            assert_eq!(c.active_roles(), vec![Role::V4, Role::V6, Role::Api]);
+            assert!(c.runs_v4() && c.runs_v6() && c.runs_api());
+        }
+
+        #[test]
+        fn single_role_is_exclusive() {
+            let c = parse(&["--role", "v4"]);
+            assert!(c.runs_v4());
+            assert!(!c.runs_v6());
+            assert!(!c.runs_api());
+        }
+
+        #[test]
+        fn comma_separated_roles() {
+            let c = parse(&["--role", "v4,api"]);
+            assert!(c.runs_v4() && c.runs_api());
+            assert!(!c.runs_v6());
+        }
+
+        #[test]
+        fn repeated_role_flags() {
+            let c = parse(&["--role", "v6", "--role", "api"]);
+            assert!(c.runs_v6() && c.runs_api());
+            assert!(!c.runs_v4());
+        }
+
+        #[test]
+        fn invalid_role_is_rejected() {
+            let err = Config::try_parse_from(["dora", "--role", "bogus"]);
+            assert!(err.is_err(), "an unknown role value must be rejected");
         }
     }
 }

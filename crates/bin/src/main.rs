@@ -109,99 +109,132 @@ async fn start(config: cli::Config) -> Result<()> {
         }
         Err(err) => error!(?err, "failed to load runtime reservations from database"),
     }
-    // start external api for healthchecks
-    let mut api = ExternalApi::new(
-        config.external_api,
-        Arc::clone(&dhcp_cfg),
-        Arc::clone(&ip_mgr),
-    )
-    .with_mode(mode.clone())
-    .with_reservations(reservations.clone());
-    // enable in-process TLS (+ optional mTLS) when a cert/key pair is configured
-    match (
-        config.external_api_tls_cert.clone(),
-        config.external_api_tls_key.clone(),
-    ) {
-        (Some(cert), Some(key)) => {
-            api = api.with_tls(external_api::tls::TlsConfig {
-                cert,
-                key,
-                client_ca: config.external_api_tls_client_ca.clone(),
-                // recomputed inside with_tls based on whether a bearer token is set
-                require_client_auth: false,
-                reload_interval: std::time::Duration::from_secs(
-                    config.external_api_tls_reload_secs,
-                ),
-            });
-        }
-        (None, None) => {
-            if config.external_api_tls_client_ca.is_some() {
-                warn!(
-                    "--external-api-tls-client-ca set without --external-api-tls-cert/-key; \
-                     mTLS is ignored and the API serves plaintext"
-                );
-            }
-        }
-        _ => warn!(
-            "only one of --external-api-tls-cert / --external-api-tls-key set; serving plaintext"
-        ),
-    }
-    // start v4 server
-    debug!("starting v4 server");
-    let mut v4: Server<v4::Message> =
-        Server::new(config.clone(), dhcp_cfg.v4().interfaces().to_owned())?;
-    debug!("starting v4 plugins");
+    // A dora process runs one or more roles: the v4 server, the v6 server, and
+    // the management API. By default it runs all three in one process; `--role`
+    // narrows that so each container in a split deployment runs just its part
+    // against the shared database.
+    let roles = config.active_roles();
+    info!(?roles, "active roles");
 
-    // perhaps with only one plugin chain we will just register deps here
-    // in order? we could get rid of derive macros & topo sort
-    MsgType::new(Arc::clone(&dhcp_cfg))?
+    // shared cancellation token: the API's shutdown action and Ctrl-C both
+    // cancel it, which stops every started component.
+    let token = CancellationToken::new();
+
+    // management API (role: api)
+    let api_guard = if config.runs_api() {
+        let mut api = ExternalApi::new(
+            config.external_api,
+            Arc::clone(&dhcp_cfg),
+            Arc::clone(&ip_mgr),
+        )
         .with_mode(mode.clone())
-        .register(&mut v4);
-    StaticAddr::new(Arc::clone(&dhcp_cfg))?
-        .with_reservations(reservations.clone())
-        .register(&mut v4);
-    // leases plugin
-
-    Leases::new(Arc::clone(&dhcp_cfg), Arc::clone(&ip_mgr)).register(&mut v4);
-
-    let v6 = if dhcp_cfg.has_v6() {
-        // start v6 server
-        info!("starting v6 server");
-        let mut v6: Server<v6::Message> =
-            Server::new(config.clone(), dhcp_cfg.v6().interfaces().to_owned())?;
-        info!("starting v6 plugins");
-        MsgType::new(Arc::clone(&dhcp_cfg))?
-            .with_mode(mode.clone())
-            .register(&mut v6);
-        LeasesV6::new(Arc::clone(&dhcp_cfg), Arc::clone(&ip_mgr))
-            .with_reservations(reservations.clone())
-            .register(&mut v6);
-        Some(v6)
+        .with_reservations(reservations.clone());
+        // enable in-process TLS (+ optional mTLS) when a cert/key pair is configured
+        match (
+            config.external_api_tls_cert.clone(),
+            config.external_api_tls_key.clone(),
+        ) {
+            (Some(cert), Some(key)) => {
+                api = api.with_tls(external_api::tls::TlsConfig {
+                    cert,
+                    key,
+                    client_ca: config.external_api_tls_client_ca.clone(),
+                    // recomputed inside with_tls based on whether a bearer token is set
+                    require_client_auth: false,
+                    reload_interval: std::time::Duration::from_secs(
+                        config.external_api_tls_reload_secs,
+                    ),
+                });
+            }
+            (None, None) => {
+                if config.external_api_tls_client_ca.is_some() {
+                    warn!(
+                        "--external-api-tls-client-ca set without --external-api-tls-cert/-key; \
+                         mTLS is ignored and the API serves plaintext"
+                    );
+                }
+            }
+            _ => warn!(
+                "only one of --external-api-tls-cert / --external-api-tls-key set; serving plaintext"
+            ),
+        }
+        debug!("changing health to good");
+        api.sender()
+            .send(Health::Good)
+            .await
+            .context("error occurred in changing health status to Good")?;
+        // if dropped, will stop the API
+        Some(api.start(token.clone()))
     } else {
         None
     };
 
-    debug!("changing health to good");
-    api.sender()
-        .send(Health::Good)
-        .await
-        .context("error occurred in changing health status to Good")?;
+    // DHCP server tasks, one per active server role
+    let mut servers: Vec<JoinHandle<Result<()>>> = Vec::new();
 
-    let token = CancellationToken::new();
-    // if dropped, will stop server
-    let api_guard = api.start(token.clone());
-    match v6 {
-        Some(v6) => {
-            tokio::try_join!(
-                flatten(tokio::spawn(v4.start(shutdown_signal(token.clone())))),
-                flatten(tokio::spawn(v6.start(shutdown_signal(token.clone())))),
-            )?;
+    // v4 server (role: v4)
+    if config.runs_v4() {
+        debug!("starting v4 server");
+        let mut v4: Server<v4::Message> =
+            Server::new(config.clone(), dhcp_cfg.v4().interfaces().to_owned())?;
+        debug!("starting v4 plugins");
+        // perhaps with only one plugin chain we will just register deps here
+        // in order? we could get rid of derive macros & topo sort
+        MsgType::new(Arc::clone(&dhcp_cfg))?
+            .with_mode(mode.clone())
+            .register(&mut v4);
+        StaticAddr::new(Arc::clone(&dhcp_cfg))?
+            .with_reservations(reservations.clone())
+            .register(&mut v4);
+        // leases plugin
+        Leases::new(Arc::clone(&dhcp_cfg), Arc::clone(&ip_mgr)).register(&mut v4);
+        servers.push(tokio::spawn(v4.start(shutdown_signal(token.clone()))));
+    }
+
+    // v6 server (role: v6), only when the config actually has a v6 section
+    if config.runs_v6() {
+        if dhcp_cfg.has_v6() {
+            info!("starting v6 server");
+            let mut v6: Server<v6::Message> =
+                Server::new(config.clone(), dhcp_cfg.v6().interfaces().to_owned())?;
+            info!("starting v6 plugins");
+            MsgType::new(Arc::clone(&dhcp_cfg))?
+                .with_mode(mode.clone())
+                .register(&mut v6);
+            LeasesV6::new(Arc::clone(&dhcp_cfg), Arc::clone(&ip_mgr))
+                .with_reservations(reservations.clone())
+                .register(&mut v6);
+            servers.push(tokio::spawn(v6.start(shutdown_signal(token.clone()))));
+        } else if !config.roles.is_empty() {
+            // v6 was explicitly requested but the config has no v6 section
+            warn!("--role v6 requested but the config has no v6 section; not starting v6");
         }
-        None => {
-            tokio::spawn(v4.start(shutdown_signal(token.clone()))).await??;
-        }
-    };
-    if let Err(err) = api_guard.await {
+    }
+
+    if servers.is_empty() && api_guard.is_none() {
+        return Err(anyhow!("no active roles: nothing to run"));
+    }
+
+    // When no DHCP server is running (API-only), nothing else is listening for
+    // Ctrl-C, so wire it to the shared token here. With servers present each one
+    // watches Ctrl-C via `shutdown_signal`.
+    if servers.is_empty() {
+        let token = token.clone();
+        tokio::spawn(async move {
+            if signal::ctrl_c().await.is_ok() {
+                token.cancel();
+            }
+        });
+    }
+
+    // wait for every DHCP server to exit (they stop together on token cancel /
+    // Ctrl-C); propagate the first error
+    for handle in servers {
+        flatten(handle).await?;
+    }
+    if let Some(guard) = api_guard
+        && let Err(err) = guard.await
+    {
         error!(?err, "error waiting for web server API");
     }
     Ok(())
