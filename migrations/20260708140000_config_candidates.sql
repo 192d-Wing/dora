@@ -17,7 +17,7 @@ CREATE TABLE IF NOT EXISTS config_candidates(
     document     TEXT    NOT NULL,
     message      TEXT,
     validation   TEXT,
-    created_at   INTEGER NOT NULL,
-    activated_at INTEGER
+    created_at   BIGINT  NOT NULL,
+    activated_at BIGINT
 );
 CREATE INDEX IF NOT EXISTS idx_config_candidates_created ON config_candidates (created_at);

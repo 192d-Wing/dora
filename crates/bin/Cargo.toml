@@ -30,6 +30,10 @@ crossbeam-channel = "0.5.15"
 rand = "0.10"
 socket2 = { workspace = true }
 tracing-test = { workspace = true }
+# integration tests provision a transient Postgres database per test and spawn
+# dora against it (see tests/common/env.rs)
+ip-manager = { path = "../libs/ip-manager" }
+tokio = { workspace = true }
 
 [target.'cfg(not(target_env = "musl"))'.dependencies]
 jemallocator = { version = "0.5.4", features = ["background_threads"] }

@@ -21,7 +21,7 @@ Options:
       --thread-name <THREAD_NAME>      Worker thread name [env: THREAD_NAME=] [default: dora-dhcp-worker]
       --dora-id <DORA_ID>              ID of this instance [env: DORA_ID=] [default: dora_id]
       --dora-log <DORA_LOG>            set the log level. All valid RUST_LOG arguments are accepted [env: DORA_LOG=] [default: info]
-  -d <DATABASE_URL>                    Path to the database use "sqlite::memory:" for in mem db ex. "em.db" NOTE: in memory sqlite db connection idle timeout is 5 mins [env: DATABASE_URL=] [default: /var/lib/dora/leases.db]
+  -d <DATABASE_URL>                    Postgres connection string for the lease/state store, e.g. postgres://user:pass@host:5432/dbname. dora runs the embedded migrations against it on startup [env: DATABASE_URL=] [default: postgres://dora:dora@localhost/dora]
   -h, --help                           Print help
 ```
 

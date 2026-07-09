@@ -19,7 +19,7 @@ use dora_core::{
     tracing::*,
 };
 use external_api::{ExternalApi, Health};
-use ip_manager::{IpManager, sqlite::SqliteDb};
+use ip_manager::{IpManager, postgres::PostgresDb};
 use leases::Leases;
 use leases_v6::LeasesV6;
 use message_type::MsgType;
@@ -66,7 +66,7 @@ fn main() -> Result<()> {
 
 async fn start(config: cli::Config) -> Result<()> {
     let database_url = config.database_url.clone();
-    info!(?database_url, "using database at path");
+    info!(?database_url, "connecting to database");
     let dora_id = config.dora_id.clone();
     info!(?dora_id, "using id");
     // setting DORA_ID for other plugins
@@ -76,7 +76,7 @@ async fn start(config: cli::Config) -> Result<()> {
     debug!("parsing DHCP config");
     let dhcp_cfg = Arc::new(DhcpConfig::parse(&config.config_path)?);
     debug!("starting database");
-    let ip_mgr = Arc::new(IpManager::new(SqliteDb::new(database_url).await?)?);
+    let ip_mgr = Arc::new(IpManager::new(PostgresDb::new(database_url).await?)?);
     // shared server mode: the management API sets it (maintenance / drain /
     // shutdown) and the DHCP datapath reads it to decide whether to answer.
     let mode = SharedMode::new(ServerMode::Normal);

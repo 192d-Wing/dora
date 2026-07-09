@@ -1003,12 +1003,12 @@ mod tests {
     #[tokio::test]
     async fn test_reserved_v6_address_is_pinned_and_persisted() -> anyhow::Result<()> {
         use config::reservations::{ResMatch, RuntimeReservation, RuntimeReservations};
-        use ip_manager::sqlite::SqliteDb;
+        use ip_manager::postgres::PostgresDb;
 
         let cfg = Arc::new(DhcpConfig::parse_str(include_str!(
             "../../../libs/config/sample/config_v6_pools.yaml"
         ))?);
-        let ip_mgr = Arc::new(IpManager::new(SqliteDb::new("sqlite::memory:").await?)?);
+        let ip_mgr = Arc::new(IpManager::new(PostgresDb::new_test().await?)?);
 
         let duid = vec![0x00u8, 0x01, 0x02, 0x03];
         let reserved: Ipv6Addr = "2001:db8:1::120".parse()?; // in range, not excluded

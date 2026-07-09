@@ -9,7 +9,6 @@
 //! MsgType -> leases-v6 allocation -> relay-reply wrap -> UDP send.
 
 use std::{
-    fs,
     net::{Ipv6Addr, UdpSocket},
     process::{Child, Command, Stdio},
     thread,
@@ -27,15 +26,18 @@ use dora_core::dhcproto::{
 /// a running `dora` server bound to loopback, killed and cleaned up on drop
 struct DoraV6 {
     child: Child,
-    db: String,
+    db_name: String,
 }
 
 impl DoraV6 {
     fn start(v6_port: u16, v4_port: u16) -> Self {
-        let db = format!("/tmp/dora_v6_relay_{v6_port}.db");
-        for suffix in ["", "-shm", "-wal"] {
-            let _ = fs::remove_file(format!("{db}{suffix}"));
-        }
+        // dora is Postgres-only; provision a transient database for this test.
+        // dora runs in the default namespace here (bound to loopback), so it
+        // reaches Postgres at the same host as the admin DATABASE_URL.
+        let db_name = format!("dora_it_v6_relay_{v6_port}");
+        block_on(ip_manager::postgres::create_test_database(&db_name))
+            .expect("failed to create test database");
+        let db_url = pg_db_url(&db_name);
         let config = format!(
             "{}/tests/test_configs/v6_relay.yaml",
             env!("CARGO_MANIFEST_DIR")
@@ -45,7 +47,7 @@ impl DoraV6 {
                 "-c",
                 &config,
                 "-d",
-                &db,
+                &db_url,
                 // ephemeral-ish v4 port so we don't need privileged :67; v4 is unused here
                 "--v4-addr",
                 &format!("0.0.0.0:{v4_port}"),
@@ -61,7 +63,7 @@ impl DoraV6 {
             .expect("failed to start dora");
         // give it a moment to bind; the exchange helper also retries
         thread::sleep(Duration::from_millis(500));
-        Self { child, db }
+        Self { child, db_name }
     }
 }
 
@@ -69,9 +71,34 @@ impl Drop for DoraV6 {
     fn drop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
-        for suffix in ["", "-shm", "-wal"] {
-            let _ = fs::remove_file(format!("{}{suffix}", self.db));
+        if let Err(err) = block_on(ip_manager::postgres::drop_test_database(&self.db_name)) {
+            eprintln!("failed to drop test database {}: {err:?}", self.db_name);
         }
+    }
+}
+
+/// Run a future to completion on a throwaway current-thread runtime.
+fn block_on<F: std::future::Future>(fut: F) -> F::Output {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("failed to build test runtime")
+        .block_on(fut)
+}
+
+/// Build dora's connection URL by swapping the database-name segment of the
+/// admin `DATABASE_URL` (dora shares the admin host here — it is on loopback).
+fn pg_db_url(db_name: &str) -> String {
+    let base = std::env::var("DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://dora:dora@localhost:5432/dora".to_string());
+    let (pre, query) = match base.split_once('?') {
+        Some((b, q)) => (b.to_string(), Some(q.to_string())),
+        None => (base, None),
+    };
+    let prefix = &pre[..=pre.rfind('/').unwrap_or(pre.len().saturating_sub(1))];
+    match query {
+        Some(q) => format!("{prefix}{db_name}?{q}"),
+        None => format!("{prefix}{db_name}"),
     }
 }
 

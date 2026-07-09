@@ -6,10 +6,12 @@ use std::{
     time::{Duration, SystemTime},
 };
 
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use async_trait::async_trait;
 use sqlx::{
-    ConnectOptions, Sqlite,
-    sqlite::{SqliteConnectOptions, SqlitePool},
+    ConnectOptions, Connection, PgConnection, Postgres,
+    postgres::{PgConnectOptions, PgPool},
 };
 use tracing::debug;
 
@@ -19,11 +21,11 @@ use crate::{
 };
 
 #[derive(Debug)]
-pub struct SqliteDb {
-    inner: SqlitePool,
+pub struct PostgresDb {
+    inner: PgPool,
 }
 
-impl Clone for SqliteDb {
+impl Clone for PostgresDb {
     fn clone(&self) -> Self {
         Self {
             inner: self.inner.clone(),
@@ -31,22 +33,136 @@ impl Clone for SqliteDb {
     }
 }
 
-impl SqliteDb {
+impl PostgresDb {
     pub async fn new(uri: impl AsRef<str>) -> Result<Self, sqlx::Error> {
-        let mut opts = SqliteConnectOptions::from_str(uri.as_ref())?
-            .synchronous(sqlx::sqlite::SqliteSynchronous::Normal)
-            .create_if_missing(true);
-        // make sqlite log queries at trace level so we don't get a bloated log on `info`
+        let mut opts = PgConnectOptions::from_str(uri.as_ref())?;
+        // log queries at trace level so we don't get a bloated log on `info`
         opts.log_statements(tracing::log::LevelFilter::Trace);
 
-        let inner = SqlitePool::connect_with(opts).await?;
+        let inner = PgPool::connect_with(opts).await?;
+        sqlx::migrate!("../../../migrations").run(&inner).await?;
+        Ok(Self { inner })
+    }
+
+    /// Create an isolated Postgres database for a single test/dev run.
+    ///
+    /// In-memory SQLite is gone, so each test needs its own database. This
+    /// reads an admin/base URL from `DATABASE_URL` (defaulting to the local
+    /// dev DB), connects to it, and issues `CREATE DATABASE dora_test_<pid>_<n>`
+    /// where `n` comes from a process-wide atomic counter. That yields a unique
+    /// database name without pulling in rand/uuid. It then builds a fresh URL
+    /// pointing at that database, connects a pool, and runs migrations.
+    ///
+    /// NOTE: `CREATE DATABASE` cannot run inside a transaction, so it is issued
+    /// on a plain pooled connection (sqlx does not wrap bare `execute` in a
+    /// transaction).
+    #[doc(hidden)]
+    pub async fn new_test() -> Result<Self, sqlx::Error> {
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+
+        let base_url = admin_base_url();
+
+        let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+        let db_name = format!("dora_test_{}_{}", std::process::id(), n);
+
+        // create the fresh test database (serialized cluster-wide, see helper)
+        create_database(&db_name, false).await?;
+
+        // build a new URL pointing at the fresh database by swapping the path
+        // segment (the part after the last '/', before any query string)
+        let test_url = swap_db_name(&base_url, &db_name);
+
+        let mut opts = PgConnectOptions::from_str(&test_url)?;
+        opts.log_statements(tracing::log::LevelFilter::Trace);
+        let inner = PgPool::connect_with(opts).await?;
         sqlx::migrate!("../../../migrations").run(&inner).await?;
         Ok(Self { inner })
     }
 }
 
+/// Create a fresh, empty database named `db_name` for out-of-process integration
+/// tests: the dora binary is spawned as a separate process and connects to this
+/// database by URL, so a caller cannot use [`PostgresDb::new_test`] (which hands
+/// back a live pool). Any pre-existing database of that name is dropped first
+/// (`WITH (FORCE)` evicts a lingering connection from a killed prior run) so each
+/// test starts clean. Uses the admin/base `DATABASE_URL` (defaulting to the local
+/// dev DB). Migrations are run by the spawned dora process on startup, not here.
+#[doc(hidden)]
+pub async fn create_test_database(db_name: &str) -> Result<(), sqlx::Error> {
+    create_database(db_name, true).await
+}
+
+/// Create database `db_name` (optionally dropping any prior one first), on a
+/// single admin connection holding a cluster-wide advisory lock.
+///
+/// `CREATE DATABASE` copies `template1`, and two of them running at once can
+/// transiently fail with SQLSTATE 55006 ("source database ... is being accessed
+/// by other users"). Parallel test processes each provision their own database,
+/// so we serialize the operation with `pg_advisory_lock` on a fixed key: Postgres
+/// itself queues concurrent callers server-side (no client-side polling). The
+/// session lock is released automatically when the connection closes.
+///
+/// Uses a single [`PgConnection`] (not a pool) so the lock and the `CREATE` run
+/// on the same session — a pool could route them to different connections and
+/// the lock would not apply. Neither statement may run inside a transaction.
+async fn create_database(db_name: &str, drop_first: bool) -> Result<(), sqlx::Error> {
+    // arbitrary fixed key shared by all callers; "dora" in hex
+    const CREATE_DB_LOCK: i64 = 0x646f_7261;
+    let mut admin = PgConnection::connect(&admin_base_url()).await?;
+    sqlx::query("SELECT pg_advisory_lock($1)")
+        .bind(CREATE_DB_LOCK)
+        .execute(&mut admin)
+        .await?;
+    if drop_first {
+        sqlx::query(&format!("DROP DATABASE IF EXISTS {db_name} WITH (FORCE)"))
+            .execute(&mut admin)
+            .await?;
+    }
+    sqlx::query(&format!("CREATE DATABASE {db_name}"))
+        .execute(&mut admin)
+        .await?;
+    // closing the session releases the advisory lock
+    admin.close().await?;
+    Ok(())
+}
+
+/// Drop a database created by [`create_test_database`]. Best-effort cleanup.
+#[doc(hidden)]
+pub async fn drop_test_database(db_name: &str) -> Result<(), sqlx::Error> {
+    let admin = PgPool::connect(&admin_base_url()).await?;
+    sqlx::query(&format!("DROP DATABASE IF EXISTS {db_name} WITH (FORCE)"))
+        .execute(&admin)
+        .await?;
+    admin.close().await;
+    Ok(())
+}
+
+/// The admin/base connection URL used to create and drop transient test
+/// databases, from `DATABASE_URL` or the local dev default.
+fn admin_base_url() -> String {
+    std::env::var("DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://dora:dora@localhost/dora".to_string())
+}
+
+/// Replace the database-name path segment of a Postgres connection URL,
+/// preserving any query string.
+fn swap_db_name(url: &str, db_name: &str) -> String {
+    let (base, query) = match url.split_once('?') {
+        Some((b, q)) => (b, Some(q)),
+        None => (url, None),
+    };
+    let prefix = match base.rfind('/') {
+        Some(idx) => &base[..=idx],
+        None => base,
+    };
+    match query {
+        Some(q) => format!("{prefix}{db_name}?{q}"),
+        None => format!("{prefix}{db_name}"),
+    }
+}
+
 #[async_trait]
-impl Storage for SqliteDb {
+impl Storage for PostgresDb {
     // TODO: consider alternate error type
     type Error = sqlx::Error;
 
@@ -486,7 +602,7 @@ impl Storage for SqliteDb {
             "INSERT INTO operations \
              (operation_id, action, status, actor, input_summary, result, \
               error_code, error_message, created_at, started_at, completed_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
             op.operation_id,
             op.action,
             status,
@@ -515,10 +631,10 @@ impl Storage for SqliteDb {
         let completed_at = op.completed_at.map(util::systime_epoch);
         sqlx::query!(
             "UPDATE operations SET \
-             action = ?2, status = ?3, actor = ?4, input_summary = ?5, \
-             result = ?6, error_code = ?7, error_message = ?8, \
-             started_at = ?9, completed_at = ?10 \
-             WHERE operation_id = ?1",
+             action = $2, status = $3, actor = $4, input_summary = $5, \
+             result = $6, error_code = $7, error_message = $8, \
+             started_at = $9, completed_at = $10 \
+             WHERE operation_id = $1",
             op.operation_id,
             op.action,
             status,
@@ -552,7 +668,7 @@ impl Storage for SqliteDb {
                  created_at    AS "created_at!",
                  started_at    AS "started_at?",
                  completed_at  AS "completed_at?"
-               FROM operations WHERE operation_id = ?1"#,
+               FROM operations WHERE operation_id = $1"#,
             operation_id,
         )
         .fetch_optional(&self.inner)
@@ -582,9 +698,12 @@ impl Storage for SqliteDb {
         let network = res.network.as_deref();
         let created_at = util::systime_epoch(res.created_at);
         sqlx::query!(
-            "INSERT OR REPLACE INTO runtime_reservations \
+            "INSERT INTO runtime_reservations \
              (family, ip, prefix, network, match_json, created_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+             VALUES ($1, $2, $3, $4, $5, $6) \
+             ON CONFLICT (family, ip) DO UPDATE SET \
+             prefix = EXCLUDED.prefix, network = EXCLUDED.network, \
+             match_json = EXCLUDED.match_json, created_at = EXCLUDED.created_at",
             res.family,
             res.ip,
             prefix,
@@ -599,7 +718,7 @@ impl Storage for SqliteDb {
 
     async fn delete_reservation(&self, family: &str, ip: &str) -> Result<bool, Self::Error> {
         let result = sqlx::query!(
-            "DELETE FROM runtime_reservations WHERE family = ?1 AND ip = ?2",
+            "DELETE FROM runtime_reservations WHERE family = $1 AND ip = $2",
             family,
             ip
         )
@@ -617,7 +736,7 @@ impl Storage for SqliteDb {
             r#"SELECT family AS "family!", ip AS "ip!", prefix AS "prefix?",
                       network AS "network?", match_json AS "match_json!",
                       created_at AS "created_at!"
-               FROM runtime_reservations WHERE family = ?1 AND ip = ?2"#,
+               FROM runtime_reservations WHERE family = $1 AND ip = $2"#,
             family,
             ip,
         )
@@ -664,9 +783,13 @@ impl Storage for SqliteDb {
         let created_at = util::systime_epoch(candidate.created_at);
         let activated_at = candidate.activated_at.map(util::systime_epoch);
         sqlx::query!(
-            "INSERT OR REPLACE INTO config_candidates \
+            "INSERT INTO config_candidates \
              (candidate_id, status, document, message, validation, created_at, activated_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+             VALUES ($1, $2, $3, $4, $5, $6, $7) \
+             ON CONFLICT (candidate_id) DO UPDATE SET \
+             status = EXCLUDED.status, document = EXCLUDED.document, \
+             message = EXCLUDED.message, validation = EXCLUDED.validation, \
+             created_at = EXCLUDED.created_at, activated_at = EXCLUDED.activated_at",
             candidate.candidate_id,
             candidate.status,
             candidate.document,
@@ -689,7 +812,7 @@ impl Storage for SqliteDb {
                       document AS "document!", message AS "message?",
                       validation AS "validation?", created_at AS "created_at!",
                       activated_at AS "activated_at?"
-               FROM config_candidates WHERE candidate_id = ?1"#,
+               FROM config_candidates WHERE candidate_id = $1"#,
             candidate_id,
         )
         .fetch_optional(&self.inner)
@@ -764,8 +887,8 @@ impl Storage for SqliteDb {
         .execute(&mut *tx)
         .await?;
         sqlx::query!(
-            "UPDATE config_candidates SET status = 'activated', activated_at = ?2 \
-             WHERE candidate_id = ?1",
+            "UPDATE config_candidates SET status = 'activated', activated_at = $2 \
+             WHERE candidate_id = $1",
             candidate_id,
             ts,
         )
@@ -795,22 +918,22 @@ mod util {
 
     pub async fn delete<'a, E>(conn: E, ip: i64) -> Result<(), sqlx::Error>
     where
-        E: sqlx::Executor<'a, Database = Sqlite>,
+        E: sqlx::Executor<'a, Database = Postgres>,
     {
-        sqlx::query!("DELETE FROM leases WHERE ip = ?1", ip)
+        sqlx::query!("DELETE FROM leases WHERE ip = $1", ip)
             .execute(conn)
             .await?;
         Ok(())
     }
 
     pub async fn release_ip(
-        conn: &SqlitePool,
+        conn: &PgPool,
         ip: i64,
         id: &[u8],
     ) -> Result<Option<ClientInfo>, sqlx::Error> {
         let mut trans = conn.begin().await?;
         let cur = sqlx::query!(
-            "SELECT * FROM leases WHERE ip = ?1 AND client_id = ?2",
+            "SELECT * FROM leases WHERE ip = $1 AND client_id = $2",
             ip,
             id
         )
@@ -830,7 +953,7 @@ mod util {
         trans.commit().await?;
         // instead of deleting:
         // sqlx::query!(
-        //     "UPDATE leases SET leased = false WHERE ip = ?1 AND client_id = ?2",
+        //     "UPDATE leases SET leased = false WHERE ip = $1 AND client_id = $2",
         //     ip,
         //     id
         // )
@@ -851,7 +974,7 @@ mod util {
         state: Option<(bool, bool)>,
     ) -> Result<(), sqlx::Error>
     where
-        E: sqlx::Executor<'a, Database = Sqlite>,
+        E: sqlx::Executor<'a, Database = Postgres>,
     {
         match state {
             Some((leased, probation)) => {
@@ -859,7 +982,7 @@ mod util {
                     r#"INSERT INTO leases
                     (ip, client_id, expires_at, network, leased, probation)
                 VALUES
-                    (?1, ?2, ?3, ?4, ?5, ?6)"#,
+                    ($1, $2, $3, $4, $5, $6)"#,
                     ip,
                     client_id,
                     expires_at,
@@ -872,7 +995,7 @@ mod util {
             }
             None => {
                 sqlx::query!(
-                "INSERT INTO leases (ip, client_id, expires_at, network) VALUES (?1, ?2, ?3, ?4)",
+                "INSERT INTO leases (ip, client_id, expires_at, network) VALUES ($1, $2, $3, $4)",
                 ip,
                 client_id,
                 expires_at,
@@ -885,8 +1008,8 @@ mod util {
         Ok(())
     }
 
-    pub async fn find(pool: &SqlitePool, ip: i64) -> Result<Option<State>, sqlx::Error> {
-        Ok(sqlx::query!("SELECT * FROM leases WHERE ip = ?1", ip)
+    pub async fn find(pool: &PgPool, ip: i64) -> Result<Option<State>, sqlx::Error> {
+        Ok(sqlx::query!("SELECT * FROM leases WHERE ip = $1", ip)
             .fetch_optional(pool)
             .await?
             .map(|cur| {
@@ -901,7 +1024,7 @@ mod util {
     }
 
     /// select all values in leases table and return them
-    pub async fn select_all(pool: &SqlitePool) -> Result<Vec<State>, sqlx::Error> {
+    pub async fn select_all(pool: &PgPool) -> Result<Vec<State>, sqlx::Error> {
         Ok(sqlx::query!("SELECT * FROM leases")
             .fetch_all(pool)
             .await?
@@ -920,13 +1043,13 @@ mod util {
 
     /// return a count of all rows where leased & probation & un-expired
     pub async fn count(
-        pool: &SqlitePool,
+        pool: &PgPool,
         leased: bool,
         probation: bool,
         expires_at: i64,
     ) -> Result<usize, sqlx::Error> {
         Ok(sqlx::query_scalar!(
-            "SELECT COUNT(ip) as count_ip FROM leases WHERE leased = ?1 AND probation = ?2 AND expires_at > ?3",
+            r#"SELECT COUNT(ip) as "count_ip!" FROM leases WHERE leased = $1 AND probation = $2 AND expires_at > $3"#,
             leased,
             probation,
             expires_at
@@ -937,7 +1060,7 @@ mod util {
 
     /// return the info for this client_id and if it's un-expired
     pub async fn find_by_id(
-        pool: &SqlitePool,
+        pool: &PgPool,
         id: &[u8],
         now: i64,
     ) -> Result<Option<IpAddr>, sqlx::Error> {
@@ -946,7 +1069,7 @@ mod util {
             FROM
                 leases
             WHERE
-                client_id = ?1 AND expires_at > ?2
+                client_id = $1 AND expires_at > $2
             LIMIT 1",
             id,
             now
@@ -970,7 +1093,7 @@ mod util {
         leased: bool,
     ) -> Result<Option<IpAddr>, sqlx::Error>
     where
-        E: sqlx::Executor<'a, Database = Sqlite>,
+        E: sqlx::Executor<'a, Database = Postgres>,
     {
         // leased = false -> we got a discover but not yet ACK'd
         // leased = true -> we have ACK'd
@@ -978,13 +1101,13 @@ mod util {
             r#"
             UPDATE leases
             SET
-                client_id = ?4, leased = ?5, expires_at = ?6, probation = FALSE
+                client_id = $4, leased = $5, expires_at = $6, probation = FALSE
             WHERE ip in
                (
                    SELECT ip
                     FROM leases
                     WHERE
-                        ((expires_at < ?1) AND (ip >= ?2 AND ip <= ?3)) OR (client_id = ?4)
+                        ((expires_at < $1) AND (ip >= $2 AND ip <= $3)) OR (client_id = $4)
                     ORDER BY ip LIMIT 1
                 )
             RETURNING ip
@@ -1013,19 +1136,19 @@ mod util {
         new_id: Option<&[u8]>,
     ) -> Result<Option<IpAddr>, sqlx::Error>
     where
-        E: sqlx::Executor<'a, Database = Sqlite>,
+        E: sqlx::Executor<'a, Database = Postgres>,
     {
         Ok(sqlx::query!(
             r#"
             UPDATE leases
             SET
-                leased = ?4, expires_at = ?5, probation = ?6, client_id = ?7
+                leased = $4, expires_at = $5, probation = $6, client_id = $7
             WHERE ip in
                (
                     SELECT ip
                     FROM leases
                     WHERE
-                        ((expires_at > ?1) AND (client_id = ?2) AND (ip = ?3))
+                        ((expires_at > $1) AND (client_id = $2) AND (ip = $3))
                     ORDER BY ip LIMIT 1
                 )
             RETURNING ip
@@ -1055,20 +1178,20 @@ mod util {
         probation: bool,
     ) -> Result<Option<IpAddr>, sqlx::Error>
     where
-        E: sqlx::Executor<'a, Database = Sqlite>,
+        E: sqlx::Executor<'a, Database = Postgres>,
     {
         Ok(sqlx::query!(
             r#"
             UPDATE leases
             SET
-                client_id = ?2, leased = ?4, expires_at = ?5, probation = ?6
+                client_id = $2, leased = $4, expires_at = $5, probation = $6
             WHERE ip in
                (
                     SELECT ip
                     FROM leases
                     WHERE
-                        ((client_id = ?2 AND ip = ?3)
-                            OR (expires_at < ?1 AND ip = ?3))
+                        ((client_id = $2 AND ip = $3)
+                            OR (expires_at < $1 AND ip = $3))
                     ORDER BY ip LIMIT 1
                 )
             RETURNING ip
@@ -1092,7 +1215,7 @@ mod util {
         end_ip: i64,
     ) -> Result<Option<State>, sqlx::Error>
     where
-        E: sqlx::Executor<'a, Database = Sqlite>,
+        E: sqlx::Executor<'a, Database = Postgres>,
     {
         Ok(sqlx::query!(
             r#"
@@ -1101,7 +1224,7 @@ mod util {
             FROM
                 leases
             WHERE
-                ip >= ?1 AND ip <= ?2
+                ip >= $1 AND ip <= $2
             ORDER BY
                 ip DESC
             LIMIT 1
@@ -1175,15 +1298,15 @@ mod util {
         probation: bool,
     ) -> Result<Option<State>, sqlx::Error>
     where
-        E: sqlx::Executor<'a, Database = Sqlite>,
+        E: sqlx::Executor<'a, Database = Postgres>,
     {
         Ok(sqlx::query!(
             r#"
             UPDATE leases
             SET
-                client_id = ?2, expires_at = ?3, leased = ?4, probation = ?5
+                client_id = $2, expires_at = $3, leased = $4, probation = $5
             WHERE
-                ip = ?1
+                ip = $1
             RETURNING *
             "#,
             ip,
@@ -1262,14 +1385,14 @@ mod util_v6 {
         state: Option<(bool, bool)>,
     ) -> Result<(), sqlx::Error>
     where
-        E: sqlx::Executor<'a, Database = Sqlite>,
+        E: sqlx::Executor<'a, Database = Postgres>,
     {
         let (leased, probation) = state.unwrap_or((false, false));
         // prefix_len 128: IA_NA is always a full /128 (IA_PD prefixes: later phase)
         sqlx::query!(
             r#"INSERT INTO leases_v6
                 (addr, prefix_len, client_id, expires_at, network, leased, probation)
-               VALUES (?1, 128, ?2, ?3, ?4, ?5, ?6)"#,
+               VALUES ($1, 128, $2, $3, $4, $5, $6)"#,
             addr,
             client_id,
             expires_at,
@@ -1282,9 +1405,9 @@ mod util_v6 {
         Ok(())
     }
 
-    pub async fn find(pool: &SqlitePool, addr: &[u8]) -> Result<Option<State>, sqlx::Error> {
+    pub async fn find(pool: &PgPool, addr: &[u8]) -> Result<Option<State>, sqlx::Error> {
         Ok(sqlx::query!(
-            "SELECT * FROM leases_v6 WHERE addr = ?1 AND prefix_len = 128",
+            "SELECT * FROM leases_v6 WHERE addr = $1 AND prefix_len = 128",
             addr
         )
         .fetch_optional(pool)
@@ -1302,13 +1425,13 @@ mod util_v6 {
     }
 
     pub async fn find_by_id(
-        pool: &SqlitePool,
+        pool: &PgPool,
         id: &[u8],
         now: i64,
     ) -> Result<Option<IpAddr>, sqlx::Error> {
         Ok(sqlx::query!(
             "SELECT addr FROM leases_v6
-             WHERE client_id = ?1 AND expires_at > ?2 AND prefix_len = 128
+             WHERE client_id = $1 AND expires_at > $2 AND prefix_len = 128
              LIMIT 1",
             id,
             now
@@ -1320,10 +1443,10 @@ mod util_v6 {
 
     pub async fn delete<'a, E>(conn: E, addr: &[u8]) -> Result<(), sqlx::Error>
     where
-        E: sqlx::Executor<'a, Database = Sqlite>,
+        E: sqlx::Executor<'a, Database = Postgres>,
     {
         sqlx::query!(
-            "DELETE FROM leases_v6 WHERE addr = ?1 AND prefix_len = 128",
+            "DELETE FROM leases_v6 WHERE addr = $1 AND prefix_len = 128",
             addr
         )
         .execute(conn)
@@ -1332,13 +1455,13 @@ mod util_v6 {
     }
 
     pub async fn release_ip(
-        pool: &SqlitePool,
+        pool: &PgPool,
         addr: &[u8],
         id: &[u8],
     ) -> Result<Option<ClientInfo>, sqlx::Error> {
         let mut trans = pool.begin().await?;
         let cur = sqlx::query!(
-            "SELECT * FROM leases_v6 WHERE addr = ?1 AND client_id = ?2 AND prefix_len = 128",
+            "SELECT * FROM leases_v6 WHERE addr = $1 AND client_id = $2 AND prefix_len = 128",
             addr,
             id
         )
@@ -1365,11 +1488,11 @@ mod util_v6 {
         end: &[u8],
     ) -> Result<Option<State>, sqlx::Error>
     where
-        E: sqlx::Executor<'a, Database = Sqlite>,
+        E: sqlx::Executor<'a, Database = Postgres>,
     {
         Ok(sqlx::query!(
             r#"SELECT * FROM leases_v6
-               WHERE prefix_len = 128 AND addr >= ?1 AND addr <= ?2
+               WHERE prefix_len = 128 AND addr >= $1 AND addr <= $2
                ORDER BY addr DESC LIMIT 1"#,
             start,
             end
@@ -1399,17 +1522,17 @@ mod util_v6 {
         leased: bool,
     ) -> Result<Option<IpAddr>, sqlx::Error>
     where
-        E: sqlx::Executor<'a, Database = Sqlite>,
+        E: sqlx::Executor<'a, Database = Postgres>,
     {
         Ok(sqlx::query!(
             r#"
             UPDATE leases_v6
-            SET client_id = ?4, leased = ?5, expires_at = ?6, probation = FALSE
+            SET client_id = $4, leased = $5, expires_at = $6, probation = FALSE
             WHERE prefix_len = 128 AND addr IN
                (
                    SELECT addr FROM leases_v6
                    WHERE prefix_len = 128
-                     AND (((expires_at < ?1) AND (addr >= ?2 AND addr <= ?3)) OR (client_id = ?4))
+                     AND (((expires_at < $1) AND (addr >= $2 AND addr <= $3)) OR (client_id = $4))
                    ORDER BY addr LIMIT 1
                )
             RETURNING addr
@@ -1439,17 +1562,17 @@ mod util_v6 {
         new_id: Option<&[u8]>,
     ) -> Result<Option<IpAddr>, sqlx::Error>
     where
-        E: sqlx::Executor<'a, Database = Sqlite>,
+        E: sqlx::Executor<'a, Database = Postgres>,
     {
         Ok(sqlx::query!(
             r#"
             UPDATE leases_v6
-            SET leased = ?4, expires_at = ?5, probation = ?6, client_id = ?7
+            SET leased = $4, expires_at = $5, probation = $6, client_id = $7
             WHERE prefix_len = 128 AND addr IN
                (
                     SELECT addr FROM leases_v6
                     WHERE prefix_len = 128
-                      AND ((expires_at > ?1) AND (client_id = ?2) AND (addr = ?3))
+                      AND ((expires_at > $1) AND (client_id = $2) AND (addr = $3))
                     ORDER BY addr LIMIT 1
                )
             RETURNING addr
@@ -1478,17 +1601,17 @@ mod util_v6 {
         probation: bool,
     ) -> Result<Option<IpAddr>, sqlx::Error>
     where
-        E: sqlx::Executor<'a, Database = Sqlite>,
+        E: sqlx::Executor<'a, Database = Postgres>,
     {
         Ok(sqlx::query!(
             r#"
             UPDATE leases_v6
-            SET client_id = ?2, leased = ?4, expires_at = ?5, probation = ?6
+            SET client_id = $2, leased = $4, expires_at = $5, probation = $6
             WHERE prefix_len = 128 AND addr IN
                (
                     SELECT addr FROM leases_v6
                     WHERE prefix_len = 128
-                      AND ((client_id = ?2 AND addr = ?3) OR (expires_at < ?1 AND addr = ?3))
+                      AND ((client_id = $2 AND addr = $3) OR (expires_at < $1 AND addr = $3))
                     ORDER BY addr LIMIT 1
                )
             RETURNING addr
@@ -1514,13 +1637,13 @@ mod util_v6 {
         probation: bool,
     ) -> Result<Option<State>, sqlx::Error>
     where
-        E: sqlx::Executor<'a, Database = Sqlite>,
+        E: sqlx::Executor<'a, Database = Postgres>,
     {
         Ok(sqlx::query!(
             r#"
             UPDATE leases_v6
-            SET client_id = ?2, expires_at = ?3, leased = ?4, probation = ?5
-            WHERE addr = ?1 AND prefix_len = 128
+            SET client_id = $2, expires_at = $3, leased = $4, probation = $5
+            WHERE addr = $1 AND prefix_len = 128
             RETURNING *
             "#,
             addr,
@@ -1550,12 +1673,12 @@ mod util_v6 {
 
     /// find a delegated-prefix binding by its base and length.
     pub async fn find_pd(
-        pool: &SqlitePool,
+        pool: &PgPool,
         addr: &[u8],
         prefix_len: i64,
     ) -> Result<Option<State>, sqlx::Error> {
         Ok(sqlx::query!(
-            "SELECT * FROM leases_v6 WHERE addr = ?1 AND prefix_len = ?2",
+            "SELECT * FROM leases_v6 WHERE addr = $1 AND prefix_len = $2",
             addr,
             prefix_len
         )
@@ -1576,7 +1699,7 @@ mod util_v6 {
     /// insert or replace a delegated-prefix binding. The caller must have already
     /// checked the prefix is free / expired / owned by this client.
     pub async fn upsert_pd(
-        pool: &SqlitePool,
+        pool: &PgPool,
         addr: &[u8],
         prefix_len: i64,
         network: &[u8],
@@ -1586,9 +1709,13 @@ mod util_v6 {
     ) -> Result<(), sqlx::Error> {
         let (leased, probation) = state.unwrap_or((false, false));
         sqlx::query!(
-            r#"INSERT OR REPLACE INTO leases_v6
+            r#"INSERT INTO leases_v6
                 (addr, prefix_len, client_id, expires_at, network, leased, probation)
-               VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)"#,
+               VALUES ($1, $2, $3, $4, $5, $6, $7)
+               ON CONFLICT (addr, prefix_len) DO UPDATE SET
+                 client_id = EXCLUDED.client_id, expires_at = EXCLUDED.expires_at,
+                 network = EXCLUDED.network, leased = EXCLUDED.leased,
+                 probation = EXCLUDED.probation"#,
             addr,
             prefix_len,
             client_id,
@@ -1605,13 +1732,13 @@ mod util_v6 {
     /// look up a client's delegated prefix (base + length) by identity. Never
     /// returns IA_NA rows (prefix_len 128).
     pub async fn find_by_id_pd(
-        pool: &SqlitePool,
+        pool: &PgPool,
         id: &[u8],
         now: i64,
     ) -> Result<Option<(IpAddr, u8)>, sqlx::Error> {
         Ok(sqlx::query!(
             "SELECT addr, prefix_len FROM leases_v6
-             WHERE client_id = ?1 AND expires_at > ?2 AND prefix_len != 128
+             WHERE client_id = $1 AND expires_at > $2 AND prefix_len != 128
              LIMIT 1",
             id,
             now
@@ -1623,7 +1750,7 @@ mod util_v6 {
 
     /// extend an existing, unexpired delegated prefix if the id matches.
     pub async fn renew_pd(
-        pool: &SqlitePool,
+        pool: &PgPool,
         addr: &[u8],
         prefix_len: i64,
         client_id: &[u8],
@@ -1631,8 +1758,8 @@ mod util_v6 {
         now: i64,
     ) -> Result<Option<IpAddr>, sqlx::Error> {
         Ok(sqlx::query!(
-            r#"UPDATE leases_v6 SET leased = 1, expires_at = ?4, probation = 0
-               WHERE addr = ?1 AND prefix_len = ?2 AND client_id = ?3 AND expires_at > ?5
+            r#"UPDATE leases_v6 SET leased = TRUE, expires_at = $4, probation = FALSE
+               WHERE addr = $1 AND prefix_len = $2 AND client_id = $3 AND expires_at > $5
                RETURNING addr"#,
             addr,
             prefix_len,
@@ -1647,14 +1774,14 @@ mod util_v6 {
 
     /// release a delegated prefix if the (addr, len, id) all match.
     pub async fn release_pd(
-        pool: &SqlitePool,
+        pool: &PgPool,
         addr: &[u8],
         prefix_len: i64,
         id: &[u8],
     ) -> Result<Option<ClientInfo>, sqlx::Error> {
         let mut trans = pool.begin().await?;
         let cur = sqlx::query!(
-            "SELECT * FROM leases_v6 WHERE addr = ?1 AND prefix_len = ?2 AND client_id = ?3",
+            "SELECT * FROM leases_v6 WHERE addr = $1 AND prefix_len = $2 AND client_id = $3",
             addr,
             prefix_len,
             id
@@ -1669,7 +1796,7 @@ mod util_v6 {
         });
         if cur.is_some() {
             sqlx::query!(
-                "DELETE FROM leases_v6 WHERE addr = ?1 AND prefix_len = ?2",
+                "DELETE FROM leases_v6 WHERE addr = $1 AND prefix_len = $2",
                 addr,
                 prefix_len
             )
@@ -1682,13 +1809,13 @@ mod util_v6 {
 
     /// count leases_v6 rows in the given state that are un-expired
     pub async fn count(
-        pool: &SqlitePool,
+        pool: &PgPool,
         leased: bool,
         probation: bool,
         now: i64,
     ) -> Result<usize, sqlx::Error> {
         Ok(sqlx::query_scalar!(
-            "SELECT COUNT(addr) as count_addr FROM leases_v6 WHERE leased = ?1 AND probation = ?2 AND expires_at > ?3",
+            r#"SELECT COUNT(addr) as "count_addr!" FROM leases_v6 WHERE leased = $1 AND probation = $2 AND expires_at > $3"#,
             leased,
             probation,
             now
@@ -1698,7 +1825,7 @@ mod util_v6 {
     }
 
     /// all leases_v6 bindings (IA_NA addresses and IA_PD prefixes)
-    pub async fn select_all(pool: &SqlitePool) -> Result<Vec<State>, sqlx::Error> {
+    pub async fn select_all(pool: &PgPool) -> Result<Vec<State>, sqlx::Error> {
         Ok(sqlx::query!("SELECT * FROM leases_v6")
             .fetch_all(pool)
             .await?
@@ -1723,7 +1850,7 @@ mod v6_tests {
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
     use std::time::{Duration, SystemTime};
 
-    use super::SqliteDb;
+    use super::PostgresDb;
     use crate::{IpState, State, Storage};
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -1735,7 +1862,7 @@ mod v6_tests {
     /// mimics IpManager::reserve_first's two-step: try next_expired (or id
     /// match), else insert the next available address in the range.
     async fn alloc(
-        db: &SqliteDb,
+        db: &PostgresDb,
         range: &std::ops::RangeInclusive<IpAddr>,
         excl: &HashSet<IpAddr>,
         network: IpAddr,
@@ -1769,7 +1896,7 @@ mod v6_tests {
 
     #[tokio::test]
     async fn v6_insert_get_id_release() -> TestResult {
-        let db = SqliteDb::new("sqlite::memory:").await?;
+        let db = PostgresDb::new_test().await?;
         let addr = v6("2001:db8:1::100");
         let net = v6("2001:db8:1::");
         let id: &[u8] = &[0xaa, 0xbb, 0xcc];
@@ -1803,7 +1930,7 @@ mod v6_tests {
 
     #[tokio::test]
     async fn v6_next_available_sequential_honors_exclusions() -> TestResult {
-        let db = SqliteDb::new("sqlite::memory:").await?;
+        let db = PostgresDb::new_test().await?;
         let net = v6("2001:db8:1::");
         let range = v6("2001:db8:1::100")..=v6("2001:db8:1::110");
         let exp = SystemTime::now() + Duration::from_secs(60);
@@ -1838,7 +1965,7 @@ mod v6_tests {
     async fn v6_empty_range_skips_excluded_start() -> TestResult {
         // regression: an empty range whose first address is excluded must not
         // hand out that excluded address (which would then be rejected and loop).
-        let db = SqliteDb::new("sqlite::memory:").await?;
+        let db = PostgresDb::new_test().await?;
         let net = v6("2001:db8:1::");
         let range = v6("2001:db8:1::100")..=v6("2001:db8:1::110");
         let exp = SystemTime::now() + Duration::from_secs(60);
@@ -1854,7 +1981,7 @@ mod v6_tests {
 
     #[tokio::test]
     async fn v6_reserve_then_lease_via_update_unexpired() -> TestResult {
-        let db = SqliteDb::new("sqlite::memory:").await?;
+        let db = PostgresDb::new_test().await?;
         let addr = v6("2001:db8:1::100");
         let net = v6("2001:db8:1::");
         let id: &[u8] = &[9, 9, 9];
@@ -1873,7 +2000,7 @@ mod v6_tests {
 
     #[tokio::test]
     async fn v4_and_v6_coexist_in_separate_tables() -> TestResult {
-        let db = SqliteDb::new("sqlite::memory:").await?;
+        let db = PostgresDb::new_test().await?;
         let v4 = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 50));
         let v4net = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 0));
         let a6 = v6("2001:db8:1::100");
