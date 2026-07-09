@@ -1,0 +1,19 @@
+# Single source of truth for the three LoadBalancer VIPs.
+#
+# EDIT these three values for your site. Kustomize `replacements` (see
+# kustomization.yaml) copy them into BOTH each Service's requested IP
+# (io.cilium/lb-ipam-ips annotation) AND its Cilium LB-IPAM pool block, so you
+# never set an address in more than one place. To vary per environment, patch
+# this ConfigMap's `data` in an overlay.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dora-vips
+  namespace: dora
+data:
+  # anycast VIP for the DHCPv4 server (usg-dora-v4_server)
+  ipv4_vip: "203.0.113.10"
+  # anycast VIP for the DHCPv6 server (usg-dora-v6_server)
+  ipv6_vip: "2001:db8:a11::10"
+  # site-local VIP for the management API (usg-dora-api)
+  api_vip: "10.201.0.10"

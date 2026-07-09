@@ -4,8 +4,9 @@
 # required: the servers share an anycast pool (one v4 + one v6 VIP), the API
 # draws a distinct site-local address.
 #
-# Requires Cilium with LB-IPAM enabled. EDIT the CIDRs for your site; the
-# `io.cilium/lb-ipam-ips` annotations on the Services must fall inside these.
+# The single-address blocks below are populated from the dora-vips ConfigMap via
+# Kustomize `replacements` (see kustomization.yaml) — edit the VIPs there, not
+# here. Requires Cilium with LB-IPAM enabled.
 apiVersion: cilium.io/v2alpha1
 kind: CiliumLoadBalancerIPPool
 metadata:
@@ -15,10 +16,12 @@ spec:
     matchLabels:
       dora.io/lb-pool: anycast
   blocks:
-    # v4 anycast VIP range for usg-dora-v4_server (EDIT)
-    - cidr: "203.0.113.0/29"
-    # v6 anycast VIP range for usg-dora-v6_server (EDIT)
-    - cidr: "2001:db8:a11::/124"
+    # [0] v4 anycast VIP (usg-dora-v4_server) — set from dora-vips.ipv4_vip
+    - start: "203.0.113.10"
+      stop: "203.0.113.10"
+    # [1] v6 anycast VIP (usg-dora-v6_server) — set from dora-vips.ipv6_vip
+    - start: "2001:db8:a11::10"
+      stop: "2001:db8:a11::10"
 ---
 apiVersion: cilium.io/v2alpha1
 kind: CiliumLoadBalancerIPPool
@@ -29,7 +32,6 @@ spec:
     matchLabels:
       dora.io/lb-pool: site-local
   blocks:
-    # site-local range for the management API (usg-dora-api) (EDIT).
-    # Use an address reachable only within the site (RFC1918 / ULA), not the
-    # publicly-anycast DHCP VIP range.
-    - cidr: "10.201.0.0/29"
+    # [0] site-local API VIP (usg-dora-api) — set from dora-vips.api_vip
+    - start: "10.201.0.10"
+      stop: "10.201.0.10"

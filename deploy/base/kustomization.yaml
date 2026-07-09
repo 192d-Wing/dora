@@ -6,6 +6,7 @@ kind: Kustomization
 # deliberately does not use the global `namespace:` transformer.
 resources:
   - namespace.yaml
+  - vips.yaml
   - dora-config.yaml
   - db-secret.yaml
   - db.yaml
@@ -16,8 +17,64 @@ resources:
   - cilium-bgp.yaml
 
 # Point every dora workload at your built image. Override per environment, e.g.
-#   cd deploy/overlays/k8s && kustomize edit set image dora=registry1.dso.mil/ironbank/.../dora:1.2.3
+#   cd deploy/overlays/k8s && kustomize edit set image usg-dora=registry1.dso.mil/ironbank/.../usg-dora:1.2.3
 images:
-  - name: dora
-    newName: dora
+  - name: usg-dora
+    newName: usg-dora
     newTag: latest
+
+# The three VIPs are defined once in the dora-vips ConfigMap and copied from
+# there into each Service's requested address (io.cilium/lb-ipam-ips) AND its
+# Cilium LB-IPAM pool block, so an address is never set in two places.
+replacements:
+  # IPv4 anycast VIP -> v4 Service + anycast pool block [0]
+  - source:
+      kind: ConfigMap
+      name: dora-vips
+      fieldPath: data.ipv4_vip
+    targets:
+      - select:
+          kind: Service
+          name: usg-dora-v4-server
+        fieldPaths:
+          - metadata.annotations.[io.cilium/lb-ipam-ips]
+      - select:
+          kind: CiliumLoadBalancerIPPool
+          name: dora-anycast
+        fieldPaths:
+          - spec.blocks.0.start
+          - spec.blocks.0.stop
+  # IPv6 anycast VIP -> v6 Service + anycast pool block [1]
+  - source:
+      kind: ConfigMap
+      name: dora-vips
+      fieldPath: data.ipv6_vip
+    targets:
+      - select:
+          kind: Service
+          name: usg-dora-v6-server
+        fieldPaths:
+          - metadata.annotations.[io.cilium/lb-ipam-ips]
+      - select:
+          kind: CiliumLoadBalancerIPPool
+          name: dora-anycast
+        fieldPaths:
+          - spec.blocks.1.start
+          - spec.blocks.1.stop
+  # site-local API VIP -> api Service + site-local pool block [0]
+  - source:
+      kind: ConfigMap
+      name: dora-vips
+      fieldPath: data.api_vip
+    targets:
+      - select:
+          kind: Service
+          name: usg-dora-api
+        fieldPaths:
+          - metadata.annotations.[io.cilium/lb-ipam-ips]
+      - select:
+          kind: CiliumLoadBalancerIPPool
+          name: dora-site-local
+        fieldPaths:
+          - spec.blocks.0.start
+          - spec.blocks.0.stop

@@ -59,15 +59,20 @@ source address and the relay accepts them.
 
 ## What you MUST edit before applying
 
-1. **Image** — `deploy/base/kustomization.yaml` `images:` (your registry/tag),
-   e.g. the Iron Bank image this repo builds.
+1. **Image** — `deploy/base/kustomization.yaml` `images:` (name `usg-dora`; set
+   your registry/tag), e.g. the Iron Bank image this repo builds:
+   `kustomize edit set image usg-dora=registry1.dso.mil/.../usg-dora:1.2.3`.
 2. **DB secret** — `deploy/base/db-secret.yaml` (`POSTGRES_PASSWORD`,
    `DATABASE_URL`). Replace with a real, out-of-band-managed secret.
 3. **dora config** — `deploy/base/dora-config.yaml` (`config.yaml`): your
    networks, ranges, and options. `interfaces:` must name an interface present
    in the pod (default `eth0`).
-4. **VIPs / pools** — `deploy/base/cilium-lb-ipam.yaml` CIDRs, and the
-   `io.cilium/lb-ipam-ips` annotations on each Service (must fall inside a pool).
+4. **VIPs** — `deploy/base/vips.yaml` (the `dora-vips` ConfigMap): the three
+   values `ipv4_vip`, `ipv6_vip`, `api_vip`. This is the single source of truth —
+   Kustomize `replacements` copy each into both its Service's requested address
+   (`io.cilium/lb-ipam-ips`) and its Cilium LB-IPAM pool block, so you set each
+   VIP in exactly one place. To vary per environment, patch this ConfigMap's
+   `data` in an overlay.
 5. **BGP** — `deploy/base/cilium-bgp.yaml` local/peer ASNs and the peer address.
 6. **Storage class** — the overlay patch (`standard` for k8s, `local-path` for
    k3s) to match your cluster.
