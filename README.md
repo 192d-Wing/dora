@@ -56,6 +56,8 @@ cargo run --bin dora -- --help
 
 [To build and run dora in docker see docs/docker.md](./docs/docker.md)
 
+[To deploy dora on Kubernetes/K3s with Cilium see docs/kubernetes_deploy.md](./docs/kubernetes_deploy.md)
+
 `dora` requires a config file to start. See [example.yaml](./example.yaml) for all available options.
 
 Use `DORA_LOG` env var for adjusting log level and which targets, see [here](https://docs.rs/tracing-subscriber/0.2.20/tracing_subscriber/fmt/index.html#filtering-events-with-environment-variables) for more options.
