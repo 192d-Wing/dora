@@ -6,6 +6,11 @@ use mac_address::MacAddress;
 
 use super::utils;
 
+// Number of times the test client re-sends a message while waiting for a
+// response (see client.rs). Kept small on purpose: some tests (e.g.
+// test_flood_threshold) rely on a throttled/dropped message staying dropped, so
+// extra retries would let a late response slip through. Startup latency is
+// handled by waiting for dora to be ready in the harness, not by retrying more.
 pub const SEND_COUNT: usize = 2;
 
 #[derive(Builder, Debug, Clone)]

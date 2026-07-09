@@ -1147,7 +1147,12 @@ mod tests {
             .set_subnet("192.168.1.0/24".parse()?)
             .set_ranges(vec![range.clone()]);
         let client_id = &[1, 2, 3, 4, 5, 6];
-        let expires_at = SystemTime::now() + Duration::from_secs(1);
+        // Expiry is stored at 1-second granularity and looked up with a strict
+        // `expires_at > now`, so a 1s lease reserved just before a second boundary
+        // can read back as already-expired (lookup_id -> Unreserved). Use a few
+        // seconds so the immediate lookup is reliable; the sleep below still
+        // outlives it to exercise the expired-entry cleanup.
+        let expires_at = SystemTime::now() + Duration::from_secs(3);
         let ip = mgr
             .reserve_first(&range, &network, client_id, expires_at, None)
             .await?;
@@ -1157,7 +1162,8 @@ mod tests {
             IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100))
         );
 
-        tokio::time::sleep(Duration::from_secs(2)).await;
+        // outlive the 3s lease above so the entry is expired for the next reserve
+        tokio::time::sleep(Duration::from_secs(5)).await;
 
         // try another range with the same client id-- should delete previous expired
         // entry
@@ -1174,7 +1180,8 @@ mod tests {
             .set_subnet("192.168.5.0/24".parse()?)
             .set_ranges(vec![range.clone()]);
         let client_id = &[1, 2, 3, 4, 5, 6];
-        let expires_at = SystemTime::now() + Duration::from_secs(1);
+        // long lease: this is the final lookup, so it just needs to stay valid
+        let expires_at = SystemTime::now() + Duration::from_secs(60);
         let ip = mgr
             .reserve_first(&range, &network, client_id, expires_at, None)
             .await?;

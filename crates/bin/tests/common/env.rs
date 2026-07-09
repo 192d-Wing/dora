@@ -117,6 +117,10 @@ fn create_test_net_namespace(netns: &str) {
     // Clean up any existing namespace first (from failed test runs)
     run_cmd_ignore_failure(&format!("{SUDO} ip netns del {netns}"));
     run_cmd(&format!("{SUDO} ip netns add {netns}"));
+    // A fresh namespace has loopback down; bring it up so dora's management API
+    // on 127.0.0.1 is reachable for the readiness probe in start_dhcp_server.
+    // (DHCP itself uses the veth, so this doesn't affect the datapath.)
+    run_cmd(&format!("{SUDO} ip netns exec {netns} ip link set lo up"));
 }
 
 fn remove_test_net_namespace(netns: &str) {
@@ -164,7 +168,32 @@ fn start_dhcp_server(config: &str, netns: &str, db_url: &str) -> Child {
         .spawn()
         .expect("Failed to start DHCP server");
 
-    thread::sleep(std::time::Duration::from_secs(1));
+    // Wait until dora is actually serving before the test sends. It connects to
+    // Postgres and runs migrations at startup, so readiness is not instant and a
+    // fixed sleep is fragile under CI load. Poll dora's health endpoint instead
+    // (its management API binds 127.0.0.1:3333 inside the namespace); the v4
+    // server is registered right after the API reports healthy. Bounded so a dora
+    // that never comes up still falls through to the liveness check below.
+    let health =
+        format!("{SUDO} ip netns exec {netns} curl -sf --max-time 1 http://127.0.0.1:3333/health",);
+    let health_cmd: Vec<&str> = health.split(' ').collect();
+    for _ in 0..40 {
+        if let Ok(Some(ret)) = child.try_wait() {
+            panic!("Failed to start DHCP server {ret:?}");
+        }
+        let ready = Command::new(health_cmd[0])
+            .args(&health_cmd[1..])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if ready {
+            break;
+        }
+        thread::sleep(std::time::Duration::from_millis(250));
+    }
     if let Ok(Some(ret)) = child.try_wait() {
         panic!("Failed to start DHCP server {ret:?}");
     }
