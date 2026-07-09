@@ -1,0 +1,92 @@
+# usg-dora-v6_server: the DHCPv6 server role (`dora --role v6`).
+#
+# Fronted by an anycast VIP (v6) from the same anycast pool as the v4 server;
+# they are different addresses because they are different families.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: usg-dora-v6-server
+  namespace: dora
+  labels: &labels
+    app.kubernetes.io/name: usg-dora-v6-server
+    app.kubernetes.io/component: dhcpv6
+    app.kubernetes.io/part-of: usg-dora
+    dora.io/workload: usg-dora-v6_server
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: usg-dora-v6-server
+  template:
+    metadata:
+      labels: *labels
+    spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: usg-dora-v6-server
+                topologyKey: kubernetes.io/hostname
+      containers:
+        - name: dora
+          image: dora:latest
+          args:
+            - "--role"
+            - "v6"
+            - "-c"
+            - "/etc/dora/config.yaml"
+            - "--v6-addr"
+            - "[::]:547"
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: dora-db
+                  key: DATABASE_URL
+            - name: DORA_LOG
+              value: info
+          ports:
+            - name: dhcpv6
+              containerPort: 547
+              protocol: UDP
+          volumeMounts:
+            - name: config
+              mountPath: /etc/dora
+              readOnly: true
+          resources:
+            requests:
+              cpu: 100m
+              memory: 64Mi
+            limits:
+              memory: 256Mi
+      volumes:
+        - name: config
+          configMap:
+            name: dora-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: usg-dora-v6-server
+  namespace: dora
+  labels:
+    app.kubernetes.io/name: usg-dora-v6-server
+    app.kubernetes.io/part-of: usg-dora
+    dora.io/lb-pool: anycast
+  annotations:
+    io.cilium/lb-ipam-ips: "2001:db8:a11::10"
+spec:
+  type: LoadBalancer
+  ipFamilyPolicy: SingleStack
+  ipFamilies: [IPv6]
+  externalTrafficPolicy: Local
+  selector:
+    app.kubernetes.io/name: usg-dora-v6-server
+  ports:
+    - name: dhcpv6
+      port: 547
+      targetPort: dhcpv6
+      protocol: UDP
