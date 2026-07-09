@@ -16,11 +16,12 @@ resources:
   - cilium-lb-ipam.yaml
   - cilium-bgp.yaml
 
-# Point every dora workload at your built image. Override per environment, e.g.
-#   cd deploy/overlays/k8s && kustomize edit set image usg-dora=registry1.dso.mil/ironbank/.../usg-dora:1.2.3
+# Every dora workload runs this image. Defaults to the GHCR image published by
+# the release workflow; override per environment (e.g. an Iron Bank mirror) with
+#   cd deploy/overlays/k8s && kustomize edit set image usg-dora=<registry>/usg-dora:<tag>
 images:
   - name: usg-dora
-    newName: usg-dora
+    newName: ghcr.io/192d-wing/usg-dora
     newTag: latest
 
 # The three VIPs are defined once in the dora-vips ConfigMap and copied from

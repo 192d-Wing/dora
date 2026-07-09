@@ -59,9 +59,10 @@ source address and the relay accepts them.
 
 ## What you MUST edit before applying
 
-1. **Image** — `deploy/base/kustomization.yaml` `images:` (name `usg-dora`; set
-   your registry/tag), e.g. the Iron Bank image this repo builds:
-   `kustomize edit set image usg-dora=registry1.dso.mil/.../usg-dora:1.2.3`.
+1. **Image** — defaults to `ghcr.io/192d-wing/usg-dora:latest` (published by the
+   `release.yml` workflow). Pin a version or point at your own mirror via
+   `deploy/base/kustomization.yaml` `images:`, e.g.
+   `kustomize edit set image usg-dora=ghcr.io/192d-wing/usg-dora:v1.2.3`.
 2. **DB secret** — `deploy/base/db-secret.yaml` (`POSTGRES_PASSWORD`,
    `DATABASE_URL`). Replace with a real, out-of-band-managed secret.
 3. **dora config** — `deploy/base/dora-config.yaml` (`config.yaml`): your

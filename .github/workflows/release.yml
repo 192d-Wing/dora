@@ -1,0 +1,160 @@
+# Publish the usg-dora container image to GitHub Container Registry (GHCR).
+#
+#   * push a `v*` tag (e.g. v1.2.3) -> immutable :1.2.3, :1.2, and :latest
+#   * push to `main`                -> rolling :main and :sha-<short>
+#
+# Each architecture builds natively on its own runner (no QEMU, matching the CI
+# `docker` job) and is pushed to GHCR *by digest*; a final job stitches the
+# per-arch digests into one multi-arch manifest and applies the human-readable
+# tags. The runtime base is Iron Bank's hardened UBI, so the build still logs in
+# to registry1.dso.mil to pull it.
+name: Release
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE: ghcr.io/192d-wing/usg-dora
+
+jobs:
+  build:
+    name: Build & push (${{ matrix.platform }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            arch: amd64
+            runner: ubuntu-latest
+          - platform: linux/arm64
+            arch: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v7
+
+      - name: Set up Docker Buildx
+        id: buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Log in to Iron Bank
+        uses: docker/login-action@v3
+        with:
+          registry: registry1.dso.mil
+          username: ${{ secrets.REPO1_USER }}
+          password: ${{ secrets.REPO1 }}
+
+      # Same cache strategy as the CI `docker` job: persist the cargo registry
+      # and compiled target/ dir (exposed as BuildKit cache mounts) across runs.
+      - name: Cache Rust build artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            buildkit-cache/cargo-registry
+            buildkit-cache/cargo-git
+            buildkit-cache/target
+          key: buildkit-rust-${{ matrix.arch }}-${{ github.sha }}
+          restore-keys: |
+            buildkit-rust-${{ matrix.arch }}-
+
+      - name: Inject build cache into BuildKit
+        uses: reproducible-containers/buildkit-cache-dance@v3.4.0
+        with:
+          builder: ${{ steps.buildx.outputs.name }}
+          cache-map: |
+            {
+              "buildkit-cache/cargo-registry": "/usr/local/cargo/registry",
+              "buildkit-cache/cargo-git": "/usr/local/cargo/git",
+              "buildkit-cache/target": "/usr/src/dora/target"
+            }
+
+      - name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: infra-build/Containerfile
+          platforms: ${{ matrix.platform }}
+          # push the per-arch image by digest only; the merge job applies tags
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=${{ matrix.platform }}
+          cache-to: type=gha,mode=min,scope=${{ matrix.platform }}
+
+      - name: Export digest
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: digest-${{ matrix.arch }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge:
+    name: Publish multi-arch manifest
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download digests
+        uses: actions/download-artifact@v4
+        with:
+          path: /tmp/digests
+          pattern: digest-*
+          merge-multiple: true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # tags: semver parts on a v* tag (+ :latest); :main on a main push; and a
+      # :sha-<short> on every run.
+      - name: Compute tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=ref,event=branch
+            type=sha,format=short
+          flavor: |
+            latest=auto
+
+      - name: Create and push manifest list
+        working-directory: /tmp/digests
+        run: |
+          docker buildx imagetools create \
+            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf '${{ env.IMAGE }}@sha256:%s ' *)
+
+      - name: Inspect published image
+        run: docker buildx imagetools inspect ${{ env.IMAGE }}:${{ steps.meta.outputs.version }}
