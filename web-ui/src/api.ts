@@ -159,6 +159,19 @@ export interface ConfigCandidateListResponse {
   items: ConfigCandidate[];
 }
 
+export async function del<T>(path: string, body?: Record<string, unknown>): Promise<T> {
+  const res = await fetch(`${BASE}${path}`, {
+    method: "DELETE",
+    headers: { ...authHeaders(), "Content-Type": "application/json" },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`${res.status}: ${text}`);
+  }
+  return res.json();
+}
+
 export const api = {
   health: () => get<HealthResponse>("/health"),
   ready: () => get<ReadinessResponse>("/ready"),
@@ -177,4 +190,6 @@ export const api = {
     get<ConfigCandidateListResponse>("/v1/config/candidates", params),
   configCandidate: (id: string) =>
     get<ConfigCandidate>(`/v1/config/candidates/${id}`),
+  releaseLease: (family: "v4" | "v6", ip: string) =>
+    post<{ message: string }>("/v1/actions/release-lease", { family, ip }),
 };

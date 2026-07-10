@@ -10,6 +10,7 @@ import Table from "@cloudscape-design/components/table";
 import Tabs from "@cloudscape-design/components/tabs";
 import ContentLayout from "@cloudscape-design/components/content-layout";
 import Alert from "@cloudscape-design/components/alert";
+import Modal from "@cloudscape-design/components/modal";
 import { api, V4Lease, V6Lease } from "../api";
 
 const PAGE_SIZE = 50;
@@ -32,6 +33,25 @@ function V4LeaseTable() {
   const [stateFilter, setStateFilter] = useState(STATE_OPTIONS[0]);
   const [ipFilter, setIpFilter] = useState("");
   const [networkFilter, setNetworkFilter] = useState("");
+  const [releaseTarget, setReleaseTarget] = useState<V4Lease | null>(null);
+  const [releasing, setReleasing] = useState(false);
+  const [success, setSuccess] = useState<string | null>(null);
+
+  const confirmRelease = async () => {
+    if (!releaseTarget) return;
+    setReleasing(true);
+    setError(null);
+    try {
+      await api.releaseLease("v4", releaseTarget.ip);
+      setSuccess(`Lease ${releaseTarget.ip} released.`);
+      setReleaseTarget(null);
+      load();
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setReleasing(false);
+    }
+  };
 
   const load = () => {
     setLoading(true);
@@ -60,7 +80,8 @@ function V4LeaseTable() {
 
   return (
     <SpaceBetween size="m">
-      {error && <Alert type="error">{error}</Alert>}
+      {error && <Alert type="error" dismissible onDismiss={() => setError(null)}>{error}</Alert>}
+      {success && <Alert type="success" dismissible onDismiss={() => setSuccess(null)}>{success}</Alert>}
       <Table
         loading={loading}
         loadingText="Loading leases..."
@@ -158,6 +179,19 @@ function V4LeaseTable() {
             cell: (item) => item.source ?? "-",
             width: 100,
           },
+          {
+            id: "actions",
+            header: "Actions",
+            cell: (item) =>
+              item.state === "leased" || item.state === "reserved" ? (
+                <Button variant="inline-link" onClick={() => setReleaseTarget(item)}>
+                  Release
+                </Button>
+              ) : (
+                "-"
+              ),
+            width: 100,
+          },
         ]}
         empty={
           <Box textAlign="center" color="inherit">
@@ -166,6 +200,22 @@ function V4LeaseTable() {
           </Box>
         }
       />
+      <Modal
+        visible={releaseTarget !== null}
+        onDismiss={() => setReleaseTarget(null)}
+        header="Release Lease"
+        footer={
+          <Box float="right">
+            <SpaceBetween direction="horizontal" size="xs">
+              <Button variant="link" onClick={() => setReleaseTarget(null)}>Cancel</Button>
+              <Button variant="primary" loading={releasing} onClick={confirmRelease}>Release</Button>
+            </SpaceBetween>
+          </Box>
+        }
+      >
+        Release lease for <strong>{releaseTarget?.ip}</strong> in network{" "}
+        <strong>{releaseTarget?.network}</strong>? The address will be returned to the pool.
+      </Modal>
     </SpaceBetween>
   );
 }
@@ -179,6 +229,25 @@ function V6LeaseTable() {
   const [stateFilter, setStateFilter] = useState(STATE_OPTIONS[0]);
   const [ipFilter, setIpFilter] = useState("");
   const [networkFilter, setNetworkFilter] = useState("");
+  const [releaseTarget, setReleaseTarget] = useState<V6Lease | null>(null);
+  const [releasing, setReleasing] = useState(false);
+  const [success, setSuccess] = useState<string | null>(null);
+
+  const confirmRelease = async () => {
+    if (!releaseTarget?.ip) return;
+    setReleasing(true);
+    setError(null);
+    try {
+      await api.releaseLease("v6", releaseTarget.ip);
+      setSuccess(`Lease ${releaseTarget.ip} released.`);
+      setReleaseTarget(null);
+      load();
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setReleasing(false);
+    }
+  };
 
   const load = () => {
     setLoading(true);
@@ -207,7 +276,8 @@ function V6LeaseTable() {
 
   return (
     <SpaceBetween size="m">
-      {error && <Alert type="error">{error}</Alert>}
+      {error && <Alert type="error" dismissible onDismiss={() => setError(null)}>{error}</Alert>}
+      {success && <Alert type="success" dismissible onDismiss={() => setSuccess(null)}>{success}</Alert>}
       <Table
         loading={loading}
         loadingText="Loading leases..."
@@ -308,6 +378,19 @@ function V6LeaseTable() {
             cell: (item) => item.source ?? "-",
             width: 100,
           },
+          {
+            id: "actions",
+            header: "Actions",
+            cell: (item) =>
+              (item.state === "leased" || item.state === "reserved") && item.ip ? (
+                <Button variant="inline-link" onClick={() => setReleaseTarget(item)}>
+                  Release
+                </Button>
+              ) : (
+                "-"
+              ),
+            width: 100,
+          },
         ]}
         empty={
           <Box textAlign="center" color="inherit">
@@ -316,6 +399,22 @@ function V6LeaseTable() {
           </Box>
         }
       />
+      <Modal
+        visible={releaseTarget !== null}
+        onDismiss={() => setReleaseTarget(null)}
+        header="Release Lease"
+        footer={
+          <Box float="right">
+            <SpaceBetween direction="horizontal" size="xs">
+              <Button variant="link" onClick={() => setReleaseTarget(null)}>Cancel</Button>
+              <Button variant="primary" loading={releasing} onClick={confirmRelease}>Release</Button>
+            </SpaceBetween>
+          </Box>
+        }
+      >
+        Release lease for <strong>{releaseTarget?.ip}</strong> in network{" "}
+        <strong>{releaseTarget?.network}</strong>? The address will be returned to the pool.
+      </Modal>
     </SpaceBetween>
   );
 }
