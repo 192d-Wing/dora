@@ -17,6 +17,7 @@ import Toggle from "@cloudscape-design/components/toggle";
 import { api, post, ConfigDocument } from "../api";
 
 interface PoolRow {
+  name: string;
   network: string;
   rangeStart: string;
   rangeEnd: string;
@@ -29,6 +30,7 @@ interface PoolRow {
 }
 
 interface PoolFormState {
+  name: string;
   network: string;
   rangeStart: string;
   rangeEnd: string;
@@ -41,6 +43,7 @@ interface PoolFormState {
 }
 
 const EMPTY_V4_FORM: PoolFormState = {
+  name: "",
   network: "",
   rangeStart: "",
   rangeEnd: "",
@@ -53,6 +56,7 @@ const EMPTY_V4_FORM: PoolFormState = {
 };
 
 interface V6PoolRow {
+  name: string;
   network: string;
   type: "range" | "pd_pool";
   rangeStart: string;
@@ -65,6 +69,7 @@ interface V6PoolRow {
 }
 
 interface V6PoolFormState {
+  name: string;
   network: string;
   type: "range" | "pd_pool";
   rangeStart: string;
@@ -76,6 +81,7 @@ interface V6PoolFormState {
 }
 
 const EMPTY_V6_FORM: V6PoolFormState = {
+  name: "",
   network: "",
   type: "range",
   rangeStart: "",
@@ -99,6 +105,7 @@ function extractV4Pools(doc: Record<string, unknown>): PoolRow[] {
     const probationPeriod = String(netCfg.probation_period ?? "");
     if (!ranges || ranges.length === 0) {
       rows.push({
+        name: typeof netCfg.name === "string" ? netCfg.name : "",
         network,
         rangeStart: "-",
         rangeEnd: "-",
@@ -115,6 +122,7 @@ function extractV4Pools(doc: Record<string, unknown>): PoolRow[] {
       const config = range.config as Record<string, unknown> | undefined;
       const leaseTime = config?.lease_time as Record<string, unknown> | undefined;
       rows.push({
+        name: (typeof range.name === "string" && range.name) || (typeof netCfg.name === "string" && netCfg.name) || "",
         network,
         rangeStart: String(range.start ?? ""),
         rangeEnd: String(range.end ?? ""),
@@ -146,7 +154,10 @@ function extractV6Pools(doc: Record<string, unknown>): V6PoolRow[] {
         const config = range.config as Record<string, unknown> | undefined;
         const leaseTime = config?.lease_time as Record<string, unknown> | undefined;
         const preferredTime = config?.preferred_time as Record<string, unknown> | undefined;
+        const rangeName = (typeof range.name === "string" && range.name)
+          || (typeof netCfg.name === "string" && netCfg.name) || "";
         rows.push({
+          name: rangeName,
           network,
           type: "range",
           rangeStart: String(range.start ?? ""),
@@ -164,7 +175,10 @@ function extractV6Pools(doc: Record<string, unknown>): V6PoolRow[] {
         const config = pool.config as Record<string, unknown> | undefined;
         const leaseTime = config?.lease_time as Record<string, unknown> | undefined;
         const preferredTime = config?.preferred_time as Record<string, unknown> | undefined;
+        const poolName = (typeof pool.name === "string" && pool.name)
+          || (typeof netCfg.name === "string" && netCfg.name) || "";
         rows.push({
+          name: poolName,
           network,
           type: "pd_pool",
           rangeStart: "",
@@ -179,6 +193,7 @@ function extractV6Pools(doc: Record<string, unknown>): V6PoolRow[] {
     }
     if (!ranges?.length && !pdPools?.length) {
       rows.push({
+        name: typeof netCfg.name === "string" ? netCfg.name : "",
         network,
         type: "range",
         rangeStart: "-",
@@ -210,6 +225,7 @@ function applyV4Pool(
   >;
 
   const newRange: Record<string, unknown> = {
+    ...(form.name ? { name: form.name } : {}),
     start: form.rangeStart,
     end: form.rangeEnd,
     config: {
@@ -304,6 +320,7 @@ function applyV6Pool(
   if (form.type === "range") {
     if (!net.ranges) net.ranges = [];
     (net.ranges as Array<Record<string, unknown>>).push({
+      ...(form.name ? { name: form.name } : {}),
       start: form.rangeStart,
       end: form.rangeEnd,
       ...timeCfg,
@@ -312,6 +329,7 @@ function applyV6Pool(
   } else {
     if (!net.pd_pools) net.pd_pools = [];
     (net.pd_pools as Array<Record<string, unknown>>).push({
+      ...(form.name ? { name: form.name } : {}),
       prefix: form.prefix,
       delegated_len: parseInt(form.delegatedLen, 10) || 64,
       ...timeCfg,
@@ -321,35 +339,90 @@ function applyV6Pool(
   return clone;
 }
 
+const IPV4_RE = /^(?:(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d\d?)$/;
+const IPV4_CIDR_RE = /^(?:(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\/(?:[0-9]|[12]\d|3[0-2])$/;
+const IPV6_RE = /^([0-9a-fA-F]{0,4}:){2,7}[0-9a-fA-F]{0,4}$/;
+const IPV6_CIDR_RE = /^([0-9a-fA-F]{0,4}:){2,7}[0-9a-fA-F]{0,4}\/\d{1,3}$/;
+
+function validateIpv4(value: string): string | undefined {
+  if (!value) return "Required";
+  if (!IPV4_RE.test(value)) return "Enter a valid IPv4 address (e.g. 192.168.1.10)";
+  return undefined;
+}
+
+function validateIpv4Cidr(value: string): string | undefined {
+  if (!value) return "Required";
+  if (!IPV4_CIDR_RE.test(value)) return "Enter a valid IPv4 CIDR (e.g. 192.168.1.0/24)";
+  return undefined;
+}
+
+function validateIpv6(value: string): string | undefined {
+  if (!value) return "Required";
+  if (!IPV6_RE.test(value)) return "Enter a valid IPv6 address (e.g. 2001:db8:1::100)";
+  return undefined;
+}
+
+function validateIpv6Cidr(value: string): string | undefined {
+  if (!value) return "Required";
+  if (!IPV6_CIDR_RE.test(value)) return "Enter a valid IPv6 CIDR (e.g. 2001:db8:1::/64)";
+  return undefined;
+}
+
+function validateRangeOrder(start: string, end: string, ipRe: RegExp): string | undefined {
+  if (!ipRe.test(start) || !ipRe.test(end)) return undefined;
+  if (start > end) return "Range end must be greater than or equal to start";
+  return undefined;
+}
+
 function V4PoolForm({
   form,
   onChange,
+  showErrors,
 }: {
   form: PoolFormState;
   onChange: (f: PoolFormState) => void;
+  showErrors: boolean;
 }) {
+  const networkErr = showErrors ? validateIpv4Cidr(form.network) : undefined;
+  const startErr = showErrors ? validateIpv4(form.rangeStart) : undefined;
+  const endErr = showErrors
+    ? (validateIpv4(form.rangeEnd) ?? validateRangeOrder(form.rangeStart, form.rangeEnd, IPV4_RE))
+    : undefined;
+
   return (
     <SpaceBetween size="m">
-      <FormField label="Network (CIDR)">
-        <Input
-          value={form.network}
-          onChange={({ detail }) => onChange({ ...form, network: detail.value })}
-          placeholder="192.168.1.0/24"
-        />
-      </FormField>
       <ColumnLayout columns={2}>
-        <FormField label="Range Start">
+        <FormField label="Pool Name (optional)" description="A friendly label for quick search">
+          <Input
+            value={form.name}
+            onChange={({ detail }) => onChange({ ...form, name: detail.value })}
+            placeholder="e.g. Office LAN"
+          />
+        </FormField>
+        <FormField label="Network (CIDR)" errorText={networkErr}>
+          <Input
+            value={form.network}
+            onChange={({ detail }) => onChange({ ...form, network: detail.value })}
+            placeholder="192.168.1.0/24"
+            invalid={!!networkErr}
+          />
+        </FormField>
+      </ColumnLayout>
+      <ColumnLayout columns={2}>
+        <FormField label="Range Start" errorText={startErr}>
           <Input
             value={form.rangeStart}
             onChange={({ detail }) => onChange({ ...form, rangeStart: detail.value })}
             placeholder="192.168.1.10"
+            invalid={!!startErr}
           />
         </FormField>
-        <FormField label="Range End">
+        <FormField label="Range End" errorText={endErr}>
           <Input
             value={form.rangeEnd}
             onChange={({ detail }) => onChange({ ...form, rangeEnd: detail.value })}
             placeholder="192.168.1.250"
+            invalid={!!endErr}
           />
         </FormField>
       </ColumnLayout>
@@ -409,19 +482,36 @@ function V4PoolForm({
 function V6PoolForm({
   form,
   onChange,
+  showErrors,
 }: {
   form: V6PoolFormState;
   onChange: (f: V6PoolFormState) => void;
+  showErrors: boolean;
 }) {
   const isRange = form.type === "range";
+  const networkErr = showErrors ? validateIpv6Cidr(form.network) : undefined;
+  const startErr = showErrors && isRange ? validateIpv6(form.rangeStart) : undefined;
+  const endErr = showErrors && isRange
+    ? (validateIpv6(form.rangeEnd) ?? validateRangeOrder(form.rangeStart, form.rangeEnd, IPV6_RE))
+    : undefined;
+  const prefixErr = showErrors && !isRange ? validateIpv6Cidr(form.prefix) : undefined;
+
   return (
     <SpaceBetween size="m">
+      <FormField label="Pool Name (optional)" description="A friendly label for quick search">
+        <Input
+          value={form.name}
+          onChange={({ detail }) => onChange({ ...form, name: detail.value })}
+          placeholder="e.g. Server VLAN"
+        />
+      </FormField>
       <ColumnLayout columns={2}>
-        <FormField label="Network (CIDR)">
+        <FormField label="Network (CIDR)" errorText={networkErr}>
           <Input
             value={form.network}
             onChange={({ detail }) => onChange({ ...form, network: detail.value })}
             placeholder="2001:db8:1::/64"
+            invalid={!!networkErr}
           />
         </FormField>
         <FormField label="Pool Type">
@@ -439,28 +529,31 @@ function V6PoolForm({
       </ColumnLayout>
       {isRange ? (
         <ColumnLayout columns={2}>
-          <FormField label="Range Start">
+          <FormField label="Range Start" errorText={startErr}>
             <Input
               value={form.rangeStart}
               onChange={({ detail }) => onChange({ ...form, rangeStart: detail.value })}
               placeholder="2001:db8:1::100"
+              invalid={!!startErr}
             />
           </FormField>
-          <FormField label="Range End">
+          <FormField label="Range End" errorText={endErr}>
             <Input
               value={form.rangeEnd}
               onChange={({ detail }) => onChange({ ...form, rangeEnd: detail.value })}
               placeholder="2001:db8:1::1ff"
+              invalid={!!endErr}
             />
           </FormField>
         </ColumnLayout>
       ) : (
         <ColumnLayout columns={2}>
-          <FormField label="Prefix">
+          <FormField label="Prefix" errorText={prefixErr}>
             <Input
               value={form.prefix}
               onChange={({ detail }) => onChange({ ...form, prefix: detail.value })}
               placeholder="2001:db8:100::/56"
+              invalid={!!prefixErr}
             />
           </FormField>
           <FormField label="Delegated Length">
@@ -507,6 +600,7 @@ function V4Pools({
   const [editNetwork, setEditNetwork] = useState<string | undefined>();
   const [editRangeIndex, setEditRangeIndex] = useState<number | undefined>();
   const [saving, setSaving] = useState(false);
+  const [showErrors, setShowErrors] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
 
@@ -514,11 +608,13 @@ function V4Pools({
     setForm(EMPTY_V4_FORM);
     setEditNetwork(undefined);
     setEditRangeIndex(undefined);
+    setShowErrors(false);
     setModalVisible(true);
   };
 
   const openEdit = (row: PoolRow) => {
     setForm({
+      name: row.name,
       network: row.network,
       rangeStart: row.rangeStart === "-" ? "" : row.rangeStart,
       rangeEnd: row.rangeEnd === "-" ? "" : row.rangeEnd,
@@ -531,10 +627,19 @@ function V4Pools({
     });
     setEditNetwork(row.network);
     setEditRangeIndex(row.rangeIndex);
+    setShowErrors(false);
     setModalVisible(true);
   };
 
+  const hasErrors = () =>
+    !!validateIpv4Cidr(form.network) ||
+    !!validateIpv4(form.rangeStart) ||
+    !!validateIpv4(form.rangeEnd) ||
+    !!validateRangeOrder(form.rangeStart, form.rangeEnd, IPV4_RE);
+
   const save = async () => {
+    setShowErrors(true);
+    if (hasErrors()) return;
     setSaving(true);
     setError(null);
     setSuccess(null);
@@ -573,6 +678,7 @@ function V4Pools({
           </Header>
         }
         columnDefinitions={[
+          { id: "name", header: "Name", cell: (r) => r.name || "-", width: 150 },
           { id: "network", header: "Network", cell: (r) => r.network, width: 180 },
           { id: "start", header: "Range Start", cell: (r) => r.rangeStart, width: 160 },
           { id: "end", header: "Range End", cell: (r) => r.rangeEnd, width: 160 },
@@ -607,19 +713,14 @@ function V4Pools({
               <Button variant="link" onClick={() => setModalVisible(false)}>
                 Cancel
               </Button>
-              <Button
-                variant="primary"
-                loading={saving}
-                disabled={!form.network || !form.rangeStart || !form.rangeEnd}
-                onClick={save}
-              >
+              <Button variant="primary" loading={saving} onClick={save}>
                 {editNetwork != null ? "Save changes" : "Add pool"}
               </Button>
             </SpaceBetween>
           </Box>
         }
       >
-        <V4PoolForm form={form} onChange={setForm} />
+        <V4PoolForm form={form} onChange={setForm} showErrors={showErrors} />
       </Modal>
     </SpaceBetween>
   );
@@ -639,6 +740,7 @@ function V6Pools({
   const [editRangeIndex, setEditRangeIndex] = useState<number | undefined>();
   const [editType, setEditType] = useState<"range" | "pd_pool" | undefined>();
   const [saving, setSaving] = useState(false);
+  const [showErrors, setShowErrors] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
 
@@ -647,11 +749,13 @@ function V6Pools({
     setEditNetwork(undefined);
     setEditRangeIndex(undefined);
     setEditType(undefined);
+    setShowErrors(false);
     setModalVisible(true);
   };
 
   const openEdit = (row: V6PoolRow) => {
     setForm({
+      name: row.name,
       network: row.network,
       type: row.type,
       rangeStart: row.rangeStart === "-" ? "" : row.rangeStart,
@@ -664,10 +768,22 @@ function V6Pools({
     setEditNetwork(row.network);
     setEditRangeIndex(row.rangeIndex);
     setEditType(row.type);
+    setShowErrors(false);
     setModalVisible(true);
   };
 
+  const hasErrors = () => {
+    if (validateIpv6Cidr(form.network)) return true;
+    if (form.type === "range") {
+      return !!validateIpv6(form.rangeStart) || !!validateIpv6(form.rangeEnd)
+        || !!validateRangeOrder(form.rangeStart, form.rangeEnd, IPV6_RE);
+    }
+    return !!validateIpv6Cidr(form.prefix);
+  };
+
   const save = async () => {
+    setShowErrors(true);
+    if (hasErrors()) return;
     setSaving(true);
     setError(null);
     setSuccess(null);
@@ -706,6 +822,7 @@ function V6Pools({
           </Header>
         }
         columnDefinitions={[
+          { id: "name", header: "Name", cell: (r) => r.name || "-", width: 150 },
           { id: "network", header: "Network", cell: (r) => r.network, width: 220 },
           {
             id: "type",
@@ -757,23 +874,14 @@ function V6Pools({
               <Button variant="link" onClick={() => setModalVisible(false)}>
                 Cancel
               </Button>
-              <Button
-                variant="primary"
-                loading={saving}
-                disabled={
-                  !form.network ||
-                  (form.type === "range" && (!form.rangeStart || !form.rangeEnd)) ||
-                  (form.type === "pd_pool" && !form.prefix)
-                }
-                onClick={save}
-              >
+              <Button variant="primary" loading={saving} onClick={save}>
                 {editNetwork != null ? "Save changes" : "Add pool"}
               </Button>
             </SpaceBetween>
           </Box>
         }
       >
-        <V6PoolForm form={form} onChange={setForm} />
+        <V6PoolForm form={form} onChange={setForm} showErrors={showErrors} />
       </Modal>
     </SpaceBetween>
   );
