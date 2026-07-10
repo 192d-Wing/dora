@@ -120,6 +120,12 @@ export interface V6ReservationListResponse {
   items: V6Reservation[];
 }
 
+export interface ConfigDocument {
+  version: string;
+  redacted: boolean;
+  document: Record<string, unknown>;
+}
+
 export const api = {
   health: () => get<HealthResponse>("/health"),
   ready: () => get<ReadinessResponse>("/ready"),
@@ -133,4 +139,5 @@ export const api = {
     get<V4ReservationListResponse>("/v1/reservations/v4", params),
   reservationsV6: (params?: Record<string, string>) =>
     get<V6ReservationListResponse>("/v1/reservations/v6", params),
+  config: () => get<ConfigDocument>("/v1/config"),
 };
