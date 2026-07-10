@@ -239,7 +239,8 @@ export default function PendingChanges({
           </Box>
         )}
         {candidates.map((candidate) => {
-          const canActivate = candidate.status === "valid" || candidate.status === "staged";
+          const isValid = candidate.status === "valid";
+          const isPending = candidate.status === "staged" || candidate.status === "validating";
           return (
             <Container
               key={candidate.candidate_id}
@@ -248,7 +249,17 @@ export default function PendingChanges({
                   actions={
                     <SpaceBetween direction="horizontal" size="xs">
                       <Badge color={statusColor(candidate.status)}>{candidate.status}</Badge>
-                      {canActivate && (
+                      {isPending && (
+                        <Box color="text-status-info" fontSize="body-s" padding={{ top: "xxs" }}>
+                          Awaiting validation…
+                        </Box>
+                      )}
+                      {candidate.status === "invalid" && (
+                        <Box color="text-status-error" fontSize="body-s" padding={{ top: "xxs" }}>
+                          Cannot activate — validation failed
+                        </Box>
+                      )}
+                      {isValid && (
                         <Button variant="primary" loading={activating} onClick={() => activate(candidate.candidate_id)}>
                           Activate
                         </Button>
