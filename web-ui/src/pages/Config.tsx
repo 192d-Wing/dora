@@ -15,6 +15,7 @@ import Badge from "@cloudscape-design/components/badge";
 import Modal from "@cloudscape-design/components/modal";
 import Textarea from "@cloudscape-design/components/textarea";
 import { api, post, ConfigDocument, ConfigCandidate } from "../api";
+import { useNotifications } from "../components/Notifications";
 
 const CODE_STYLE: React.CSSProperties = {
   margin: 0,
@@ -124,11 +125,11 @@ function ConfigEditor({
   config: ConfigDocument;
   onSaved: () => void;
 }) {
+  const { notify } = useNotifications();
   const [value, setValue] = useState(() => JSON.stringify(config.document, null, 2));
   const [parseError, setParseError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [success, setSuccess] = useState<string | null>(null);
   const [confirmVisible, setConfirmVisible] = useState(false);
   const [diffCount, setDiffCount] = useState(0);
 
@@ -164,10 +165,9 @@ function ConfigEditor({
     const parsed = JSON.parse(value);
     setSaving(true);
     setError(null);
-    setSuccess(null);
     try {
       await post("/v1/config/candidates", { document: parsed });
-      setSuccess("Configuration candidate staged. Validate and commit from the Commit button.");
+      notify("success", "Configuration candidate staged. Commit from the top nav.");
       setConfirmVisible(false);
       onSaved();
     } catch (err) {
@@ -182,7 +182,6 @@ function ConfigEditor({
     setValue(JSON.stringify(config.document, null, 2));
     setParseError(null);
     setError(null);
-    setSuccess(null);
   };
 
   const handleFormat = () => {
@@ -201,7 +200,6 @@ function ConfigEditor({
   return (
     <SpaceBetween size="m">
       {error && <Alert type="error" dismissible onDismiss={() => setError(null)}>{error}</Alert>}
-      {success && <Alert type="success" dismissible onDismiss={() => setSuccess(null)}>{success}</Alert>}
       {parseError && <Alert type="error">{parseError}</Alert>}
 
       <div style={{ position: "relative" }}>

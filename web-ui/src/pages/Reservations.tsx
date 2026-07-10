@@ -12,6 +12,7 @@ import Tabs from "@cloudscape-design/components/tabs";
 import ContentLayout from "@cloudscape-design/components/content-layout";
 import Alert from "@cloudscape-design/components/alert";
 import { api, V4Reservation, V6Reservation } from "../api";
+import { useNotifications } from "../components/Notifications";
 
 const PAGE_SIZE = 50;
 
@@ -60,12 +61,12 @@ function MatchEditor({ entries, onChange }: { entries: MatchEntry[]; onChange: (
 }
 
 function V4ReservationTable() {
+  const { notify } = useNotifications();
   const [items, setItems] = useState<V4Reservation[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [success, setSuccess] = useState<string | null>(null);
   const [ipFilter, setIpFilter] = useState("");
   const [networkFilter, setNetworkFilter] = useState("");
   const [clientIdFilter, setClientIdFilter] = useState("");
@@ -128,7 +129,7 @@ function V4ReservationTable() {
     setError(null);
     try {
       await api.createReservation("v4", { family: "v4", ip: createIp, match });
-      setSuccess(`Reservation ${createIp} created.`);
+      notify("success", `Reservation ${createIp} created.`);
       setCreateVisible(false);
       load();
     } catch (err) {
@@ -144,7 +145,7 @@ function V4ReservationTable() {
     setError(null);
     try {
       await api.deleteReservation("v4", deleteTarget.ip);
-      setSuccess(`Reservation ${deleteTarget.ip} deleted.`);
+      notify("success", `Reservation ${deleteTarget.ip} deleted.`);
       setDeleteTarget(null);
       load();
     } catch (err) {
@@ -157,7 +158,6 @@ function V4ReservationTable() {
   return (
     <SpaceBetween size="m">
       {error && <Alert type="error" dismissible onDismiss={() => setError(null)}>{error}</Alert>}
-      {success && <Alert type="success" dismissible onDismiss={() => setSuccess(null)}>{success}</Alert>}
       <Table
         loading={loading}
         loadingText="Loading reservations..."
@@ -313,12 +313,12 @@ function V4ReservationTable() {
 }
 
 function V6ReservationTable() {
+  const { notify } = useNotifications();
   const [items, setItems] = useState<V6Reservation[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [success, setSuccess] = useState<string | null>(null);
   const [ipFilter, setIpFilter] = useState("");
   const [networkFilter, setNetworkFilter] = useState("");
   const [clientIdFilter, setClientIdFilter] = useState("");
@@ -381,7 +381,7 @@ function V6ReservationTable() {
     setError(null);
     try {
       await api.createReservation("v6", { family: "v6", ip: createIp, match });
-      setSuccess(`Reservation ${createIp} created.`);
+      notify("success", `Reservation ${createIp} created.`);
       setCreateVisible(false);
       load();
     } catch (err) {
@@ -397,7 +397,7 @@ function V6ReservationTable() {
     setError(null);
     try {
       await api.deleteReservation("v6", deleteTarget.ip);
-      setSuccess(`Reservation ${deleteTarget.ip} deleted.`);
+      notify("success", `Reservation ${deleteTarget.ip} deleted.`);
       setDeleteTarget(null);
       load();
     } catch (err) {
@@ -410,7 +410,6 @@ function V6ReservationTable() {
   return (
     <SpaceBetween size="m">
       {error && <Alert type="error" dismissible onDismiss={() => setError(null)}>{error}</Alert>}
-      {success && <Alert type="success" dismissible onDismiss={() => setSuccess(null)}>{success}</Alert>}
       <Table
         loading={loading}
         loadingText="Loading reservations..."

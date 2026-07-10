@@ -12,6 +12,7 @@ import ContentLayout from "@cloudscape-design/components/content-layout";
 import Alert from "@cloudscape-design/components/alert";
 import Modal from "@cloudscape-design/components/modal";
 import { api, V4Lease, V6Lease } from "../api";
+import { useNotifications } from "../components/Notifications";
 
 const PAGE_SIZE = 50;
 
@@ -25,6 +26,7 @@ const STATE_OPTIONS = [
 ];
 
 function V4LeaseTable() {
+  const { notify } = useNotifications();
   const [items, setItems] = useState<V4Lease[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
@@ -35,7 +37,6 @@ function V4LeaseTable() {
   const [networkFilter, setNetworkFilter] = useState("");
   const [releaseTarget, setReleaseTarget] = useState<V4Lease | null>(null);
   const [releasing, setReleasing] = useState(false);
-  const [success, setSuccess] = useState<string | null>(null);
 
   const confirmRelease = async () => {
     if (!releaseTarget) return;
@@ -43,7 +44,7 @@ function V4LeaseTable() {
     setError(null);
     try {
       await api.releaseLease("v4", releaseTarget.ip);
-      setSuccess(`Lease ${releaseTarget.ip} released.`);
+      notify("success", `Lease ${releaseTarget.ip} released.`);
       setReleaseTarget(null);
       load();
     } catch (err) {
@@ -81,7 +82,6 @@ function V4LeaseTable() {
   return (
     <SpaceBetween size="m">
       {error && <Alert type="error" dismissible onDismiss={() => setError(null)}>{error}</Alert>}
-      {success && <Alert type="success" dismissible onDismiss={() => setSuccess(null)}>{success}</Alert>}
       <Table
         loading={loading}
         loadingText="Loading leases..."
@@ -221,6 +221,7 @@ function V4LeaseTable() {
 }
 
 function V6LeaseTable() {
+  const { notify } = useNotifications();
   const [items, setItems] = useState<V6Lease[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
@@ -231,7 +232,6 @@ function V6LeaseTable() {
   const [networkFilter, setNetworkFilter] = useState("");
   const [releaseTarget, setReleaseTarget] = useState<V6Lease | null>(null);
   const [releasing, setReleasing] = useState(false);
-  const [success, setSuccess] = useState<string | null>(null);
 
   const confirmRelease = async () => {
     if (!releaseTarget?.ip) return;
@@ -239,7 +239,7 @@ function V6LeaseTable() {
     setError(null);
     try {
       await api.releaseLease("v6", releaseTarget.ip);
-      setSuccess(`Lease ${releaseTarget.ip} released.`);
+      notify("success", `Lease ${releaseTarget.ip} released.`);
       setReleaseTarget(null);
       load();
     } catch (err) {
@@ -277,7 +277,6 @@ function V6LeaseTable() {
   return (
     <SpaceBetween size="m">
       {error && <Alert type="error" dismissible onDismiss={() => setError(null)}>{error}</Alert>}
-      {success && <Alert type="success" dismissible onDismiss={() => setSuccess(null)}>{success}</Alert>}
       <Table
         loading={loading}
         loadingText="Loading leases..."

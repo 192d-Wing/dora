@@ -17,6 +17,7 @@ import Toggle from "@cloudscape-design/components/toggle";
 import TokenGroup from "@cloudscape-design/components/token-group";
 import TextFilter from "@cloudscape-design/components/text-filter";
 import { api, post, ConfigDocument } from "../api";
+import { useNotifications } from "../components/Notifications";
 
 interface OptionEntry {
   code: string;
@@ -1115,6 +1116,7 @@ function V4Pools({
   onSaved: () => void;
   leaseCounts: Record<string, number>;
 }) {
+  const { notify } = useNotifications();
   const allPools = extractV4Pools(config.document);
   const [filterText, setFilterText] = useState("");
   const pools = filterText
@@ -1130,7 +1132,6 @@ function V4Pools({
   const [saving, setSaving] = useState(false);
   const [showErrors, setShowErrors] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [success, setSuccess] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<PoolRow | null>(null);
   const [deleting, setDeleting] = useState(false);
 
@@ -1141,7 +1142,7 @@ function V4Pools({
     try {
       const newDoc = removeV4Pool(config.document, deleteTarget.network, deleteTarget.rangeIndex);
       await post("/v1/config/candidates", { document: newDoc });
-      setSuccess("Pool removal staged. Activate from the Actions page.");
+      notify("success", "Pool removal staged. Commit from the top nav.");
       setDeleteTarget(null);
       onSaved();
     } catch (err) {
@@ -1190,11 +1191,10 @@ function V4Pools({
     if (hasErrors()) return;
     setSaving(true);
     setError(null);
-    setSuccess(null);
     try {
       const newDoc = applyV4Pool(config.document, form, editNetwork, editRangeIndex);
       await post("/v1/config/candidates", { document: newDoc });
-      setSuccess("Configuration candidate staged successfully. Activate it from the Actions page.");
+      notify("success", "Pool staged. Commit from the top nav.");
       setModalVisible(false);
       onSaved();
     } catch (err) {
@@ -1207,7 +1207,6 @@ function V4Pools({
   return (
     <SpaceBetween size="m">
       {error && <Alert type="error" dismissible onDismiss={() => setError(null)}>{error}</Alert>}
-      {success && <Alert type="success" dismissible onDismiss={() => setSuccess(null)}>{success}</Alert>}
       <Table
         items={pools}
         trackBy={(item) => `${item.network}-${item.rangeIndex}`}
@@ -1329,6 +1328,7 @@ function V6Pools({
   onSaved: () => void;
   leaseCounts: Record<string, number>;
 }) {
+  const { notify } = useNotifications();
   const allPools = extractV6Pools(config.document);
   const [filterText, setFilterText] = useState("");
   const pools = filterText
@@ -1345,7 +1345,6 @@ function V6Pools({
   const [saving, setSaving] = useState(false);
   const [showErrors, setShowErrors] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [success, setSuccess] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<V6PoolRow | null>(null);
   const [deleting, setDeleting] = useState(false);
 
@@ -1356,7 +1355,7 @@ function V6Pools({
     try {
       const newDoc = removeV6Pool(config.document, deleteTarget.network, deleteTarget.rangeIndex, deleteTarget.type);
       await post("/v1/config/candidates", { document: newDoc });
-      setSuccess("Pool removal staged. Activate from the Actions page.");
+      notify("success", "Pool removal staged. Commit from the top nav.");
       setDeleteTarget(null);
       onSaved();
     } catch (err) {
@@ -1409,11 +1408,10 @@ function V6Pools({
     if (hasErrors()) return;
     setSaving(true);
     setError(null);
-    setSuccess(null);
     try {
       const newDoc = applyV6Pool(config.document, form, editNetwork, editRangeIndex, editType);
       await post("/v1/config/candidates", { document: newDoc });
-      setSuccess("Configuration candidate staged successfully. Activate it from the Actions page.");
+      notify("success", "Pool staged. Commit from the top nav.");
       setModalVisible(false);
       onSaved();
     } catch (err) {
@@ -1426,7 +1424,6 @@ function V6Pools({
   return (
     <SpaceBetween size="m">
       {error && <Alert type="error" dismissible onDismiss={() => setError(null)}>{error}</Alert>}
-      {success && <Alert type="success" dismissible onDismiss={() => setSuccess(null)}>{success}</Alert>}
       <Table
         items={pools}
         trackBy={(item) => `${item.network}-${item.type}-${item.rangeIndex}`}

@@ -11,6 +11,7 @@ import Pools from "./pages/Pools";
 import Actions from "./pages/Actions";
 import Settings from "./pages/Settings";
 import PendingChanges, { usePendingCount } from "./components/PendingChanges";
+import { NotificationsProvider } from "./components/Notifications";
 
 function Shell() {
   const navigate = useNavigate();
@@ -94,7 +95,9 @@ function Shell() {
 export default function App() {
   return (
     <BrowserRouter>
-      <Shell />
+      <NotificationsProvider>
+        <Shell />
+      </NotificationsProvider>
     </BrowserRouter>
   );
 }
