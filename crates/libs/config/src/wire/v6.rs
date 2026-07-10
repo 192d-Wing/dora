@@ -61,6 +61,7 @@ pub struct Net {
 /// delegated prefixes handed out via IA_PD. e.g. delegate /64s out of a /48.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct PdPool {
+    pub name: Option<String>,
     /// the parent prefix to delegate from, e.g. `2001:db8:1::/48`
     pub prefix: Ipv6Net,
     /// length of the prefixes delegated to clients, e.g. `64`.
@@ -139,6 +140,7 @@ pub struct NetworkConfig {
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct IpRange {
+    pub name: Option<String>,
     // RangeInclusive includes `start`/`end` so flatten will parse those fields
     #[serde(flatten)]
     pub range: RangeInclusive<Ipv6Addr>,

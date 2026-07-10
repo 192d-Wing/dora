@@ -186,6 +186,10 @@
             "type": "object",
             "required": ["start", "end", "options"],
             "properties": {
+                "name": {
+                    "description": "optional friendly label for identifying this range",
+                    "type": "string"
+                },
                 "start": { "type": "string", "format": "ipv4" },
                 "end": { "type": "string", "format": "ipv4" },
                 "config": { "$ref": "#/definitions/config" },
@@ -442,6 +446,10 @@
             "type": "object",
             "required": ["config", "start", "end", "options"],
             "properties": {
+                "name": {
+                    "description": "optional friendly label for identifying this range",
+                    "type": "string"
+                },
                 "config": { "$ref": "#/definitions/v6_network_config" },
                 "start": { "type": "string", "format": "ipv6" },
                 "end": { "type": "string", "format": "ipv6" },
@@ -457,6 +465,10 @@
             "type": "object",
             "required": ["prefix", "delegated_len", "config"],
             "properties": {
+                "name": {
+                    "description": "optional friendly label for identifying this pool",
+                    "type": "string"
+                },
                 "prefix": {
                     "description": "parent prefix to delegate from, e.g. \"2001:db8:1::/48\"",
                     "type": "string"

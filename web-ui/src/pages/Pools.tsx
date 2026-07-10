@@ -16,6 +16,339 @@ import Spinner from "@cloudscape-design/components/spinner";
 import Toggle from "@cloudscape-design/components/toggle";
 import { api, post, ConfigDocument } from "../api";
 
+interface OptionEntry {
+  code: string;
+  type: string;
+  value: string;
+}
+
+const OPTION_TYPES = [
+  { label: "ip", value: "ip" },
+  { label: "str", value: "str" },
+  { label: "domain", value: "domain" },
+  { label: "u8", value: "u8" },
+  { label: "u16", value: "u16" },
+  { label: "u32", value: "u32" },
+  { label: "i32", value: "i32" },
+  { label: "b64", value: "b64" },
+  { label: "hex", value: "hex" },
+];
+
+const COMMON_V4_OPTIONS: Record<string, string> = {
+  "1": "Subnet Mask",
+  "2": "Time Offset",
+  "3": "Router",
+  "4": "Time Server",
+  "5": "Name Server",
+  "6": "Domain Server",
+  "7": "Log Server",
+  "8": "Quotes Server",
+  "9": "LPR Server",
+  "10": "Impress Server",
+  "11": "RLP Server",
+  "12": "Hostname",
+  "13": "Boot File Size",
+  "14": "Merit Dump File",
+  "15": "Domain Name",
+  "16": "Swap Server",
+  "17": "Root Path",
+  "18": "Extension File",
+  "19": "Forward On/Off",
+  "20": "SrcRte On/Off",
+  "21": "Policy Filter",
+  "22": "Max DG Assembly",
+  "23": "Default IP TTL",
+  "24": "MTU Timeout",
+  "25": "MTU Plateau",
+  "26": "MTU Interface",
+  "27": "MTU Subnet",
+  "28": "Broadcast Address",
+  "29": "Mask Discovery",
+  "30": "Mask Supplier",
+  "31": "Router Discovery",
+  "32": "Router Request",
+  "33": "Static Route",
+  "34": "Trailers",
+  "35": "ARP Timeout",
+  "36": "Ethernet",
+  "37": "Default TCP TTL",
+  "38": "Keepalive Time",
+  "39": "Keepalive Data",
+  "40": "NIS Domain",
+  "41": "NIS Servers",
+  "42": "NTP Servers",
+  "43": "Vendor Specific",
+  "44": "NETBIOS Name Srv",
+  "45": "NETBIOS Dist Srv",
+  "46": "NETBIOS Node Type",
+  "47": "NETBIOS Scope",
+  "48": "X Window Font",
+  "49": "X Window Manager",
+  "50": "Address Request",
+  "51": "Address Time",
+  "52": "Overload",
+  "53": "DHCP Msg Type",
+  "54": "DHCP Server Id",
+  "55": "Parameter List",
+  "56": "DHCP Message",
+  "57": "DHCP Max Msg Size",
+  "58": "Renewal Time",
+  "59": "Rebinding Time",
+  "60": "Class Id",
+  "61": "Client Id",
+  "62": "NetWare/IP Domain",
+  "63": "NetWare/IP Option",
+  "64": "NIS-Domain-Name",
+  "65": "NIS-Server-Addr",
+  "66": "Server-Name",
+  "67": "Bootfile-Name",
+  "68": "Home-Agent-Addrs",
+  "69": "SMTP-Server",
+  "70": "POP3-Server",
+  "71": "NNTP-Server",
+  "72": "WWW-Server",
+  "73": "Finger-Server",
+  "74": "IRC-Server",
+  "75": "StreetTalk-Server",
+  "76": "STDA-Server",
+  "77": "User-Class",
+  "78": "Directory Agent",
+  "79": "Service Scope",
+  "80": "Rapid Commit",
+  "81": "Client FQDN",
+  "82": "Relay Agent Info",
+  "83": "iSNS",
+  "85": "NDS Servers",
+  "86": "NDS Tree Name",
+  "87": "NDS Context",
+  "88": "BCMCS Ctrl Domain",
+  "89": "BCMCS Ctrl Addr",
+  "90": "Authentication",
+  "91": "Last Transaction",
+  "92": "Associated IP",
+  "93": "Client System",
+  "94": "Client NDI",
+  "95": "LDAP",
+  "97": "UUID/GUID",
+  "98": "User-Auth",
+  "99": "GEOCONF_CIVIC",
+  "100": "PCode",
+  "101": "TCode",
+  "108": "IPv6-Only Preferred",
+  "112": "Netinfo Address",
+  "113": "Netinfo Tag",
+  "114": "Captive-Portal",
+  "116": "Auto-Config",
+  "117": "Name Svc Search",
+  "118": "Subnet Selection",
+  "119": "Domain Search",
+  "120": "SIP Servers",
+  "121": "Classless Static Route",
+  "122": "CCC",
+  "123": "GeoConf",
+  "124": "V-I Vendor Class",
+  "125": "V-I Vendor-Specific",
+  "128": "PXE (vendor)",
+  "129": "PXE (vendor)",
+  "130": "PXE (vendor)",
+  "131": "PXE (vendor)",
+  "132": "PXE (vendor)",
+  "133": "PXE (vendor)",
+  "134": "PXE (vendor)",
+  "135": "PXE (vendor)",
+  "136": "PANA Agent",
+  "137": "V4 LOST",
+  "138": "CAPWAP AC",
+  "139": "IPv4 Addr MoS",
+  "140": "IPv4 FQDN MoS",
+  "141": "SIP UA CS Domains",
+  "142": "IPv4 Addr ANDSF",
+  "143": "V4 SZTP Redirect",
+  "144": "GeoLoc",
+  "145": "Forcerenew Nonce",
+  "146": "RDNSS Selection",
+  "150": "TFTP Server Addr",
+  "209": "Configuration File",
+  "210": "Path Prefix",
+  "211": "Reboot Time",
+  "212": "6RD",
+  "213": "V4 Access Domain",
+  "220": "Subnet Allocation",
+  "221": "Virtual Subnet Selection",
+};
+
+const COMMON_V6_OPTIONS: Record<string, string> = {
+  "1": "Client ID",
+  "2": "Server ID",
+  "3": "IA_NA",
+  "4": "IA_TA",
+  "5": "IA Address",
+  "6": "Option Request",
+  "7": "Preference",
+  "8": "Elapsed Time",
+  "9": "Relay Msg",
+  "11": "Auth",
+  "12": "Unicast",
+  "13": "Status Code",
+  "14": "Rapid Commit",
+  "15": "User Class",
+  "16": "Vendor Class",
+  "17": "Vendor Opts",
+  "18": "Interface ID",
+  "19": "Reconf Msg",
+  "20": "Reconf Accept",
+  "21": "SIP Server Names",
+  "22": "SIP Server Addrs",
+  "23": "DNS Servers",
+  "24": "Domain List",
+  "25": "IA_PD",
+  "26": "IA Prefix",
+  "27": "NIS Servers",
+  "28": "NISP Servers",
+  "29": "NIS Domain Name",
+  "30": "NISP Domain Name",
+  "31": "SNTP Servers",
+  "32": "Info Refresh Time",
+  "33": "BCMCS Server D",
+  "34": "BCMCS Server A",
+  "36": "GEOCONF_CIVIC",
+  "37": "Remote ID",
+  "38": "Subscriber ID",
+  "39": "Client FQDN",
+  "40": "PANA Agent",
+  "41": "POSIX Timezone",
+  "42": "TZDB Timezone",
+  "43": "ERO",
+  "56": "NTP Server",
+  "57": "V6 Access Domain",
+  "58": "SIP UA CS List",
+  "59": "Boot File URL",
+  "60": "Boot File Param",
+  "61": "Client Arch Type",
+  "62": "NII",
+  "63": "Geolocation",
+  "64": "AFTR Name",
+  "65": "ERP Local Domain",
+  "74": "RDNSS Selection",
+  "79": "Client Link-Layer",
+  "82": "Sol Max RT",
+  "83": "Inf Max RT",
+  "86": "V6 PCP Server",
+  "103": "Captive-Portal",
+  "112": "MUD URL",
+  "136": "V6 SZTP Redirect",
+  "143": "IPv6 Addr ANDSF",
+  "144": "V6 DNR",
+};
+
+function optionLabel(code: string, family: "v4" | "v6"): string {
+  const map = family === "v4" ? COMMON_V4_OPTIONS : COMMON_V6_OPTIONS;
+  const name = map[code];
+  return name ? `${code} (${name})` : code;
+}
+
+function extractOptions(opts: Record<string, unknown> | undefined): OptionEntry[] {
+  if (!opts) return [];
+  const values = opts.values as Record<string, Record<string, unknown>> | undefined;
+  if (!values) return [];
+  return Object.entries(values).map(([code, opt]) => {
+    let val = "";
+    if (Array.isArray(opt.value)) {
+      val = opt.value.join(", ");
+    } else if (typeof opt.value === "string" || typeof opt.value === "number") {
+      val = String(opt.value);
+    }
+    return {
+      code,
+      type: typeof opt.type === "string" ? opt.type : "ip",
+      value: val,
+    };
+  });
+}
+
+function buildOptionsObj(entries: OptionEntry[]): Record<string, unknown> {
+  const values: Record<string, unknown> = {};
+  for (const entry of entries) {
+    if (!entry.code) continue;
+    let parsed: unknown = entry.value;
+    if (entry.value.includes(",")) {
+      const parts = entry.value.split(",").map((s) => s.trim()).filter(Boolean);
+      parsed = parts;
+    }
+    values[entry.code] = { type: entry.type, value: parsed };
+  }
+  return { values };
+}
+
+function OptionsEditor({
+  options,
+  onChange,
+  family,
+}: {
+  options: OptionEntry[];
+  onChange: (opts: OptionEntry[]) => void;
+  family: "v4" | "v6";
+}) {
+  const addOption = () =>
+    onChange([...options, { code: "", type: "ip", value: "" }]);
+
+  const removeOption = (idx: number) =>
+    onChange(options.filter((_, i) => i !== idx));
+
+  const updateOption = (idx: number, field: keyof OptionEntry, val: string) => {
+    const updated = options.map((opt, i) =>
+      i === idx ? { ...opt, [field]: val } : opt
+    );
+    onChange(updated);
+  };
+
+  return (
+    <SpaceBetween size="s">
+      <Box variant="awsui-key-label">DHCP Options</Box>
+      {options.map((opt, idx) => (
+        <div key={idx} style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr auto", gap: "20px" }}>
+          <div>
+            <FormField label={idx === 0 ? "Option Code" : undefined}>
+              <Input
+                value={opt.code}
+                onChange={({ detail }) => updateOption(idx, "code", detail.value)}
+                placeholder="e.g. 6"
+              />
+            </FormField>
+            {opt.code && (
+              <Box fontSize="body-s" color="text-status-info">
+                {optionLabel(opt.code, family)}
+              </Box>
+            )}
+          </div>
+          <FormField label={idx === 0 ? "Type" : undefined}>
+            <Select
+              selectedOption={OPTION_TYPES.find((t) => t.value === opt.type) ?? OPTION_TYPES[0]}
+              onChange={({ detail }) =>
+                updateOption(idx, "type", detail.selectedOption.value ?? "ip")
+              }
+              options={OPTION_TYPES}
+            />
+          </FormField>
+          <FormField label={idx === 0 ? "Value" : undefined}>
+            <Input
+              value={opt.value}
+              onChange={({ detail }) => updateOption(idx, "value", detail.value)}
+              placeholder="e.g. 8.8.8.8, 8.8.4.4"
+            />
+          </FormField>
+          <div style={{ marginTop: idx === 0 ? "26px" : "0" }}>
+            <Button variant="icon" iconName="remove" onClick={() => removeOption(idx)} />
+          </div>
+        </div>
+      ))}
+      <Button variant="normal" iconName="add-plus" onClick={addOption}>
+        Add option
+      </Button>
+    </SpaceBetween>
+  );
+}
+
 interface PoolRow {
   name: string;
   network: string;
@@ -27,6 +360,7 @@ interface PoolRow {
   serverId: string;
   probationPeriod: string;
   rangeIndex: number;
+  options: OptionEntry[];
 }
 
 interface PoolFormState {
@@ -40,6 +374,7 @@ interface PoolFormState {
   serverId: string;
   probationPeriod: string;
   pingCheck: boolean;
+  options: OptionEntry[];
 }
 
 const EMPTY_V4_FORM: PoolFormState = {
@@ -53,6 +388,7 @@ const EMPTY_V4_FORM: PoolFormState = {
   serverId: "",
   probationPeriod: "86400",
   pingCheck: false,
+  options: [],
 };
 
 interface V6PoolRow {
@@ -66,6 +402,7 @@ interface V6PoolRow {
   leaseDefault: string;
   preferredDefault: string;
   rangeIndex: number;
+  options: OptionEntry[];
 }
 
 interface V6PoolFormState {
@@ -78,6 +415,7 @@ interface V6PoolFormState {
   delegatedLen: string;
   leaseDefault: string;
   preferredDefault: string;
+  options: OptionEntry[];
 }
 
 const EMPTY_V6_FORM: V6PoolFormState = {
@@ -90,6 +428,7 @@ const EMPTY_V6_FORM: V6PoolFormState = {
   delegatedLen: "64",
   leaseDefault: "3600",
   preferredDefault: "3600",
+  options: [],
 };
 
 function extractV4Pools(doc: Record<string, unknown>): PoolRow[] {
@@ -115,12 +454,14 @@ function extractV4Pools(doc: Record<string, unknown>): PoolRow[] {
         serverId,
         probationPeriod,
         rangeIndex: -1,
+        options: [],
       });
       continue;
     }
     ranges.forEach((range, idx) => {
       const config = range.config as Record<string, unknown> | undefined;
       const leaseTime = config?.lease_time as Record<string, unknown> | undefined;
+      const opts = range.options as Record<string, unknown> | undefined;
       rows.push({
         name: (typeof range.name === "string" && range.name) || (typeof netCfg.name === "string" && netCfg.name) || "",
         network,
@@ -132,6 +473,7 @@ function extractV4Pools(doc: Record<string, unknown>): PoolRow[] {
         serverId,
         probationPeriod,
         rangeIndex: idx,
+        options: extractOptions(opts),
       });
     });
   }
@@ -154,6 +496,7 @@ function extractV6Pools(doc: Record<string, unknown>): V6PoolRow[] {
         const config = range.config as Record<string, unknown> | undefined;
         const leaseTime = config?.lease_time as Record<string, unknown> | undefined;
         const preferredTime = config?.preferred_time as Record<string, unknown> | undefined;
+        const opts = range.options as Record<string, unknown> | undefined;
         const rangeName = (typeof range.name === "string" && range.name)
           || (typeof netCfg.name === "string" && netCfg.name) || "";
         rows.push({
@@ -167,6 +510,7 @@ function extractV6Pools(doc: Record<string, unknown>): V6PoolRow[] {
           leaseDefault: String(leaseTime?.default ?? ""),
           preferredDefault: String(preferredTime?.default ?? ""),
           rangeIndex: idx,
+          options: extractOptions(opts),
         });
       });
     }
@@ -175,6 +519,7 @@ function extractV6Pools(doc: Record<string, unknown>): V6PoolRow[] {
         const config = pool.config as Record<string, unknown> | undefined;
         const leaseTime = config?.lease_time as Record<string, unknown> | undefined;
         const preferredTime = config?.preferred_time as Record<string, unknown> | undefined;
+        const opts = pool.options as Record<string, unknown> | undefined;
         const poolName = (typeof pool.name === "string" && pool.name)
           || (typeof netCfg.name === "string" && netCfg.name) || "";
         rows.push({
@@ -188,6 +533,7 @@ function extractV6Pools(doc: Record<string, unknown>): V6PoolRow[] {
           leaseDefault: String(leaseTime?.default ?? ""),
           preferredDefault: String(preferredTime?.default ?? ""),
           rangeIndex: idx,
+          options: extractOptions(opts),
         });
       });
     }
@@ -203,6 +549,7 @@ function extractV6Pools(doc: Record<string, unknown>): V6PoolRow[] {
         leaseDefault: "-",
         preferredDefault: "-",
         rangeIndex: -1,
+        options: [],
       });
     }
   }
@@ -235,6 +582,7 @@ function applyV4Pool(
         max: parseInt(form.leaseMax, 10) || 604800,
       },
     },
+    ...(form.options.length > 0 ? { options: buildOptionsObj(form.options) } : {}),
   };
 
   if (editNetwork != null && editRangeIndex != null && editRangeIndex >= 0) {
@@ -317,6 +665,8 @@ function applyV6Pool(
   }
   const net = networks[form.network];
 
+  const optsPart = form.options.length > 0 ? { options: buildOptionsObj(form.options) } : {};
+
   if (form.type === "range") {
     if (!net.ranges) net.ranges = [];
     (net.ranges as Array<Record<string, unknown>>).push({
@@ -324,7 +674,7 @@ function applyV6Pool(
       start: form.rangeStart,
       end: form.rangeEnd,
       ...timeCfg,
-      options: { values: {} },
+      ...optsPart,
     });
   } else {
     if (!net.pd_pools) net.pd_pools = [];
@@ -333,6 +683,7 @@ function applyV6Pool(
       prefix: form.prefix,
       delegated_len: parseInt(form.delegatedLen, 10) || 64,
       ...timeCfg,
+      ...optsPart,
     });
   }
 
@@ -478,6 +829,11 @@ function V4PoolForm({
           </Toggle>
         </FormField>
       </ColumnLayout>
+      <OptionsEditor
+        options={form.options}
+        onChange={(opts) => onChange({ ...form, options: opts })}
+        family="v4"
+      />
     </SpaceBetween>
   );
 }
@@ -586,6 +942,11 @@ function V6PoolForm({
           />
         </FormField>
       </ColumnLayout>
+      <OptionsEditor
+        options={form.options}
+        onChange={(opts) => onChange({ ...form, options: opts })}
+        family="v6"
+      />
     </SpaceBetween>
   );
 }
@@ -627,6 +988,7 @@ function V4Pools({
       serverId: row.serverId,
       probationPeriod: row.probationPeriod || "86400",
       pingCheck: false,
+      options: row.options,
     });
     setEditNetwork(row.network);
     setEditRangeIndex(row.rangeIndex);
@@ -767,6 +1129,7 @@ function V6Pools({
       delegatedLen: row.delegatedLen || "64",
       leaseDefault: row.leaseDefault === "-" ? "3600" : row.leaseDefault,
       preferredDefault: row.preferredDefault === "-" ? "3600" : row.preferredDefault,
+      options: row.options,
     });
     setEditNetwork(row.network);
     setEditRangeIndex(row.rangeIndex);

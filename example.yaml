@@ -79,6 +79,8 @@ v4:
             # file_name: "bootfile.efi"
             ranges:
                 -
+                    # (optional) a friendly label for identifying this range
+                    name: "Office LAN"
                     # (optional) specifies the class name that must have been matched on
                     class: "my_class"
                     # start of your range
@@ -408,7 +410,8 @@ v6:
             # IA_NA address pools (RFC 8415). Each range hands out non-temporary
             # addresses between start and end (inclusive), skipping `except`.
             ranges:
-                - start: 2001:db8:1::100
+                - name: "Server VLAN"
+                  start: 2001:db8:1::100
                   end: 2001:db8:1::1ff
                   config:
                       lease_time:
@@ -423,7 +426,8 @@ v6:
             # IA_PD prefix delegation pools (RFC 8415 sec 6.3). Delegates
             # `delegated_len`-sized prefixes carved from the parent `prefix`.
             pd_pools:
-                - prefix: 2001:db8:100::/56
+                - name: "Customer PD"
+                  prefix: 2001:db8:100::/56
                   delegated_len: 64
                   config:
                       lease_time:

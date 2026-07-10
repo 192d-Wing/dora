@@ -125,6 +125,7 @@ pub struct Net {
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct IpRange {
+    pub name: Option<String>,
     // RangeInclusive includes `start`/`end` so flatten will parse those fields
     #[serde(flatten)]
     pub range: RangeInclusive<Ipv4Addr>,
