@@ -15,86 +15,64 @@ interface DiffLine {
   text: string;
 }
 
-function lcs(a: string[], b: string[]): Set<number> {
-  const m = a.length;
-  const n = b.length;
-  const dp: number[][] = Array.from({ length: m + 1 }, () => Array(n + 1).fill(0));
+function computeRawDiff(oldLines: string[], newLines: string[]): DiffLine[] {
+  const m = oldLines.length;
+  const n = newLines.length;
+  const dp: number[][] = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
   for (let i = 1; i <= m; i++) {
     for (let j = 1; j <= n; j++) {
-      dp[i][j] = a[i - 1] === b[j - 1] ? dp[i - 1][j - 1] + 1 : Math.max(dp[i - 1][j], dp[i][j - 1]);
+      dp[i][j] = oldLines[i - 1] === newLines[j - 1]
+        ? dp[i - 1][j - 1] + 1
+        : Math.max(dp[i - 1][j], dp[i][j - 1]);
     }
   }
-  const result: number[] = [];
-  let i = m, j = n;
-  while (i > 0 && j > 0) {
-    if (a[i - 1] === b[j - 1]) {
-      result.push(i - 1);
-      i--;
-      j--;
-    } else if (dp[i - 1][j] >= dp[i][j - 1]) {
-      i--;
-    } else {
-      j--;
-    }
-  }
-  return new Set(result);
-}
-
-function buildRawDiff(oldLines: string[], newLines: string[], commonOld: Set<number>): DiffLine[] {
-  const rawDiff: DiffLine[] = [];
-  let oi = 0, ni = 0;
-  const sorted = [...commonOld].sort((a, b) => a - b);
-  let ci = 0;
-
-  while (oi < oldLines.length || ni < newLines.length) {
-    if (ci < sorted.length && oi === sorted[ci]) {
-      rawDiff.push({ type: "context", text: oldLines[oi] });
-      oi++;
-      ni++;
-      ci++;
-    } else if (oi < oldLines.length && (ci >= sorted.length || oi < sorted[ci])) {
-      rawDiff.push({ type: "remove", text: oldLines[oi] });
-      oi++;
-    } else {
-      rawDiff.push({ type: "add", text: newLines[ni] });
-      ni++;
-    }
-  }
-  return rawDiff;
-}
-
-function collapseContext(rawDiff: DiffLine[], contextLines: number): DiffLine[] {
-  const changed = new Set<number>();
-  rawDiff.forEach((line, idx) => {
-    if (line.type !== "context") changed.add(idx);
-  });
-
-  const visible = new Set<number>();
-  for (const idx of changed) {
-    for (let c = Math.max(0, idx - contextLines); c <= Math.min(rawDiff.length - 1, idx + contextLines); c++) {
-      visible.add(c);
-    }
-  }
-  if (visible.size === 0) return [];
 
   const result: DiffLine[] = [];
-  let lastIdx = -2;
-  for (let idx = 0; idx < rawDiff.length; idx++) {
-    if (!visible.has(idx)) continue;
-    if (lastIdx >= 0 && idx - lastIdx > 1) {
-      result.push({ type: "context", text: "···" });
+  let i = m, j = n;
+  while (i > 0 || j > 0) {
+    if (i > 0 && j > 0 && oldLines[i - 1] === newLines[j - 1]) {
+      result.push({ type: "context", text: oldLines[i - 1] });
+      i--;
+      j--;
+    } else if (j > 0 && (i === 0 || dp[i][j - 1] >= dp[i - 1][j])) {
+      result.push({ type: "add", text: newLines[j - 1] });
+      j--;
+    } else {
+      result.push({ type: "remove", text: oldLines[i - 1] });
+      i--;
     }
-    result.push(rawDiff[idx]);
-    lastIdx = idx;
   }
+  result.reverse();
   return result;
 }
 
 function unifiedDiff(oldText: string, newText: string, contextLines = 3): DiffLine[] {
-  const oldLines = oldText.split("\n");
-  const newLines = newText.split("\n");
-  const rawDiff = buildRawDiff(oldLines, newLines, lcs(oldLines, newLines));
-  return collapseContext(rawDiff, contextLines);
+  const raw = computeRawDiff(oldText.split("\n"), newText.split("\n"));
+
+  const changed = new Set<number>();
+  raw.forEach((line, idx) => {
+    if (line.type !== "context") changed.add(idx);
+  });
+  if (changed.size === 0) return [];
+
+  const visible = new Set<number>();
+  for (const idx of changed) {
+    for (let c = Math.max(0, idx - contextLines); c <= Math.min(raw.length - 1, idx + contextLines); c++) {
+      visible.add(c);
+    }
+  }
+
+  const result: DiffLine[] = [];
+  let lastIdx = -2;
+  for (let idx = 0; idx < raw.length; idx++) {
+    if (!visible.has(idx)) continue;
+    if (lastIdx >= 0 && idx - lastIdx > 1) {
+      result.push({ type: "context", text: "···" });
+    }
+    result.push(raw[idx]);
+    lastIdx = idx;
+  }
+  return result;
 }
 
 function UnifiedDiffView({ oldDoc, newDoc }: { oldDoc: Record<string, unknown>; newDoc: Record<string, unknown> }) {
