@@ -10,54 +10,152 @@ import Container from "@cloudscape-design/components/container";
 import Header from "@cloudscape-design/components/header";
 import { api, ConfigCandidate, ConfigDocument } from "../api";
 
-const CODE_STYLE: React.CSSProperties = {
-  margin: 0,
-  padding: "12px",
-  borderRadius: "8px",
-  backgroundColor: "var(--color-background-container-content, #0f1b2d)",
-  color: "var(--color-text-body-default, #d1d5db)",
-  fontSize: "13px",
-  lineHeight: 1.5,
-  overflowX: "auto",
-  whiteSpace: "pre-wrap",
-  wordBreak: "break-word",
-};
-
-interface DiffEntry {
-  path: string;
-  type: "added" | "removed" | "changed";
-  oldVal?: string;
-  newVal?: string;
+interface DiffLine {
+  type: "add" | "remove" | "context";
+  text: string;
 }
 
-function jsonDiff(a: unknown, b: unknown, path = ""): DiffEntry[] {
-  if (a === b) return [];
-  const strA = JSON.stringify(a, null, 2);
-  const strB = JSON.stringify(b, null, 2);
-  if (strA === strB) return [];
-
-  const isObjA = a !== null && typeof a === "object" && !Array.isArray(a);
-  const isObjB = b !== null && typeof b === "object" && !Array.isArray(b);
-
-  if (isObjA && isObjB) {
-    const diffs: DiffEntry[] = [];
-    const objA = a as Record<string, unknown>;
-    const objB = b as Record<string, unknown>;
-    const allKeys = new Set([...Object.keys(objA), ...Object.keys(objB)]);
-    for (const key of allKeys) {
-      const childPath = path ? `${path}.${key}` : key;
-      if (key in objA && !(key in objB)) {
-        diffs.push({ path: childPath, type: "removed", oldVal: JSON.stringify(objA[key], null, 2) });
-      } else if (!(key in objA) && key in objB) {
-        diffs.push({ path: childPath, type: "added", newVal: JSON.stringify(objB[key], null, 2) });
-      } else {
-        diffs.push(...jsonDiff(objA[key], objB[key], childPath));
-      }
+function lcs(a: string[], b: string[]): Set<number> {
+  const m = a.length;
+  const n = b.length;
+  const dp: number[][] = Array.from({ length: m + 1 }, () => Array(n + 1).fill(0));
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      dp[i][j] = a[i - 1] === b[j - 1] ? dp[i - 1][j - 1] + 1 : Math.max(dp[i - 1][j], dp[i][j - 1]);
     }
-    return diffs;
+  }
+  const result: number[] = [];
+  let i = m, j = n;
+  while (i > 0 && j > 0) {
+    if (a[i - 1] === b[j - 1]) {
+      result.push(i - 1);
+      i--;
+      j--;
+    } else if (dp[i - 1][j] >= dp[i][j - 1]) {
+      i--;
+    } else {
+      j--;
+    }
+  }
+  return new Set(result);
+}
+
+function buildRawDiff(oldLines: string[], newLines: string[], commonOld: Set<number>): DiffLine[] {
+  const rawDiff: DiffLine[] = [];
+  let oi = 0, ni = 0;
+  const sorted = [...commonOld].sort((a, b) => a - b);
+  let ci = 0;
+
+  while (oi < oldLines.length || ni < newLines.length) {
+    if (ci < sorted.length && oi === sorted[ci]) {
+      rawDiff.push({ type: "context", text: oldLines[oi] });
+      oi++;
+      ni++;
+      ci++;
+    } else if (oi < oldLines.length && (ci >= sorted.length || oi < sorted[ci])) {
+      rawDiff.push({ type: "remove", text: oldLines[oi] });
+      oi++;
+    } else {
+      rawDiff.push({ type: "add", text: newLines[ni] });
+      ni++;
+    }
+  }
+  return rawDiff;
+}
+
+function collapseContext(rawDiff: DiffLine[], contextLines: number): DiffLine[] {
+  const changed = new Set<number>();
+  rawDiff.forEach((line, idx) => {
+    if (line.type !== "context") changed.add(idx);
+  });
+
+  const visible = new Set<number>();
+  for (const idx of changed) {
+    for (let c = Math.max(0, idx - contextLines); c <= Math.min(rawDiff.length - 1, idx + contextLines); c++) {
+      visible.add(c);
+    }
+  }
+  if (visible.size === 0) return [];
+
+  const result: DiffLine[] = [];
+  let lastIdx = -2;
+  for (let idx = 0; idx < rawDiff.length; idx++) {
+    if (!visible.has(idx)) continue;
+    if (lastIdx >= 0 && idx - lastIdx > 1) {
+      result.push({ type: "context", text: "···" });
+    }
+    result.push(rawDiff[idx]);
+    lastIdx = idx;
+  }
+  return result;
+}
+
+function unifiedDiff(oldText: string, newText: string, contextLines = 3): DiffLine[] {
+  const oldLines = oldText.split("\n");
+  const newLines = newText.split("\n");
+  const rawDiff = buildRawDiff(oldLines, newLines, lcs(oldLines, newLines));
+  return collapseContext(rawDiff, contextLines);
+}
+
+function UnifiedDiffView({ oldDoc, newDoc }: { oldDoc: Record<string, unknown>; newDoc: Record<string, unknown> }) {
+  const oldText = JSON.stringify(oldDoc, null, 2);
+  const newText = JSON.stringify(newDoc, null, 2);
+  const lines = unifiedDiff(oldText, newText);
+
+  if (lines.length === 0) {
+    return <Box color="text-status-inactive">No differences — candidate matches the active configuration.</Box>;
   }
 
-  return [{ path, type: "changed", oldVal: strA, newVal: strB }];
+  return (
+    <pre style={{
+      margin: 0,
+      padding: 0,
+      fontSize: "13px",
+      fontFamily: "'SF Mono', 'Cascadia Code', 'Fira Code', Consolas, monospace",
+      lineHeight: 1.6,
+      borderRadius: "6px",
+      overflow: "auto",
+      border: "1px solid var(--color-border-divider-default, #414d5c)",
+    }}>
+      {lines.map((line, i) => {
+        let bg: string;
+        let color: string;
+        let prefix: string;
+        if (line.type === "add") {
+          bg = "rgba(35, 134, 54, 0.15)";
+          color = "#3fb950";
+          prefix = "+";
+        } else if (line.type === "remove") {
+          bg = "rgba(248, 81, 73, 0.15)";
+          color = "#f85149";
+          prefix = "-";
+        } else {
+          bg = "transparent";
+          color = "var(--color-text-body-default, #d1d5db)";
+          prefix = " ";
+        }
+        return (
+          <div key={i} style={{
+            backgroundColor: bg,
+            padding: "0 12px",
+            whiteSpace: "pre",
+            minHeight: "1.6em",
+          }}>
+            <span style={{ color: "#6e7681", userSelect: "none", display: "inline-block", width: "2ch", marginRight: "8px" }}>
+              {prefix}
+            </span>
+            <span style={{ color }}>{line.text}</span>
+          </div>
+        );
+      })}
+    </pre>
+  );
+}
+
+function alertType(level: string): "error" | "warning" | "info" {
+  if (level === "error") return "error";
+  if (level === "warning") return "warning";
+  return "info";
 }
 
 function statusColor(status: ConfigCandidate["status"]): "blue" | "green" | "red" | "grey" {
@@ -163,11 +261,7 @@ export default function PendingChanges({
           </Box>
         )}
         {candidates.map((candidate) => {
-          const diffs = activeConfig?.document && candidate.document
-            ? jsonDiff(activeConfig.document, candidate.document)
-            : [];
           const canActivate = candidate.status === "valid" || candidate.status === "staged";
-
           return (
             <Container
               key={candidate.candidate_id}
@@ -195,35 +289,17 @@ export default function PendingChanges({
                 {candidate.validation && candidate.validation.length > 0 && (
                   <SpaceBetween size="xs">
                     {candidate.validation.map((v, i) => (
-                      <Alert key={i} type={v.level === "error" ? "error" : v.level === "warning" ? "warning" : "info"}>
+                      <Alert key={i} type={alertType(v.level)}>
                         {v.path && <Box variant="code">{v.path}</Box>}
                         {v.message}
                       </Alert>
                     ))}
                   </SpaceBetween>
                 )}
-                {diffs.length === 0 ? (
-                  <Box color="text-status-inactive">No differences detected.</Box>
+                {activeConfig?.document && candidate.document ? (
+                  <UnifiedDiffView oldDoc={activeConfig.document} newDoc={candidate.document} />
                 ) : (
-                  <SpaceBetween size="xs">
-                    <Box variant="small">{diffs.length} change{diffs.length !== 1 ? "s" : ""}</Box>
-                    {diffs.map((d, i) => (
-                      <div key={i}>
-                        <Box variant="code" fontSize="body-s">
-                          <Badge color={d.type === "added" ? "green" : d.type === "removed" ? "red" : "blue"}>
-                            {d.type}
-                          </Badge>{" "}
-                          {d.path}
-                        </Box>
-                        {d.oldVal !== undefined && (
-                          <pre style={{ ...CODE_STYLE, borderLeft: "3px solid #d13212" }}>{d.oldVal}</pre>
-                        )}
-                        {d.newVal !== undefined && (
-                          <pre style={{ ...CODE_STYLE, borderLeft: "3px solid #1d8102" }}>{d.newVal}</pre>
-                        )}
-                      </div>
-                    ))}
-                  </SpaceBetween>
+                  <Box color="text-status-inactive">No document available.</Box>
                 )}
               </SpaceBetween>
             </Container>
