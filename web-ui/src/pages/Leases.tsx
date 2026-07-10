@@ -177,16 +177,22 @@ function V6LeaseTable() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [stateFilter, setStateFilter] = useState(STATE_OPTIONS[0]);
+  const [ipFilter, setIpFilter] = useState("");
+  const [networkFilter, setNetworkFilter] = useState("");
 
   const load = () => {
     setLoading(true);
     setError(null);
+    const params: Record<string, string> = {
+      limit: String(PAGE_SIZE),
+      offset: String((page - 1) * PAGE_SIZE),
+    };
+    if (stateFilter.value) params.state = stateFilter.value;
+    if (ipFilter) params.ip = ipFilter;
+    if (networkFilter) params.network = networkFilter;
+
     api
-      .leasesV6({
-        limit: String(PAGE_SIZE),
-        offset: String((page - 1) * PAGE_SIZE),
-        ...(stateFilter.value ? { state: stateFilter.value } : {}),
-      })
+      .leasesV6(params)
       .then((res) => {
         setItems(res.items);
         setTotal(res.meta.total);
@@ -218,14 +224,39 @@ function V6LeaseTable() {
           </Header>
         }
         filter={
-          <Select
-            selectedOption={stateFilter}
-            onChange={({ detail }) => {
-              setStateFilter(detail.selectedOption as typeof stateFilter);
-              setPage(1);
-            }}
-            options={STATE_OPTIONS}
-          />
+          <SpaceBetween direction="horizontal" size="s">
+            <Select
+              selectedOption={stateFilter}
+              onChange={({ detail }) => {
+                setStateFilter(detail.selectedOption as typeof stateFilter);
+                setPage(1);
+              }}
+              options={STATE_OPTIONS}
+            />
+            <Input
+              placeholder="Filter by IP / prefix"
+              value={ipFilter}
+              onChange={({ detail }) => setIpFilter(detail.value)}
+              onKeyDown={({ detail }) => {
+                if (detail.key === "Enter") {
+                  setPage(1);
+                  load();
+                }
+              }}
+            />
+            <Input
+              placeholder="Filter by network (CIDR)"
+              value={networkFilter}
+              onChange={({ detail }) => setNetworkFilter(detail.value)}
+              onKeyDown={({ detail }) => {
+                if (detail.key === "Enter") {
+                  setPage(1);
+                  load();
+                }
+              }}
+            />
+            <Button onClick={() => { setPage(1); load(); }}>Search</Button>
+          </SpaceBetween>
         }
         pagination={
           <Pagination

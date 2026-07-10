@@ -144,6 +144,21 @@ export interface ConfigDocument {
   document: Record<string, unknown>;
 }
 
+export interface ConfigCandidate {
+  candidate_id: string;
+  status: "staged" | "validating" | "valid" | "invalid" | "activated" | "superseded";
+  created_at: string;
+  activated_at?: string;
+  message?: string;
+  validation?: { level: string; path?: string; message: string }[];
+  document?: Record<string, unknown>;
+}
+
+export interface ConfigCandidateListResponse {
+  meta: PaginationMeta;
+  items: ConfigCandidate[];
+}
+
 export const api = {
   health: () => get<HealthResponse>("/health"),
   ready: () => get<ReadinessResponse>("/ready"),
@@ -158,4 +173,8 @@ export const api = {
   reservationsV6: (params?: Record<string, string>) =>
     get<V6ReservationListResponse>("/v1/reservations/v6", params),
   config: () => get<ConfigDocument>("/v1/config"),
+  configCandidates: (params?: Record<string, string>) =>
+    get<ConfigCandidateListResponse>("/v1/config/candidates", params),
+  configCandidate: (id: string) =>
+    get<ConfigCandidate>(`/v1/config/candidates/${id}`),
 };

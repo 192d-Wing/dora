@@ -14,12 +14,14 @@ import ContentLayout from "@cloudscape-design/components/content-layout";
 import Alert from "@cloudscape-design/components/alert";
 import Spinner from "@cloudscape-design/components/spinner";
 import Toggle from "@cloudscape-design/components/toggle";
+import TokenGroup from "@cloudscape-design/components/token-group";
+import TextFilter from "@cloudscape-design/components/text-filter";
 import { api, post, ConfigDocument } from "../api";
 
 interface OptionEntry {
   code: string;
   type: string;
-  value: string;
+  values: string[];
 }
 
 const OPTION_TYPES = [
@@ -247,37 +249,84 @@ function optionLabel(code: string, family: "v4" | "v6"): string {
   return name ? `${code} (${name})` : code;
 }
 
+const MULTI_VALUE_TYPES = new Set(["ip", "domain"]);
+
 function extractOptions(opts: Record<string, unknown> | undefined): OptionEntry[] {
   if (!opts) return [];
-  const values = opts.values as Record<string, Record<string, unknown>> | undefined;
-  if (!values) return [];
-  return Object.entries(values).map(([code, opt]) => {
-    let val = "";
+  const valuesMap = opts.values as Record<string, Record<string, unknown>> | undefined;
+  if (!valuesMap) return [];
+  return Object.entries(valuesMap).map(([code, opt]) => {
+    let vals: string[];
     if (Array.isArray(opt.value)) {
-      val = opt.value.join(", ");
+      vals = opt.value.map((v: unknown) =>
+        typeof v === "string" || typeof v === "number" ? String(v) : ""
+      ).filter(Boolean);
     } else if (typeof opt.value === "string" || typeof opt.value === "number") {
-      val = String(opt.value);
+      vals = [String(opt.value)];
+    } else {
+      vals = [];
     }
     return {
       code,
       type: typeof opt.type === "string" ? opt.type : "ip",
-      value: val,
+      values: vals,
     };
   });
 }
 
 function buildOptionsObj(entries: OptionEntry[]): Record<string, unknown> {
-  const values: Record<string, unknown> = {};
+  const out: Record<string, unknown> = {};
   for (const entry of entries) {
     if (!entry.code) continue;
-    let parsed: unknown = entry.value;
-    if (entry.value.includes(",")) {
-      const parts = entry.value.split(",").map((s) => s.trim()).filter(Boolean);
-      parsed = parts;
-    }
-    values[entry.code] = { type: entry.type, value: parsed };
+    const val = entry.values.length === 1 ? entry.values[0] : entry.values;
+    out[entry.code] = { type: entry.type, value: val };
   }
-  return { values };
+  return { values: out };
+}
+
+function TokenValueInput({
+  values,
+  onChange,
+  placeholder,
+}: {
+  values: string[];
+  onChange: (vals: string[]) => void;
+  placeholder: string;
+}) {
+  const [draft, setDraft] = useState("");
+
+  const addValue = () => {
+    const trimmed = draft.trim();
+    if (!trimmed) return;
+    onChange([...values, trimmed]);
+    setDraft("");
+  };
+
+  return (
+    <SpaceBetween size="xxs">
+      <div style={{ display: "flex", gap: "6px" }}>
+        <div style={{ flex: 1 }}>
+          <Input
+            value={draft}
+            onChange={({ detail }) => setDraft(detail.value)}
+            onKeyDown={({ detail }) => {
+              if (detail.key === "Enter") addValue();
+            }}
+            placeholder={placeholder}
+          />
+        </div>
+        <Button variant="icon" iconName="add-plus" onClick={addValue} />
+      </div>
+      {values.length > 0 && (
+        <TokenGroup
+          items={values.map((v, i) => ({ label: v, dismissLabel: `Remove ${v}`, tag: String(i) }))}
+          onDismiss={({ detail }) =>
+            onChange(values.filter((_, i) => i !== detail.itemIndex))
+          }
+        />
+      )}
+    </SpaceBetween>
+  );
 }
 
 function OptionsEditor({
@@ -290,28 +339,44 @@ function OptionsEditor({
   family: "v4" | "v6";
 }) {
   const addOption = () =>
-    onChange([...options, { code: "", type: "ip", value: "" }]);
+    onChange([...options, { code: "", type: "ip", values: [] }]);
 
   const removeOption = (idx: number) =>
     onChange(options.filter((_, i) => i !== idx));
 
-  const updateOption = (idx: number, field: keyof OptionEntry, val: string) => {
+  const updateField = (idx: number, field: "code" | "type", val: string) => {
     const updated = options.map((opt, i) =>
       i === idx ? { ...opt, [field]: val } : opt
     );
     onChange(updated);
   };
 
+  const updateValues = (idx: number, vals: string[]) => {
+    const updated = options.map((opt, i) =>
+      i === idx ? { ...opt, values: vals } : opt
+    );
+    onChange(updated);
+  };
+
+  const placeholderForType = (type: string) => {
+    if (type === "ip") return "e.g. 8.8.8.8";
+    if (type === "domain") return "e.g. example.com.";
+    if (type === "str") return "e.g. myvalue";
+    if (type === "hex") return "e.g. DEADBEEF";
+    if (type === "b64") return "e.g. Zm9vYmFy";
+    return "value";
+  };
+
   return (
     <SpaceBetween size="s">
       <Box variant="awsui-key-label">DHCP Options</Box>
       {options.map((opt, idx) => (
-        <div key={idx} style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr auto", gap: "20px" }}>
+        <div key={idx} style={{ display: "grid", gridTemplateColumns: "1fr 1fr 2fr auto", gap: "20px" }}>
           <div>
             <FormField label={idx === 0 ? "Option Code" : undefined}>
               <Input
                 value={opt.code}
-                onChange={({ detail }) => updateOption(idx, "code", detail.value)}
+                onChange={({ detail }) => updateField(idx, "code", detail.value)}
                 placeholder="e.g. 6"
               />
             </FormField>
@@ -325,17 +390,25 @@ function OptionsEditor({
             <Select
               selectedOption={OPTION_TYPES.find((t) => t.value === opt.type) ?? OPTION_TYPES[0]}
               onChange={({ detail }) =>
-                updateOption(idx, "type", detail.selectedOption.value ?? "ip")
+                updateField(idx, "type", detail.selectedOption.value ?? "ip")
               }
               options={OPTION_TYPES}
             />
           </FormField>
-          <FormField label={idx === 0 ? "Value" : undefined}>
-            <Input
-              value={opt.value}
-              onChange={({ detail }) => updateOption(idx, "value", detail.value)}
-              placeholder="e.g. 8.8.8.8, 8.8.4.4"
-            />
+          <FormField label={idx === 0 ? "Value(s)" : undefined}>
+            {MULTI_VALUE_TYPES.has(opt.type) ? (
+              <TokenValueInput
+                values={opt.values}
+                onChange={(vals) => updateValues(idx, vals)}
+                placeholder={placeholderForType(opt.type)}
+              />
+            ) : (
+              <Input
+                value={opt.values[0] ?? ""}
+                onChange={({ detail }) => updateValues(idx, detail.value ? [detail.value] : [])}
+                placeholder={placeholderForType(opt.type)}
+              />
+            )}
           </FormField>
           <div style={{ marginTop: idx === 0 ? "26px" : "0" }}>
             <Button variant="icon" iconName="remove" onClick={() => removeOption(idx)} />
@@ -725,6 +798,35 @@ function validateRangeOrder(start: string, end: string, ipRe: RegExp): string | 
   return undefined;
 }
 
+function ipv4ToNum(ip: string): number {
+  const parts = ip.split(".").map(Number);
+  return ((parts[0] << 24) | (parts[1] << 16) | (parts[2] << 8) | parts[3]) >>> 0;
+}
+
+function v4RangeCapacity(start: string, end: string): number {
+  if (!IPV4_RE.test(start) || !IPV4_RE.test(end)) return 0;
+  return ipv4ToNum(end) - ipv4ToNum(start) + 1;
+}
+
+function ipv6ToBigInt(ip: string): bigint {
+  const full = ip.replace(/::/g, () => {
+    const existing = ip.split(":").filter(Boolean).length;
+    return ":" + "0:".repeat(8 - existing);
+  }).replace(/^:|:$/g, "");
+  const parts = full.split(":");
+  let result = 0n;
+  for (const part of parts) {
+    result = (result << 16n) | BigInt(parseInt(part || "0", 16));
+  }
+  return result;
+}
+
+function v6RangeCapacity(start: string, end: string): number {
+  if (!IPV6_RE.test(start) || !IPV6_RE.test(end)) return 0;
+  const diff = ipv6ToBigInt(end) - ipv6ToBigInt(start) + 1n;
+  return diff > BigInt(Number.MAX_SAFE_INTEGER) ? Number.MAX_SAFE_INTEGER : Number(diff);
+}
+
 function liveErr(value: string, validate: (v: string) => string | undefined, forceShow: boolean): string | undefined {
   if (!value && !forceShow) return undefined;
   return validate(value);
@@ -951,14 +1053,36 @@ function V6PoolForm({
   );
 }
 
+function UtilBar({ used, capacity }: { used: number; capacity: number }) {
+  if (capacity <= 0) return <Box color="text-status-inactive">-</Box>;
+  const pct = Math.min(100, Math.round((used / capacity) * 100));
+  let color: "text-status-error" | "text-status-warning" | "text-status-success" = "text-status-success";
+  if (pct >= 90) color = "text-status-error";
+  else if (pct >= 70) color = "text-status-warning";
+  return (
+    <Box color={color} fontSize="body-s">
+      {used} / {capacity.toLocaleString()} ({pct}%)
+    </Box>
+  );
+}
+
 function V4Pools({
   config,
   onSaved,
+  leaseCounts,
 }: {
   config: ConfigDocument;
   onSaved: () => void;
+  leaseCounts: Record<string, number>;
 }) {
-  const pools = extractV4Pools(config.document);
+  const allPools = extractV4Pools(config.document);
+  const [filterText, setFilterText] = useState("");
+  const pools = filterText
+    ? allPools.filter((p) => {
+        const q = filterText.toLowerCase();
+        return p.name.toLowerCase().includes(q) || p.network.toLowerCase().includes(q);
+      })
+    : allPools;
   const [modalVisible, setModalVisible] = useState(false);
   const [form, setForm] = useState<PoolFormState>(EMPTY_V4_FORM);
   const [editNetwork, setEditNetwork] = useState<string | undefined>();
@@ -1042,13 +1166,30 @@ function V4Pools({
             DHCPv4 Pools
           </Header>
         }
+        filter={
+          <TextFilter
+            filteringText={filterText}
+            onChange={({ detail }) => setFilterText(detail.filteringText)}
+            filteringPlaceholder="Filter by name or network"
+            countText={`${pools.length} match${pools.length !== 1 ? "es" : ""}`}
+          />
+        }
         columnDefinitions={[
           { id: "name", header: "Name", cell: (r) => r.name || "-", width: 150 },
           { id: "network", header: "Network", cell: (r) => r.network, width: 180 },
           { id: "start", header: "Range Start", cell: (r) => r.rangeStart, width: 160 },
           { id: "end", header: "Range End", cell: (r) => r.rangeEnd, width: 160 },
           { id: "lease", header: "Lease (def/min/max)", cell: (r) => `${r.leaseDefault} / ${r.leaseMin} / ${r.leaseMax}`, width: 200 },
-          { id: "server", header: "Server ID", cell: (r) => r.serverId || "-", width: 150 },
+          {
+            id: "util",
+            header: "Usage",
+            cell: (r) => {
+              const capacity = v4RangeCapacity(r.rangeStart, r.rangeEnd);
+              const used = leaseCounts[r.network] ?? 0;
+              return <UtilBar used={used} capacity={capacity} />;
+            },
+            width: 140,
+          },
           {
             id: "actions",
             header: "Actions",
@@ -1094,11 +1235,20 @@ function V4Pools({
 function V6Pools({
   config,
   onSaved,
+  leaseCounts,
 }: {
   config: ConfigDocument;
   onSaved: () => void;
+  leaseCounts: Record<string, number>;
 }) {
-  const pools = extractV6Pools(config.document);
+  const allPools = extractV6Pools(config.document);
+  const [filterText, setFilterText] = useState("");
+  const pools = filterText
+    ? allPools.filter((p) => {
+        const q = filterText.toLowerCase();
+        return p.name.toLowerCase().includes(q) || p.network.toLowerCase().includes(q);
+      })
+    : allPools;
   const [modalVisible, setModalVisible] = useState(false);
   const [form, setForm] = useState<V6PoolFormState>(EMPTY_V6_FORM);
   const [editNetwork, setEditNetwork] = useState<string | undefined>();
@@ -1187,6 +1337,14 @@ function V6Pools({
             DHCPv6 Pools
           </Header>
         }
+        filter={
+          <TextFilter
+            filteringText={filterText}
+            onChange={({ detail }) => setFilterText(detail.filteringText)}
+            filteringPlaceholder="Filter by name or network"
+            countText={`${pools.length} match${pools.length !== 1 ? "es" : ""}`}
+          />
+        }
         columnDefinitions={[
           { id: "name", header: "Name", cell: (r) => r.name || "-", width: 150 },
           { id: "network", header: "Network", cell: (r) => r.network, width: 220 },
@@ -1210,6 +1368,17 @@ function V6Pools({
             header: "Lease / Preferred (s)",
             cell: (r) => `${r.leaseDefault} / ${r.preferredDefault}`,
             width: 180,
+          },
+          {
+            id: "util",
+            header: "Usage",
+            cell: (r) => {
+              if (r.type === "pd_pool") return <Box color="text-status-inactive">-</Box>;
+              const capacity = v6RangeCapacity(r.rangeStart, r.rangeEnd);
+              const used = leaseCounts[r.network] ?? 0;
+              return <UtilBar used={used} capacity={capacity} />;
+            },
+            width: 140,
           },
           {
             id: "actions",
@@ -1253,17 +1422,36 @@ function V6Pools({
   );
 }
 
+function buildLeaseCounts(
+  items: { network: string }[]
+): Record<string, number> {
+  const counts: Record<string, number> = {};
+  for (const item of items) {
+    counts[item.network] = (counts[item.network] ?? 0) + 1;
+  }
+  return counts;
+}
+
 export default function Pools() {
   const [config, setConfig] = useState<ConfigDocument | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [v4LeaseCounts, setV4LeaseCounts] = useState<Record<string, number>>({});
+  const [v6LeaseCounts, setV6LeaseCounts] = useState<Record<string, number>>({});
 
   const load = () => {
     setLoading(true);
     setError(null);
-    api
-      .config()
-      .then(setConfig)
+    Promise.all([
+      api.config(),
+      api.leasesV4({ limit: "10000" }).catch(() => ({ items: [] })),
+      api.leasesV6({ limit: "10000" }).catch(() => ({ items: [] })),
+    ])
+      .then(([cfg, v4, v6]) => {
+        setConfig(cfg);
+        setV4LeaseCounts(buildLeaseCounts(v4.items));
+        setV6LeaseCounts(buildLeaseCounts(v6.items));
+      })
       .catch((err) => setError(String(err)))
       .finally(() => setLoading(false));
   };
@@ -1296,12 +1484,12 @@ export default function Pools() {
               {
                 id: "v4",
                 label: "DHCPv4",
-                content: <V4Pools config={config} onSaved={load} />,
+                content: <V4Pools config={config} onSaved={load} leaseCounts={v4LeaseCounts} />,
               },
               {
                 id: "v6",
                 label: "DHCPv6",
-                content: <V6Pools config={config} onSaved={load} />,
+                content: <V6Pools config={config} onSaved={load} leaseCounts={v6LeaseCounts} />,
               },
             ]}
           />
