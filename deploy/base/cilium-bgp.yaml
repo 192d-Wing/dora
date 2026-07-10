@@ -1,62 +1,33 @@
-# Cilium BGP control plane: advertise the dora LoadBalancer Service IPs to the
-# upstream router so the DHCP VIPs are reachable as true anycast (ECMP across the
-# nodes running each server), and the API's site-local IP is routable inside the
-# site.
+# Advertise the dora LoadBalancer Service IPs over BGP so the DHCP VIPs are
+# reachable as anycast (ECMP across the nodes running each server) and the API's
+# site-local IP is routable within the site.
 #
-# This uses the BGP Control Plane v2 API (Cilium >= 1.16; enable
-# `bgpControlPlane.enabled=true`). For Cilium 1.14/1.15 use the older
-# `CiliumBGPPeeringPolicy` instead (see deploy/README.md).
+# This plugs into the cluster's EXISTING Cilium BGP setup rather than defining
+# its own peering: a running cluster already has a CiliumBGPClusterConfig +
+# CiliumBGPPeerConfig peering the upstream router, and the peer config selects
+# advertisements by label. dora only ships the advertisement below.
 #
-# EDIT the ASNs and peer address for your network before applying.
-apiVersion: cilium.io/v2alpha1
-kind: CiliumBGPClusterConfig
-metadata:
-  name: dora-bgp
-spec:
-  # which nodes speak BGP; empty selector = all nodes. Narrow this if only some
-  # nodes peer with the router.
-  nodeSelector:
-    matchLabels: {}
-  bgpInstances:
-    - name: dora
-      localASN: 65010 # EDIT: this cluster's ASN
-      peers:
-        - name: upstream-router
-          peerASN: 65000 # EDIT: the upstream router's ASN
-          peerAddress: "10.0.0.1" # EDIT: the router's IP
-          peerConfigRef:
-            name: dora-peer
----
-apiVersion: cilium.io/v2alpha1
-kind: CiliumBGPPeerConfig
-metadata:
-  name: dora-peer
-spec:
-  families:
-    - afi: ipv4
-      safi: unicast
-      advertisements:
-        matchLabels:
-          advertise: dora-services
-    - afi: ipv6
-      safi: unicast
-      advertisements:
-        matchLabels:
-          advertise: dora-services
----
-apiVersion: cilium.io/v2alpha1
+# The `advertise:` label MUST match your CiliumBGPPeerConfig's
+# `spec.families[].advertisements.matchLabels`. Find it with:
+#   kubectl get ciliumbgppeerconfig -o yaml | grep -A2 advertisements
+# The default here (`k3s-pod-cidrs`) matches the windep cluster's peer config.
+#
+# If your cluster has NO BGP peering yet, apply a cluster/peer config first — see
+# deploy/examples/cilium-bgp-peer.example.yaml.
+apiVersion: cilium.io/v2
 kind: CiliumBGPAdvertisement
 metadata:
   name: dora-services
   labels:
-    advertise: dora-services
+    # selected by the cluster's CiliumBGPPeerConfig (EDIT to match yours)
+    advertise: k3s-pod-cidrs
 spec:
   advertisements:
     - advertisementType: Service
       service:
         addresses:
           - LoadBalancerIP
-      # advertise both the anycast VIPs and the site-local API IP
+      # advertise both the anycast VIPs (v4/v6 servers) and the site-local API IP
       selector:
         matchExpressions:
           - key: dora.io/lb-pool
