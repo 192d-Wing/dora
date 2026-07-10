@@ -763,6 +763,46 @@ function applyV6Pool(
   return clone;
 }
 
+function removeV4Pool(
+  doc: Record<string, unknown>,
+  network: string,
+  rangeIndex: number
+): Record<string, unknown> {
+  const clone = structuredClone(doc);
+  const networks = (clone.v4 as Record<string, unknown>)?.networks as
+    Record<string, Record<string, unknown>> | undefined;
+  if (!networks?.[network]) return clone;
+  const net = networks[network];
+  const ranges = net.ranges as Array<Record<string, unknown>> | undefined;
+  if (ranges && rangeIndex >= 0) {
+    ranges.splice(rangeIndex, 1);
+    if (ranges.length === 0) delete net.ranges;
+  }
+  if (!net.ranges && !net.reservations) delete networks[network];
+  return clone;
+}
+
+function removeV6Pool(
+  doc: Record<string, unknown>,
+  network: string,
+  rangeIndex: number,
+  poolType: "range" | "pd_pool"
+): Record<string, unknown> {
+  const clone = structuredClone(doc);
+  const networks = (clone.v6 as Record<string, unknown>)?.networks as
+    Record<string, Record<string, unknown>> | undefined;
+  if (!networks?.[network]) return clone;
+  const net = networks[network];
+  const key = poolType === "pd_pool" ? "pd_pools" : "ranges";
+  const arr = net[key] as Array<Record<string, unknown>> | undefined;
+  if (arr && rangeIndex >= 0) {
+    arr.splice(rangeIndex, 1);
+    if (arr.length === 0) delete net[key];
+  }
+  if (!net.ranges && !net.pd_pools && !net.reservations) delete networks[network];
+  return clone;
+}
+
 const IPV4_RE = /^(?:(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d\d?)$/;
 const IPV4_CIDR_RE = /^(?:(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\/(?:[0-9]|[12]\d|3[0-2])$/;
 const IPV6_RE = /^([0-9a-fA-F]{0,4}:){2,7}[0-9a-fA-F]{0,4}$/;
@@ -1091,6 +1131,25 @@ function V4Pools({
   const [showErrors, setShowErrors] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<PoolRow | null>(null);
+  const [deleting, setDeleting] = useState(false);
+
+  const confirmDelete = async () => {
+    if (!deleteTarget || deleteTarget.rangeIndex < 0) return;
+    setDeleting(true);
+    setError(null);
+    try {
+      const newDoc = removeV4Pool(config.document, deleteTarget.network, deleteTarget.rangeIndex);
+      await post("/v1/config/candidates", { document: newDoc });
+      setSuccess("Pool removal staged. Activate from the Actions page.");
+      setDeleteTarget(null);
+      onSaved();
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setDeleting(false);
+    }
+  };
 
   const openAdd = () => {
     setForm(EMPTY_V4_FORM);
@@ -1194,11 +1253,18 @@ function V4Pools({
             id: "actions",
             header: "Actions",
             cell: (r) => (
-              <Button variant="inline-link" onClick={() => openEdit(r)}>
-                Edit
-              </Button>
+              <SpaceBetween direction="horizontal" size="xs">
+                <Button variant="inline-link" onClick={() => openEdit(r)}>
+                  Edit
+                </Button>
+                {r.rangeIndex >= 0 && (
+                  <Button variant="inline-link" onClick={() => setDeleteTarget(r)}>
+                    Delete
+                  </Button>
+                )}
+              </SpaceBetween>
             ),
-            width: 100,
+            width: 150,
           },
         ]}
         empty={
@@ -1227,6 +1293,28 @@ function V4Pools({
         }
       >
         <V4PoolForm form={form} onChange={setForm} showErrors={showErrors} />
+      </Modal>
+      <Modal
+        visible={deleteTarget !== null}
+        onDismiss={() => setDeleteTarget(null)}
+        header="Delete DHCPv4 Pool"
+        footer={
+          <Box float="right">
+            <SpaceBetween direction="horizontal" size="xs">
+              <Button variant="link" onClick={() => setDeleteTarget(null)}>
+                Cancel
+              </Button>
+              <Button variant="primary" loading={deleting} onClick={confirmDelete}>
+                Delete
+              </Button>
+            </SpaceBetween>
+          </Box>
+        }
+      >
+        Are you sure you want to delete the pool range{" "}
+        <strong>{deleteTarget?.rangeStart} — {deleteTarget?.rangeEnd}</strong>{" "}
+        in network <strong>{deleteTarget?.network}</strong>?
+        This will stage a config candidate that must be activated.
       </Modal>
     </SpaceBetween>
   );
@@ -1258,6 +1346,25 @@ function V6Pools({
   const [showErrors, setShowErrors] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<V6PoolRow | null>(null);
+  const [deleting, setDeleting] = useState(false);
+
+  const confirmDelete = async () => {
+    if (!deleteTarget || deleteTarget.rangeIndex < 0) return;
+    setDeleting(true);
+    setError(null);
+    try {
+      const newDoc = removeV6Pool(config.document, deleteTarget.network, deleteTarget.rangeIndex, deleteTarget.type);
+      await post("/v1/config/candidates", { document: newDoc });
+      setSuccess("Pool removal staged. Activate from the Actions page.");
+      setDeleteTarget(null);
+      onSaved();
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setDeleting(false);
+    }
+  };
 
   const openAdd = () => {
     setForm(EMPTY_V6_FORM);
@@ -1384,11 +1491,18 @@ function V6Pools({
             id: "actions",
             header: "Actions",
             cell: (r) => (
-              <Button variant="inline-link" onClick={() => openEdit(r)}>
-                Edit
-              </Button>
+              <SpaceBetween direction="horizontal" size="xs">
+                <Button variant="inline-link" onClick={() => openEdit(r)}>
+                  Edit
+                </Button>
+                {r.rangeIndex >= 0 && (
+                  <Button variant="inline-link" onClick={() => setDeleteTarget(r)}>
+                    Delete
+                  </Button>
+                )}
+              </SpaceBetween>
             ),
-            width: 100,
+            width: 150,
           },
         ]}
         empty={
@@ -1417,6 +1531,33 @@ function V6Pools({
         }
       >
         <V6PoolForm form={form} onChange={setForm} showErrors={showErrors} />
+      </Modal>
+      <Modal
+        visible={deleteTarget !== null}
+        onDismiss={() => setDeleteTarget(null)}
+        header="Delete DHCPv6 Pool"
+        footer={
+          <Box float="right">
+            <SpaceBetween direction="horizontal" size="xs">
+              <Button variant="link" onClick={() => setDeleteTarget(null)}>
+                Cancel
+              </Button>
+              <Button variant="primary" loading={deleting} onClick={confirmDelete}>
+                Delete
+              </Button>
+            </SpaceBetween>
+          </Box>
+        }
+      >
+        Are you sure you want to delete the{" "}
+        {deleteTarget?.type === "pd_pool" ? "prefix delegation" : "range"}{" "}
+        <strong>
+          {deleteTarget?.type === "pd_pool"
+            ? `${deleteTarget?.prefix} /${deleteTarget?.delegatedLen}`
+            : `${deleteTarget?.rangeStart} — ${deleteTarget?.rangeEnd}`}
+        </strong>{" "}
+        in network <strong>{deleteTarget?.network}</strong>?
+        This will stage a config candidate that must be activated.
       </Modal>
     </SpaceBetween>
   );
