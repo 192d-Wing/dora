@@ -78,7 +78,7 @@ if [ -n "$IFACE" ]; then
 else
     # Run another binary
     if [ $$ -eq 1 ] && command -v dumb-init >/dev/null 2>&1; then
-        exec dumb-init -- "$@"
+        exec dumb-init "$@"
     else
         exec "$@"
     fi
