@@ -1,6 +1,7 @@
 # syntax=docker/dockerfile:1
 #
 # Multi-arch (linux/amd64, linux/arm64) build for dora.
+# Cache bust: 2026-07-10
 # Build from the REPO ROOT (the build context needs the whole workspace), e.g.:
 #   podman build -f infra-build/Containerfile -t dora .
 #   docker buildx build --platform linux/amd64,linux/arm64 -f infra-build/Containerfile -t dora .
