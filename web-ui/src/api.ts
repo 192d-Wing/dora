@@ -1,5 +1,12 @@
 const BASE = "";
 
+function authHeaders(): Record<string, string> {
+  const token = localStorage.getItem("dora_api_token");
+  const headers: Record<string, string> = {};
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+  return headers;
+}
+
 async function get<T>(path: string, params?: Record<string, string>): Promise<T> {
   const url = new URL(path, window.location.origin);
   if (params) {
@@ -7,14 +14,25 @@ async function get<T>(path: string, params?: Record<string, string>): Promise<T>
       if (v) url.searchParams.set(k, v);
     }
   }
-  const token = localStorage.getItem("dora_api_token");
-  const headers: Record<string, string> = {};
-  if (token) headers["Authorization"] = `Bearer ${token}`;
-
-  const res = await fetch(`${BASE}${url.pathname}${url.search}`, { headers });
+  const res = await fetch(`${BASE}${url.pathname}${url.search}`, {
+    headers: authHeaders(),
+  });
   if (!res.ok) {
     const body = await res.text();
     throw new Error(`${res.status}: ${body}`);
+  }
+  return res.json();
+}
+
+export async function post<T>(path: string, body?: Record<string, unknown>): Promise<T> {
+  const res = await fetch(`${BASE}${path}`, {
+    method: "POST",
+    headers: { ...authHeaders(), "Content-Type": "application/json" },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`${res.status}: ${text}`);
   }
   return res.json();
 }

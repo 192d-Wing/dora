@@ -6,6 +6,7 @@ import Dashboard from "./pages/Dashboard";
 import Leases from "./pages/Leases";
 import Reservations from "./pages/Reservations";
 import Config from "./pages/Config";
+import Actions from "./pages/Actions";
 import Settings from "./pages/Settings";
 
 function Shell() {
@@ -50,6 +51,7 @@ function Shell() {
               { type: "link", text: "Leases", href: "/leases" },
               { type: "link", text: "Reservations", href: "/reservations" },
               { type: "link", text: "Configuration", href: "/config" },
+              { type: "link", text: "Actions", href: "/actions" },
               { type: "divider" },
               { type: "link", text: "Settings", href: "/settings" },
             ]}
@@ -61,6 +63,7 @@ function Shell() {
             <Route path="/leases" element={<Leases />} />
             <Route path="/reservations" element={<Reservations />} />
             <Route path="/config" element={<Config />} />
+            <Route path="/actions" element={<Actions />} />
             <Route path="/settings" element={<Settings />} />
           </Routes>
         }
