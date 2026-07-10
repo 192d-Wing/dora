@@ -374,6 +374,11 @@ function validateRangeOrder(start: string, end: string, ipRe: RegExp): string | 
   return undefined;
 }
 
+function liveErr(value: string, validate: (v: string) => string | undefined, forceShow: boolean): string | undefined {
+  if (!value && !forceShow) return undefined;
+  return validate(value);
+}
+
 function V4PoolForm({
   form,
   onChange,
@@ -383,11 +388,9 @@ function V4PoolForm({
   onChange: (f: PoolFormState) => void;
   showErrors: boolean;
 }) {
-  const networkErr = showErrors ? validateIpv4Cidr(form.network) : undefined;
-  const startErr = showErrors ? validateIpv4(form.rangeStart) : undefined;
-  const endErr = showErrors
-    ? (validateIpv4(form.rangeEnd) ?? validateRangeOrder(form.rangeStart, form.rangeEnd, IPV4_RE))
-    : undefined;
+  const networkErr = liveErr(form.network, validateIpv4Cidr, showErrors);
+  const startErr = liveErr(form.rangeStart, validateIpv4, showErrors);
+  const endErr = liveErr(form.rangeEnd, (v) => validateIpv4(v) ?? validateRangeOrder(form.rangeStart, v, IPV4_RE), showErrors);
 
   return (
     <SpaceBetween size="m">
@@ -489,12 +492,12 @@ function V6PoolForm({
   showErrors: boolean;
 }) {
   const isRange = form.type === "range";
-  const networkErr = showErrors ? validateIpv6Cidr(form.network) : undefined;
-  const startErr = showErrors && isRange ? validateIpv6(form.rangeStart) : undefined;
-  const endErr = showErrors && isRange
-    ? (validateIpv6(form.rangeEnd) ?? validateRangeOrder(form.rangeStart, form.rangeEnd, IPV6_RE))
+  const networkErr = liveErr(form.network, validateIpv6Cidr, showErrors);
+  const startErr = isRange ? liveErr(form.rangeStart, validateIpv6, showErrors) : undefined;
+  const endErr = isRange
+    ? liveErr(form.rangeEnd, (v) => validateIpv6(v) ?? validateRangeOrder(form.rangeStart, v, IPV6_RE), showErrors)
     : undefined;
-  const prefixErr = showErrors && !isRange ? validateIpv6Cidr(form.prefix) : undefined;
+  const prefixErr = !isRange ? liveErr(form.prefix, validateIpv6Cidr, showErrors) : undefined;
 
   return (
     <SpaceBetween size="m">
