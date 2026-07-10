@@ -194,4 +194,8 @@ export const api = {
     post<{ message: string }>("/v1/actions/release-lease", { family, ip }),
   activateConfig: (candidateId: string) =>
     post<{ message: string }>("/v1/actions/activate-config", { candidate_id: candidateId }),
+  createReservation: (family: "v4" | "v6", reservation: Record<string, unknown>) =>
+    post<{ message: string }>("/v1/actions/create-reservation", { family, reservation }),
+  deleteReservation: (family: "v4" | "v6", ip: string) =>
+    post<{ message: string }>("/v1/actions/delete-reservation", { family, ip }),
 };
