@@ -93,6 +93,33 @@ export interface V6LeaseListResponse {
   items: V6Lease[];
 }
 
+export interface V4Reservation {
+  family: "v4";
+  ip: string;
+  network?: string;
+  source: string;
+  match: Record<string, unknown>;
+}
+
+export interface V6Reservation {
+  family: "v6";
+  ip?: string;
+  prefix?: string;
+  network?: string;
+  source: string;
+  match: Record<string, unknown>;
+}
+
+export interface V4ReservationListResponse {
+  meta: PaginationMeta;
+  items: V4Reservation[];
+}
+
+export interface V6ReservationListResponse {
+  meta: PaginationMeta;
+  items: V6Reservation[];
+}
+
 export const api = {
   health: () => get<HealthResponse>("/health"),
   ready: () => get<ReadinessResponse>("/ready"),
@@ -102,4 +129,8 @@ export const api = {
     get<V4LeaseListResponse>("/v1/leases/v4", params),
   leasesV6: (params?: Record<string, string>) =>
     get<V6LeaseListResponse>("/v1/leases/v6", params),
+  reservationsV4: (params?: Record<string, string>) =>
+    get<V4ReservationListResponse>("/v1/reservations/v4", params),
+  reservationsV6: (params?: Record<string, string>) =>
+    get<V6ReservationListResponse>("/v1/reservations/v6", params),
 };

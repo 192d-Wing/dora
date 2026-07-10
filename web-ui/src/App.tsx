@@ -4,6 +4,7 @@ import SideNavigation from "@cloudscape-design/components/side-navigation";
 import TopNavigation from "@cloudscape-design/components/top-navigation";
 import Dashboard from "./pages/Dashboard";
 import Leases from "./pages/Leases";
+import Reservations from "./pages/Reservations";
 import Settings from "./pages/Settings";
 
 function Shell() {
@@ -46,6 +47,7 @@ function Shell() {
             items={[
               { type: "link", text: "Dashboard", href: "/" },
               { type: "link", text: "Leases", href: "/leases" },
+              { type: "link", text: "Reservations", href: "/reservations" },
               { type: "divider" },
               { type: "link", text: "Settings", href: "/settings" },
             ]}
@@ -55,6 +57,7 @@ function Shell() {
           <Routes>
             <Route path="/" element={<Dashboard />} />
             <Route path="/leases" element={<Leases />} />
+            <Route path="/reservations" element={<Reservations />} />
             <Route path="/settings" element={<Settings />} />
           </Routes>
         }
