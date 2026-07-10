@@ -7,7 +7,7 @@
 # The single-address blocks below are populated from the dora-vips ConfigMap via
 # Kustomize `replacements` (see kustomization.yaml) — edit the VIPs there, not
 # here. Requires Cilium with LB-IPAM enabled.
-apiVersion: cilium.io/v2alpha1
+apiVersion: cilium.io/v2
 kind: CiliumLoadBalancerIPPool
 metadata:
   name: dora-anycast
@@ -23,7 +23,7 @@ spec:
     - start: "2001:db8:a11::10"
       stop: "2001:db8:a11::10"
 ---
-apiVersion: cilium.io/v2alpha1
+apiVersion: cilium.io/v2
 kind: CiliumLoadBalancerIPPool
 metadata:
   name: dora-site-local

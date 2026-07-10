@@ -32,7 +32,9 @@ and dora runs its embedded migrations on startup. The DHCP servers sit behind a
 - A Kubernetes or K3s cluster with **Cilium** as the CNI, configured with:
   - `kubeProxyReplacement=true`
   - LB-IPAM enabled (ships with Cilium)
-  - the **BGP control plane** enabled (`bgpControlPlane.enabled=true`)
+  - the **BGP control plane** enabled (`bgpControlPlane.enabled=true`), ideally
+    with an existing peering to your router (dora ships only a
+    `CiliumBGPAdvertisement` and plugs into that peering — see Step 5)
   - recommended: `loadBalancer.mode=dsr` for the DHCP Services (so replies keep
     the VIP as their source and relays accept them)
 - An upstream router that will peer BGP with the cluster and accept the VIPs.
@@ -97,20 +99,33 @@ Make sure the pool CIDRs in
 contain your chosen VIPs (the anycast pool holds the v4+v6 VIPs; the site-local
 pool holds the API VIP).
 
-## Step 5 — Set BGP peering
+## Step 5 — Wire BGP advertisement
 
-Edit [`deploy/base/cilium-bgp.yaml`](../deploy/base/cilium-bgp.yaml):
+dora does **not** set up its own BGP peering — it plugs into the peering your
+cluster already has. Cilium's `CiliumBGPPeerConfig` selects which advertisements
+to send by label, so all you do is make dora's `CiliumBGPAdvertisement` carry
+that label.
 
-```yaml
-localASN: 65010            # this cluster's ASN
-peers:
-  - name: upstream-router
-    peerASN: 65000         # your router's ASN
-    peerAddress: "10.0.0.1" # your router's IP
+Find the label your peer config expects:
+
+```sh
+kubectl get ciliumbgppeerconfig -o yaml | grep -A2 advertisements
+# e.g.  advertisements:
+#         matchLabels:
+#           advertise: k3s-pod-cidrs
 ```
 
-This uses the BGP Control Plane v2 CRDs (Cilium >= 1.16). On Cilium 1.14/1.15,
-replace it with a `CiliumBGPPeeringPolicy`.
+Then set the same value on the `advertise:` label in
+[`deploy/base/cilium-bgp.yaml`](../deploy/base/cilium-bgp.yaml) (it defaults to
+`k3s-pod-cidrs`). The advertisement selects dora's Services by their
+`dora.io/lb-pool` labels, so no ASNs or peer addresses are needed here.
+
+> **No BGP peering yet?** If `kubectl get ciliumbgpclusterconfig` is empty, apply
+> [`deploy/examples/cilium-bgp-peer.example.yaml`](../deploy/examples/cilium-bgp-peer.example.yaml)
+> first (edit its ASNs and peer address), then continue.
+>
+> The Cilium CRDs here are `cilium.io/v2` (current Cilium). On older Cilium that
+> still serves `cilium.io/v2alpha1`, adjust the `apiVersion` accordingly.
 
 ## Step 6 — (optional) Set the image and storage class
 

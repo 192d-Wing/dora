@@ -32,11 +32,12 @@ embedded migrations against Postgres on startup.
 
 - **Anycast VIP for the DHCP servers.** The v4 and v6 Services are `LoadBalancer`
   type, drawing from the `dora-anycast` Cilium LB-IPAM pool (one v4 VIP, one v6
-  VIP — different addresses because different families). The Cilium **BGP control
-  plane** advertises those VIPs to your upstream router; with the servers spread
-  across nodes (`externalTrafficPolicy: Local` + pod anti-affinity), the router
-  ECMP-load-balances to the nearest ready replica — true anycast. Point your
-  DHCP relays' `helper-address` / server-address at these VIPs.
+  VIP — different addresses because different families). A `CiliumBGPAdvertisement`
+  advertises those VIPs to your upstream router **through the cluster's existing
+  Cilium BGP peering** (dora does not stand up its own — see below); with the
+  servers spread across nodes (`externalTrafficPolicy: Local` + pod anti-affinity),
+  the router ECMP-load-balances to the nearest ready replica — true anycast. Point
+  your DHCP relays' `helper-address` / server-address at these VIPs.
 - **Site-local IP for the API.** The API Service draws from a separate
   `dora-site-local` pool, so management traffic uses a distinct, internally
   routable address — never the DHCP anycast VIP.
@@ -56,9 +57,12 @@ source address and the relay accepts them.
   - LB-IPAM enabled (ships with Cilium)
   - **BGP control plane** enabled (`bgpControlPlane.enabled=true`)
   - recommended: `loadBalancer.mode=dsr` for the DHCP Services
-- `cilium-bgp.yaml` uses the **BGP Control Plane v2** CRDs (Cilium ≥ 1.16:
-  `CiliumBGPClusterConfig` / `CiliumBGPPeerConfig` / `CiliumBGPAdvertisement`).
-  On Cilium 1.14–1.15 replace it with a `CiliumBGPPeeringPolicy`.
+  - the **BGP control plane** enabled (`bgpControlPlane.enabled=true`) and an
+    **existing peering** to your upstream router (a `CiliumBGPClusterConfig` +
+    `CiliumBGPPeerConfig`). dora plugs into that peering rather than creating its
+    own — its `CiliumBGPAdvertisement` (`cilium.io/v2`) is picked up by your peer
+    config's `advertisements.matchLabels`. If your cluster has no peering yet,
+    apply `deploy/examples/cilium-bgp-peer.example.yaml` first.
 - An upstream router willing to peer BGP and accept the advertised VIPs.
 
 ## What you MUST edit before applying
@@ -78,7 +82,12 @@ source address and the relay accepts them.
    (`io.cilium/lb-ipam-ips`) and its Cilium LB-IPAM pool block, so you set each
    VIP in exactly one place. To vary per environment, patch this ConfigMap's
    `data` in an overlay.
-5. **BGP** — `deploy/base/cilium-bgp.yaml` local/peer ASNs and the peer address.
+5. **BGP advertise label** — in `deploy/base/cilium-bgp.yaml`, set the
+   `advertise:` label to match your `CiliumBGPPeerConfig`'s
+   `spec.families[].advertisements.matchLabels`. Find it with
+   `kubectl get ciliumbgppeerconfig -o yaml | grep -A2 advertisements`. (Default
+   `k3s-pod-cidrs`.) No ASNs/peers to set here — those live in the cluster's
+   existing peering.
 6. **Storage class** — the overlay patch (`standard` for k8s, `local-path` for
    k3s) to match your cluster.
 

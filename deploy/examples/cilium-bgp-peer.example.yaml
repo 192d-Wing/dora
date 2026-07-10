@@ -1,0 +1,45 @@
+# EXAMPLE — a Cilium BGP cluster + peer config, for a cluster that does not
+# already peer BGP with an upstream router.
+#
+# This is NOT part of the Kustomize build (deploy/base does not reference it),
+# because a running cluster typically already has this and dora should plug into
+# it via deploy/base/cilium-bgp.yaml (the CiliumBGPAdvertisement). Apply this
+# ONLY if `kubectl get ciliumbgpclusterconfig` is empty.
+#
+# The peer config selects advertisements labeled `advertise: <value>`; keep that
+# value in sync with the `advertise:` label on dora's CiliumBGPAdvertisement.
+# EDIT the ASNs and peer addresses for your network.
+apiVersion: cilium.io/v2
+kind: CiliumBGPClusterConfig
+metadata:
+  name: dora-bgp
+spec:
+  # which nodes speak BGP; empty selector = all nodes
+  nodeSelector:
+    matchLabels: {}
+  bgpInstances:
+    - name: dora
+      localASN: 65010 # EDIT: this cluster's ASN
+      peers:
+        - name: upstream-router
+          peerASN: 65000 # EDIT: the upstream router's ASN
+          peerAddress: "10.0.0.1" # EDIT: the router's IP
+          peerConfigRef:
+            name: dora-peer
+---
+apiVersion: cilium.io/v2
+kind: CiliumBGPPeerConfig
+metadata:
+  name: dora-peer
+spec:
+  families:
+    - afi: ipv4
+      safi: unicast
+      advertisements:
+        matchLabels:
+          advertise: k3s-pod-cidrs
+    - afi: ipv6
+      safi: unicast
+      advertisements:
+        matchLabels:
+          advertise: k3s-pod-cidrs
