@@ -28,8 +28,8 @@ function Shell() {
         utilities={[
           {
             type: "button",
-            text: pendingCount > 0 ? `Pending Changes (${pendingCount})` : "Pending Changes",
-            iconName: "status-pending",
+            text: pendingCount > 0 ? `Commit (${pendingCount})` : "Commit",
+            iconName: "upload",
             badge: pendingCount > 0,
             onClick: () => setPendingVisible(true),
           },

@@ -1,13 +1,11 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import Box from "@cloudscape-design/components/box";
 import Button from "@cloudscape-design/components/button";
 import Modal from "@cloudscape-design/components/modal";
 import SpaceBetween from "@cloudscape-design/components/space-between";
 import Alert from "@cloudscape-design/components/alert";
 import Spinner from "@cloudscape-design/components/spinner";
-import Badge from "@cloudscape-design/components/badge";
-import Container from "@cloudscape-design/components/container";
-import Header from "@cloudscape-design/components/header";
+import StatusIndicator from "@cloudscape-design/components/status-indicator";
 import { api, ConfigCandidate, ConfigDocument } from "../api";
 
 interface DiffLine {
@@ -136,13 +134,6 @@ function alertType(level: string): "error" | "warning" | "info" {
   return "info";
 }
 
-function statusColor(status: ConfigCandidate["status"]): "blue" | "green" | "red" | "grey" {
-  if (status === "valid" || status === "activated") return "green";
-  if (status === "invalid") return "red";
-  if (status === "staged" || status === "validating") return "blue";
-  return "grey";
-}
-
 export function usePendingCount() {
   const [count, setCount] = useState(0);
 
@@ -166,6 +157,8 @@ export function usePendingCount() {
   return { count, refresh };
 }
 
+type CommitPhase = "loading" | "preview" | "validating" | "valid" | "invalid" | "committing" | "done";
+
 export default function PendingChanges({
   visible,
   onDismiss,
@@ -175,125 +168,214 @@ export default function PendingChanges({
   onDismiss: () => void;
   onActivated: () => void;
 }) {
-  const [loading, setLoading] = useState(false);
+  const [phase, setPhase] = useState<CommitPhase>("loading");
   const [error, setError] = useState<string | null>(null);
-  const [success, setSuccess] = useState<string | null>(null);
   const [activeConfig, setActiveConfig] = useState<ConfigDocument | null>(null);
-  const [candidates, setCandidates] = useState<ConfigCandidate[]>([]);
-  const [activating, setActivating] = useState(false);
+  const [candidate, setCandidate] = useState<ConfigCandidate | null>(null);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  useEffect(() => {
-    if (!visible) return;
-    setLoading(true);
+  const stopPolling = useCallback(() => {
+    if (pollRef.current) {
+      clearInterval(pollRef.current);
+      pollRef.current = null;
+    }
+  }, []);
+
+  const loadCandidate = useCallback(() => {
+    setPhase("loading");
     setError(null);
-    setSuccess(null);
     Promise.all([api.config(), api.configCandidates()])
       .then(async ([cfg, list]) => {
         setActiveConfig(cfg);
         const pending = list.items.filter(
           (c) => c.status === "staged" || c.status === "valid" || c.status === "validating"
         );
-        const detailed = await Promise.all(
-          pending.map((c) => api.configCandidate(c.candidate_id))
-        );
-        setCandidates(detailed);
+        if (pending.length === 0) {
+          setCandidate(null);
+          setPhase("preview");
+          return;
+        }
+        const latest = await api.configCandidate(pending[0].candidate_id);
+        setCandidate(latest);
+        if (latest.status === "valid") {
+          setPhase("valid");
+        } else if (latest.status === "invalid") {
+          setPhase("invalid");
+        } else {
+          setPhase("preview");
+        }
       })
-      .catch((err) => setError(String(err)))
-      .finally(() => setLoading(false));
-  }, [visible]);
+      .catch((err) => {
+        setError(String(err));
+        setPhase("preview");
+      });
+  }, []);
 
-  const activate = async (candidateId: string) => {
-    setActivating(true);
+  useEffect(() => {
+    if (visible) {
+      loadCandidate();
+    } else {
+      stopPolling();
+    }
+    return stopPolling;
+  }, [visible, loadCandidate, stopPolling]);
+
+  const validate = () => {
+    if (!candidate) return;
+    setPhase("validating");
+    setError(null);
+
+    const poll = () => {
+      api.configCandidate(candidate.candidate_id)
+        .then((c) => {
+          setCandidate(c);
+          if (c.status === "valid") {
+            stopPolling();
+            setPhase("valid");
+          } else if (c.status === "invalid") {
+            stopPolling();
+            setPhase("invalid");
+          }
+        })
+        .catch((err) => {
+          stopPolling();
+          setError(String(err));
+          setPhase("preview");
+        });
+    };
+
+    poll();
+    pollRef.current = setInterval(poll, 2000);
+  };
+
+  const commit = async () => {
+    if (!candidate) return;
+    setPhase("committing");
     setError(null);
     try {
-      await api.activateConfig(candidateId);
-      setSuccess("Configuration activated successfully.");
-      setCandidates((prev) => prev.filter((c) => c.candidate_id !== candidateId));
+      await api.activateConfig(candidate.candidate_id);
+      setPhase("done");
       onActivated();
     } catch (err) {
       setError(String(err));
-    } finally {
-      setActivating(false);
+      setPhase("valid");
     }
   };
+
+  const hasValidationErrors = candidate?.validation && candidate.validation.length > 0;
+  const hasDiff = activeConfig?.document && candidate?.document;
 
   return (
     <Modal
       visible={visible}
       onDismiss={onDismiss}
-      header="Pending Changes"
+      header={
+        <SpaceBetween direction="horizontal" size="xs">
+          <span>Commit</span>
+          {candidate && (
+            <Box fontSize="body-s" color="text-status-inactive" display="inline-block" padding={{ top: "xxs" }}>
+              {candidate.candidate_id.slice(0, 8)}…
+            </Box>
+          )}
+        </SpaceBetween>
+      }
       size="max"
       footer={
         <Box float="right">
-          <Button variant="link" onClick={onDismiss}>Close</Button>
+          <SpaceBetween direction="horizontal" size="xs">
+            {phase === "done" ? (
+              <Button variant="primary" onClick={onDismiss}>Done</Button>
+            ) : (
+              <>
+                <Button variant="link" onClick={onDismiss}>Cancel</Button>
+                {candidate && phase === "preview" && (
+                  <Button onClick={validate}>
+                    Validate
+                  </Button>
+                )}
+                {candidate && phase === "valid" && (
+                  <>
+                    <Button onClick={validate}>Re-validate</Button>
+                    <Button variant="primary" onClick={commit}>Commit</Button>
+                  </>
+                )}
+                {candidate && phase === "invalid" && (
+                  <Button onClick={validate}>Re-validate</Button>
+                )}
+              </>
+            )}
+          </SpaceBetween>
         </Box>
       }
     >
       <SpaceBetween size="m">
         {error && <Alert type="error" dismissible onDismiss={() => setError(null)}>{error}</Alert>}
-        {success && <Alert type="success" dismissible onDismiss={() => setSuccess(null)}>{success}</Alert>}
-        {loading && <Spinner size="large" />}
-        {!loading && candidates.length === 0 && !error && (
+
+        {phase === "done" && (
+          <Alert type="success">Configuration committed and activated successfully.</Alert>
+        )}
+
+        {phase === "loading" && (
+          <Box textAlign="center" padding="xl"><Spinner size="large" /></Box>
+        )}
+
+        {phase !== "loading" && !candidate && phase !== "done" && (
           <Box textAlign="center" padding="l" color="text-status-inactive">
-            No pending changes.
+            No pending changes to commit.
           </Box>
         )}
-        {candidates.map((candidate) => {
-          const isValid = candidate.status === "valid";
-          const isPending = candidate.status === "staged" || candidate.status === "validating";
-          return (
-            <Container
-              key={candidate.candidate_id}
-              header={
-                <Header
-                  actions={
-                    <SpaceBetween direction="horizontal" size="xs">
-                      <Badge color={statusColor(candidate.status)}>{candidate.status}</Badge>
-                      {isPending && (
-                        <Box color="text-status-info" fontSize="body-s" padding={{ top: "xxs" }}>
-                          Awaiting validation…
-                        </Box>
-                      )}
-                      {candidate.status === "invalid" && (
-                        <Box color="text-status-error" fontSize="body-s" padding={{ top: "xxs" }}>
-                          Cannot activate — validation failed
-                        </Box>
-                      )}
-                      {isValid && (
-                        <Button variant="primary" loading={activating} onClick={() => activate(candidate.candidate_id)}>
-                          Activate
-                        </Button>
-                      )}
-                    </SpaceBetween>
-                  }
-                >
-                  Candidate {candidate.candidate_id.slice(0, 8)}…
-                  <Box variant="small" display="inline-block" margin={{ left: "s" }}>
-                    {new Date(candidate.created_at).toLocaleString()}
-                  </Box>
-                </Header>
-              }
-            >
-              <SpaceBetween size="s">
-                {candidate.validation && candidate.validation.length > 0 && (
-                  <SpaceBetween size="xs">
-                    {candidate.validation.map((v, i) => (
-                      <Alert key={i} type={alertType(v.level)}>
-                        {v.path && <Box variant="code">{v.path}</Box>}
-                        {v.message}
-                      </Alert>
-                    ))}
-                  </SpaceBetween>
-                )}
-                {activeConfig?.document && candidate.document ? (
-                  <UnifiedDiffView oldDoc={activeConfig.document} newDoc={candidate.document} />
-                ) : (
-                  <Box color="text-status-inactive">No document available.</Box>
-                )}
+
+        {candidate && phase !== "loading" && (
+          <SpaceBetween size="m">
+            <div style={{
+              display: "flex",
+              alignItems: "center",
+              gap: "16px",
+              padding: "12px 16px",
+              borderRadius: "8px",
+              backgroundColor: "var(--color-background-layout-toggle-default, #1a2332)",
+              border: "1px solid var(--color-border-divider-default, #414d5c)",
+            }}>
+              {phase === "preview" && (
+                <StatusIndicator type="pending">Not validated — click Validate to check</StatusIndicator>
+              )}
+              {phase === "validating" && (
+                <StatusIndicator type="loading">Validating configuration…</StatusIndicator>
+              )}
+              {phase === "valid" && (
+                <StatusIndicator type="success">Validation passed — ready to commit</StatusIndicator>
+              )}
+              {phase === "invalid" && (
+                <StatusIndicator type="error">Validation failed</StatusIndicator>
+              )}
+              {phase === "committing" && (
+                <StatusIndicator type="loading">Committing…</StatusIndicator>
+              )}
+              {phase === "done" && (
+                <StatusIndicator type="success">Committed</StatusIndicator>
+              )}
+            </div>
+
+            {phase === "invalid" && hasValidationErrors && (
+              <SpaceBetween size="xs">
+                <Box variant="h4">Validation Errors</Box>
+                {candidate.validation!.map((v, i) => (
+                  <Alert key={i} type={alertType(v.level)}>
+                    {v.path && <><Box variant="code" display="inline-block">{v.path}</Box>{" "}</>}
+                    {v.message}
+                  </Alert>
+                ))}
               </SpaceBetween>
-            </Container>
-          );
-        })}
+            )}
+
+            {hasDiff && (
+              <>
+                <Box variant="h4">Changes</Box>
+                <UnifiedDiffView oldDoc={activeConfig!.document} newDoc={candidate.document!} />
+              </>
+            )}
+          </SpaceBetween>
+        )}
       </SpaceBetween>
     </Modal>
   );
