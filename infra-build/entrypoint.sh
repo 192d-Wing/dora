@@ -74,8 +74,12 @@ if [ -n "$IFACE" ]; then
         esac
     fi
 
-    $run /usr/local/bin/dora
+    exec /usr/local/bin/dora
 else
     # Run another binary
-    $run "$@"
+    if [ $$ -eq 1 ] && command -v dumb-init >/dev/null 2>&1; then
+        exec dumb-init -- "$@"
+    else
+        exec "$@"
+    fi
 fi
