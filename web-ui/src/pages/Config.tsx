@@ -12,7 +12,9 @@ import ColumnLayout from "@cloudscape-design/components/column-layout";
 import Select from "@cloudscape-design/components/select";
 import Tabs from "@cloudscape-design/components/tabs";
 import Badge from "@cloudscape-design/components/badge";
-import { api, ConfigDocument, ConfigCandidate } from "../api";
+import Modal from "@cloudscape-design/components/modal";
+import Textarea from "@cloudscape-design/components/textarea";
+import { api, post, ConfigDocument, ConfigCandidate } from "../api";
 
 const CODE_STYLE: React.CSSProperties = {
   margin: 0,
@@ -115,6 +117,153 @@ function DiffView({ active, candidate }: { active: Record<string, unknown>; cand
   );
 }
 
+function ConfigEditor({
+  config,
+  onSaved,
+}: {
+  config: ConfigDocument;
+  onSaved: () => void;
+}) {
+  const [value, setValue] = useState(() => JSON.stringify(config.document, null, 2));
+  const [parseError, setParseError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [success, setSuccess] = useState<string | null>(null);
+  const [confirmVisible, setConfirmVisible] = useState(false);
+  const [diffCount, setDiffCount] = useState(0);
+
+  const validate = (): Record<string, unknown> | null => {
+    try {
+      const parsed = JSON.parse(value);
+      if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+        setParseError("Config must be a JSON object");
+        return null;
+      }
+      setParseError(null);
+      return parsed;
+    } catch (e) {
+      const msg = e instanceof SyntaxError ? e.message : "Invalid JSON";
+      setParseError(msg);
+      return null;
+    }
+  };
+
+  const handleStage = () => {
+    const parsed = validate();
+    if (!parsed) return;
+    const diffs = jsonDiff(config.document, parsed);
+    if (diffs.length === 0) {
+      setParseError("No changes detected");
+      return;
+    }
+    setDiffCount(diffs.length);
+    setConfirmVisible(true);
+  };
+
+  const submitCandidate = async () => {
+    const parsed = JSON.parse(value);
+    setSaving(true);
+    setError(null);
+    setSuccess(null);
+    try {
+      await post("/v1/config/candidates", { document: parsed });
+      setSuccess("Configuration candidate staged. Validate and commit from the Commit button.");
+      setConfirmVisible(false);
+      onSaved();
+    } catch (err) {
+      setError(String(err));
+      setConfirmVisible(false);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleReset = () => {
+    setValue(JSON.stringify(config.document, null, 2));
+    setParseError(null);
+    setError(null);
+    setSuccess(null);
+  };
+
+  const handleFormat = () => {
+    try {
+      const parsed = JSON.parse(value);
+      setValue(JSON.stringify(parsed, null, 2));
+      setParseError(null);
+    } catch (e) {
+      const msg = e instanceof SyntaxError ? e.message : "Invalid JSON";
+      setParseError(msg);
+    }
+  };
+
+  const lineCount = value.split("\n").length;
+
+  return (
+    <SpaceBetween size="m">
+      {error && <Alert type="error" dismissible onDismiss={() => setError(null)}>{error}</Alert>}
+      {success && <Alert type="success" dismissible onDismiss={() => setSuccess(null)}>{success}</Alert>}
+      {parseError && <Alert type="error">{parseError}</Alert>}
+
+      <div style={{ position: "relative" }}>
+        <Textarea
+          value={value}
+          onChange={({ detail }) => {
+            setValue(detail.value);
+            if (parseError) {
+              try {
+                JSON.parse(detail.value);
+                setParseError(null);
+              } catch {
+                // don't clear error until it's fixed
+              }
+            }
+          }}
+          rows={Math.min(40, Math.max(20, lineCount + 2))}
+          spellcheck={false}
+        />
+        <Box fontSize="body-s" color="text-status-inactive" padding={{ top: "xxs" }}>
+          {lineCount} lines
+        </Box>
+      </div>
+
+      <SpaceBetween direction="horizontal" size="xs">
+        <Button onClick={handleFormat}>Format</Button>
+        <Button onClick={handleReset}>Reset</Button>
+        <Button variant="primary" onClick={handleStage}>
+          Stage changes
+        </Button>
+      </SpaceBetween>
+
+      <Modal
+        visible={confirmVisible}
+        onDismiss={() => setConfirmVisible(false)}
+        header="Stage Configuration Candidate"
+        footer={
+          <Box float="right">
+            <SpaceBetween direction="horizontal" size="xs">
+              <Button variant="link" onClick={() => setConfirmVisible(false)}>Cancel</Button>
+              <Button variant="primary" loading={saving} onClick={submitCandidate}>
+                Stage candidate
+              </Button>
+            </SpaceBetween>
+          </Box>
+        }
+      >
+        <SpaceBetween size="s">
+          <Box>
+            This will create a new configuration candidate with{" "}
+            <strong>{diffCount} change{diffCount !== 1 ? "s" : ""}</strong>.
+          </Box>
+          <Box>
+            After staging, use the <strong>Commit</strong> button in the top navigation
+            to validate and activate.
+          </Box>
+        </SpaceBetween>
+      </Modal>
+    </SpaceBetween>
+  );
+}
+
 export default function Config() {
   const [config, setConfig] = useState<ConfigDocument | null>(null);
   const [loading, setLoading] = useState(true);
@@ -157,7 +306,7 @@ export default function Config() {
       header={
         <Header
           variant="h1"
-          description="Active server configuration (secrets redacted)"
+          description="View and edit server configuration"
           actions={<Button iconName="refresh" onClick={load} />}
         >
           Configuration
@@ -197,6 +346,11 @@ export default function Config() {
                         </pre>
                       </Box>
                     ),
+                  },
+                  {
+                    id: "editor",
+                    label: "Editor",
+                    content: <ConfigEditor config={config} onSaved={load} />,
                   },
                   {
                     id: "diff",
