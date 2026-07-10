@@ -192,4 +192,6 @@ export const api = {
     get<ConfigCandidate>(`/v1/config/candidates/${id}`),
   releaseLease: (family: "v4" | "v6", ip: string) =>
     post<{ message: string }>("/v1/actions/release-lease", { family, ip }),
+  activateConfig: (candidateId: string) =>
+    post<{ message: string }>("/v1/actions/activate-config", { candidate_id: candidateId }),
 };

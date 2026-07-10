@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { BrowserRouter, Routes, Route, useNavigate, useLocation } from "react-router-dom";
 import AppLayout from "@cloudscape-design/components/app-layout";
 import SideNavigation from "@cloudscape-design/components/side-navigation";
@@ -9,10 +10,13 @@ import Config from "./pages/Config";
 import Pools from "./pages/Pools";
 import Actions from "./pages/Actions";
 import Settings from "./pages/Settings";
+import PendingChanges, { usePendingCount } from "./components/PendingChanges";
 
 function Shell() {
   const navigate = useNavigate();
   const location = useLocation();
+  const { count: pendingCount, refresh: refreshPending } = usePendingCount();
+  const [pendingVisible, setPendingVisible] = useState(false);
 
   return (
     <>
@@ -22,6 +26,13 @@ function Shell() {
           title: "Dora DHCP",
         }}
         utilities={[
+          {
+            type: "button",
+            text: pendingCount > 0 ? `Pending Changes (${pendingCount})` : "Pending Changes",
+            iconName: "status-pending",
+            badge: pendingCount > 0,
+            onClick: () => setPendingVisible(true),
+          },
           {
             type: "button",
             text: "API Docs",
@@ -36,6 +47,11 @@ function Shell() {
             onClick: () => navigate("/settings"),
           },
         ]}
+      />
+      <PendingChanges
+        visible={pendingVisible}
+        onDismiss={() => setPendingVisible(false)}
+        onActivated={refreshPending}
       />
       <AppLayout
         toolsHide
