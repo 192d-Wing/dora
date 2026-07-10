@@ -6,6 +6,7 @@ import Dashboard from "./pages/Dashboard";
 import Leases from "./pages/Leases";
 import Reservations from "./pages/Reservations";
 import Config from "./pages/Config";
+import Pools from "./pages/Pools";
 import Actions from "./pages/Actions";
 import Settings from "./pages/Settings";
 
@@ -50,6 +51,7 @@ function Shell() {
               { type: "link", text: "Dashboard", href: "/" },
               { type: "link", text: "Leases", href: "/leases" },
               { type: "link", text: "Reservations", href: "/reservations" },
+              { type: "link", text: "Pools", href: "/pools" },
               { type: "link", text: "Configuration", href: "/config" },
               { type: "link", text: "Actions", href: "/actions" },
               { type: "divider" },
@@ -62,6 +64,7 @@ function Shell() {
             <Route path="/" element={<Dashboard />} />
             <Route path="/leases" element={<Leases />} />
             <Route path="/reservations" element={<Reservations />} />
+            <Route path="/pools" element={<Pools />} />
             <Route path="/config" element={<Config />} />
             <Route path="/actions" element={<Actions />} />
             <Route path="/settings" element={<Settings />} />
