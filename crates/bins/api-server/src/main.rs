@@ -54,9 +54,13 @@ async fn start(config: cli::Config) -> Result<()> {
         token,
     } = bootstrap(&config).await?;
 
-    let mut api = ExternalApi::new(config.external_api, Arc::clone(&dhcp_cfg), Arc::clone(&ip_mgr))
-        .with_mode(mode.clone())
-        .with_reservations(reservations.clone());
+    let mut api = ExternalApi::new(
+        config.external_api,
+        Arc::clone(&dhcp_cfg),
+        Arc::clone(&ip_mgr),
+    )
+    .with_mode(mode.clone())
+    .with_reservations(reservations.clone());
     // enable in-process TLS (+ optional mTLS) when a cert/key pair is configured
     match (
         config.external_api_tls_cert.clone(),
@@ -69,7 +73,9 @@ async fn start(config: cli::Config) -> Result<()> {
                 client_ca: config.external_api_tls_client_ca.clone(),
                 // recomputed inside with_tls based on whether a bearer token is set
                 require_client_auth: false,
-                reload_interval: std::time::Duration::from_secs(config.external_api_tls_reload_secs),
+                reload_interval: std::time::Duration::from_secs(
+                    config.external_api_tls_reload_secs,
+                ),
             });
         }
         (None, None) => {
