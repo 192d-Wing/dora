@@ -35,6 +35,7 @@ function V4LeaseTable() {
   const [stateFilter, setStateFilter] = useState(STATE_OPTIONS[0]);
   const [ipFilter, setIpFilter] = useState("");
   const [networkFilter, setNetworkFilter] = useState("");
+  const [clientIdFilter, setClientIdFilter] = useState("");
   const [releaseTarget, setReleaseTarget] = useState<V4Lease | null>(null);
   const [releasing, setReleasing] = useState(false);
 
@@ -64,6 +65,7 @@ function V4LeaseTable() {
     if (stateFilter.value) params.state = stateFilter.value;
     if (ipFilter) params.ip = ipFilter;
     if (networkFilter) params.network = networkFilter;
+    if (clientIdFilter) params.client_id = clientIdFilter;
 
     api
       .leasesV4(params)
@@ -122,6 +124,17 @@ function V4LeaseTable() {
               placeholder="Filter by network (CIDR)"
               value={networkFilter}
               onChange={({ detail }) => setNetworkFilter(detail.value)}
+              onKeyDown={({ detail }) => {
+                if (detail.key === "Enter") {
+                  setPage(1);
+                  load();
+                }
+              }}
+            />
+            <Input
+              placeholder="Filter by client ID"
+              value={clientIdFilter}
+              onChange={({ detail }) => setClientIdFilter(detail.value)}
               onKeyDown={({ detail }) => {
                 if (detail.key === "Enter") {
                   setPage(1);
@@ -230,6 +243,7 @@ function V6LeaseTable() {
   const [stateFilter, setStateFilter] = useState(STATE_OPTIONS[0]);
   const [ipFilter, setIpFilter] = useState("");
   const [networkFilter, setNetworkFilter] = useState("");
+  const [clientIdFilter, setClientIdFilter] = useState("");
   const [releaseTarget, setReleaseTarget] = useState<V6Lease | null>(null);
   const [releasing, setReleasing] = useState(false);
 
@@ -259,6 +273,7 @@ function V6LeaseTable() {
     if (stateFilter.value) params.state = stateFilter.value;
     if (ipFilter) params.ip = ipFilter;
     if (networkFilter) params.network = networkFilter;
+    if (clientIdFilter) params.client_id = clientIdFilter;
 
     api
       .leasesV6(params)
@@ -317,6 +332,17 @@ function V6LeaseTable() {
               placeholder="Filter by network (CIDR)"
               value={networkFilter}
               onChange={({ detail }) => setNetworkFilter(detail.value)}
+              onKeyDown={({ detail }) => {
+                if (detail.key === "Enter") {
+                  setPage(1);
+                  load();
+                }
+              }}
+            />
+            <Input
+              placeholder="Filter by client ID (DUID)"
+              value={clientIdFilter}
+              onChange={({ detail }) => setClientIdFilter(detail.value)}
               onKeyDown={({ detail }) => {
                 if (detail.key === "Enter") {
                   setPage(1);
