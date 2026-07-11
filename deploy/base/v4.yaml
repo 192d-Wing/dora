@@ -1,4 +1,4 @@
-# usg-dora-v4_server: the DHCPv4 server role (`dora --role v4`).
+# usg-dora-v4_server: the DHCPv4 server service (the `dora-v4` binary / usg-dora-v4 image).
 #
 # Fronted by an anycast VIP (see the LoadBalancer Service below + Cilium
 # LB-IPAM/BGP). DHCPv4 relays are configured to forward to that VIP; BGP ECMP
@@ -35,10 +35,8 @@ spec:
                 topologyKey: kubernetes.io/hostname
       containers:
         - name: dora
-          image: usg-dora:latest
+          image: usg-dora-v4:latest
           args:
-            - "--role"
-            - "v4"
             - "-c"
             - "/etc/dora/config.yaml"
             - "--v4-addr"

@@ -1,4 +1,4 @@
-# usg-dora-api: the management/observability HTTP API role (`dora --role api`).
+# usg-dora-api: the management/observability HTTP API service (the `dora-api` binary / usg-dora-api image).
 #
 # Exposed on a SEPARATE, site-local LoadBalancer IP (not the DHCP anycast VIP),
 # from its own Cilium LB-IPAM pool. It reads/writes the same Postgres as the
@@ -34,10 +34,8 @@ spec:
                 topologyKey: kubernetes.io/hostname
       containers:
         - name: dora
-          image: usg-dora:latest
+          image: usg-dora-api:latest
           args:
-            - "--role"
-            - "api"
             - "-c"
             - "/etc/dora/config.yaml"
             - "--external-api"

@@ -1,4 +1,4 @@
-# usg-dora-v6_server: the DHCPv6 server role (`dora --role v6`).
+# usg-dora-v6_server: the DHCPv6 server service (the `dora-v6` binary / usg-dora-v6 image).
 #
 # Fronted by an anycast VIP (v6) from the same anycast pool as the v4 server;
 # they are different addresses because they are different families.
@@ -32,10 +32,8 @@ spec:
                 topologyKey: kubernetes.io/hostname
       containers:
         - name: dora
-          image: usg-dora:latest
+          image: usg-dora-v6:latest
           args:
-            - "--role"
-            - "v6"
             - "-c"
             - "/etc/dora/config.yaml"
             - "--v6-addr"
