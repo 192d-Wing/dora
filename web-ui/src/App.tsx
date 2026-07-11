@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { BrowserRouter, Routes, Route, useNavigate, useLocation } from "react-router-dom";
 import AppLayout from "@cloudscape-design/components/app-layout";
 import SideNavigation from "@cloudscape-design/components/side-navigation";
@@ -12,12 +12,26 @@ import Actions from "./pages/Actions";
 import Settings from "./pages/Settings";
 import PendingChanges, { usePendingCount } from "./components/PendingChanges";
 import { NotificationsProvider } from "./components/Notifications";
+import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
 
 function Shell() {
   const navigate = useNavigate();
   const location = useLocation();
   const { count: pendingCount, refresh: refreshPending } = usePendingCount();
   const [pendingVisible, setPendingVisible] = useState(false);
+
+  const shortcuts = useMemo(() => ({
+    "c": () => setPendingVisible(true),
+    "1": () => navigate("/"),
+    "2": () => navigate("/leases"),
+    "3": () => navigate("/reservations"),
+    "4": () => navigate("/pools"),
+    "5": () => navigate("/config"),
+    "6": () => navigate("/actions"),
+    "?": () => navigate("/settings"),
+  }), [navigate]);
+
+  useKeyboardShortcuts(shortcuts);
 
   return (
     <>
