@@ -114,6 +114,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2a4385e2e34eb35d6b3efe798b9eb88096925d87726c0798709bf56d9ed84af3"
 
 [[package]]
+name = "api-server"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "config",
+ "dora-core",
+ "dora-runtime",
+ "dotenv",
+ "external-api",
+ "ip-manager",
+ "jemallocator",
+]
+
+[[package]]
 name = "async-lock"
 version = "3.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -819,32 +833,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "dora-bin"
-version = "0.2.0"
-dependencies = [
- "anyhow",
- "config",
- "crossbeam-channel",
- "derive_builder",
- "dora-core",
- "dotenv",
- "external-api",
- "ip-manager",
- "jemallocator",
- "leases",
- "leases-v6",
- "mac_address",
- "message-type",
- "rand 0.10.2",
- "socket2 0.5.10",
- "static-addr",
- "tokio",
- "tokio-util",
- "tracing-futures",
- "tracing-test",
-]
-
-[[package]]
 name = "dora-cfg"
 version = "0.1.0"
 dependencies = [
@@ -890,6 +878,19 @@ dependencies = [
  "tracing-subscriber",
  "unix-udp-sock",
  "usg-dhcproto",
+]
+
+[[package]]
+name = "dora-runtime"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "config",
+ "dora-core",
+ "dotenv",
+ "ip-manager",
+ "tokio",
+ "tokio-util",
 ]
 
 [[package]]
@@ -1747,6 +1748,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "integration-tests"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "crossbeam-channel",
+ "derive_builder",
+ "dora-core",
+ "ip-manager",
+ "mac_address",
+ "rand 0.10.2",
+ "socket2 0.5.10",
+ "tokio",
+ "tracing-test",
+]
+
+[[package]]
 name = "ip-manager"
 version = "0.1.0"
 dependencies = [
@@ -2088,6 +2105,16 @@ dependencies = [
  "tracing",
  "tracing-test",
  "yaml_serde",
+]
+
+[[package]]
+name = "migrate"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "dora-core",
+ "dotenv",
+ "ip-manager",
 ]
 
 [[package]]
@@ -4162,6 +4189,37 @@ dependencies = [
  "getrandom 0.4.3",
  "js-sys",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "v4-server"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "config",
+ "dora-core",
+ "dora-runtime",
+ "dotenv",
+ "ip-manager",
+ "jemallocator",
+ "leases",
+ "message-type",
+ "static-addr",
+]
+
+[[package]]
+name = "v6-server"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "config",
+ "dora-core",
+ "dora-runtime",
+ "dotenv",
+ "ip-manager",
+ "jemallocator",
+ "leases-v6",
+ "message-type",
 ]
 
 [[package]]

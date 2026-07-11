@@ -1,6 +1,9 @@
 [workspace]
 members = [
-    "crates/bin",
+    # per-service binaries (dora-v4, dora-v6, dora-api, dora-migrate)
+    "crates/bins/*",
+    # shared service bootstrap
+    "crates/dora-runtime",
     # main server code
     "crates/dora-core",
     "crates/dora-cfg",
@@ -10,6 +13,8 @@ members = [
     "crates/libs/*",
     # plugins
     "crates/plugins/*",
+    # out-of-process integration tests (spawn the split binaries)
+    "crates/integration-tests",
 ]
 resolver = "2"
 # default-members = ["bin"]

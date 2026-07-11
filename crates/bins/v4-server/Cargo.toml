@@ -1,0 +1,25 @@
+[package]
+name = "v4-server"
+version = "0.2.0"
+edition = "2024"
+license = "MPL-2.0"
+
+[[bin]]
+name = "dora-v4"
+path = "src/main.rs"
+
+[dependencies]
+dora-runtime = { path = "../../dora-runtime" }
+dora-core = { path = "../../dora-core" }
+config = { path = "../../libs/config" }
+ip-manager = { path = "../../libs/ip-manager" }
+# plugins the v4 datapath needs
+message-type = { path = "../../plugins/message-type" }
+static-addr = { path = "../../plugins/static-addr" }
+leases = { path = "../../plugins/leases" }
+# external
+anyhow = { workspace = true }
+dotenv = "0.15.0"
+
+[target.'cfg(not(target_env = "musl"))'.dependencies]
+jemallocator = { version = "0.5.4", features = ["background_threads"] }
