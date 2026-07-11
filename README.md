@@ -23,8 +23,8 @@ build** — the build sets `SQLX_OFFLINE=true` (see `.env`/CI). You only need a
 running Postgres to run the server or the test suite.
 
 To build, just use cargo (below). To run against a local Postgres, create a
-database and point `DATABASE_URL` at it (dora runs the embedded migrations on
-startup, so you don't need to migrate by hand):
+database and point `DATABASE_URL` at it, then apply the schema once with
+`dora-migrate` (the services no longer migrate on startup):
 
 ```
 # example: a local dev database
@@ -44,12 +44,21 @@ Use standard cargo subcommands to build (with the `--release` flag for no debug 
 cargo build
 ```
 
-and run (by default dora will try to bind to privileged ports, which may require sudo), see the main dora binary [README](bin/README.md) for parameters.
+dora is split into one binary per service, all in `crates/bins`:
 
-Or run help:
+| binary | role |
+| --- | --- |
+| `dora-v4` | DHCPv4 server |
+| `dora-v6` | DHCPv6 server |
+| `dora-api` | management/observability HTTP API |
+| `dora-migrate` | run-once database schema migrator |
+
+The three services share the same CLI flags (config path, database URL, listen
+addresses, …). By default a server binds privileged ports, which may require
+sudo. Run help for any of them:
 
 ```
-cargo run --bin dora -- --help
+cargo run --bin dora-v4 -- --help
 ```
 
 ## Running dora
@@ -66,10 +75,15 @@ Use `DORA_LOG` env var for adjusting log level and which targets, see [here](htt
 
 (assuming you have a Postgres reachable via `DATABASE_URL`)
 
-To run a debug build of dora, bind to the default v4 addr (`0.0.0.0:67`) with a particular config use:
+First apply the database schema (the services no longer migrate on startup —
+`dora-migrate` owns the schema), then run a service. To bring up the v4 server
+bound to the default v4 addr (`0.0.0.0:67`) with a particular config:
 
 ```
-cargo run --bin dora -- -c path/to/config.json -d postgres://user:pass@localhost/dora
+# once, to create/upgrade the schema
+cargo run --bin dora-migrate -- -d postgres://user:pass@localhost/dora
+# then the v4 server (dora-v6 / dora-api start the same way)
+cargo run --bin dora-v4 -- -c path/to/config.json -d postgres://user:pass@localhost/dora
 ```
 
 ### Build a dora binary
@@ -80,7 +94,8 @@ cargo build
 
 optional: use `--release` flag for optimized binary without debug symbols
 
-binary will be present in target/{debug,release}/dora
+`cargo build` builds the whole workspace; the service binaries will be present at
+target/{debug,release}/{dora-v4,dora-v6,dora-api,dora-migrate}
 
 ### Cross compiling to ARM
 
@@ -90,7 +105,8 @@ There is a project called `cross` that does most of the heavy lifting and will b
 
 ```
 cargo install cross
-cross build --target armv7-unknown-linux-gnueabihf --bin dora --release
+# build each service you need; dora-v4 shown, swap in dora-v6/dora-api/dora-migrate
+cross build --target armv7-unknown-linux-gnueabihf --bin dora-v4 --release
 ```
 
 **Note** Remember to pass `--release` to `cross` if you want an optimized version of the binary
@@ -98,10 +114,10 @@ cross build --target armv7-unknown-linux-gnueabihf --bin dora --release
 You can compile for the `musl` target also, although it will not have `jemallocator`:
 
 ```
-cross build --target armv7-unknown-linux-musleabihf --bin dora --release
+cross build --target armv7-unknown-linux-musleabihf --bin dora-v4 --release
 ```
 
-If that works, you should have a `dora` binary in `target/armv7-unknown-linux-gnueabihf/release/dora` or `target/armv7-unknown-linux-musleabihf/release/dora`
+If that works, you should have a `dora-v4` binary in `target/armv7-unknown-linux-gnueabihf/release/dora-v4` or `target/armv7-unknown-linux-musleabihf/release/dora-v4`
 
 #### Not using cross
 
@@ -121,12 +137,14 @@ linker = "arm-linux-gnueabihf-gcc"
 This means `arm-linux-gnueabihf-gcc` must be available on the system and will be used as the linker. Once you have it installed, you can produce an ARMv7 binary using:
 
 ```
-TARGET_CC=arm-linux-gnueabihf-gcc TARGET_AR=arm-linux-gnueabihf-gcc-ar cargo build --target=armv7-unknown-linux-gnueabihf --bin dora
+TARGET_CC=arm-linux-gnueabihf-gcc TARGET_AR=arm-linux-gnueabihf-gcc-ar cargo build --target=armv7-unknown-linux-gnueabihf --bin dora-v4
 ```
 
 ## Dora options & environment vars
 
-[see dora bin readme](bin/README.md)
+Every service shares the same options; run `cargo run --bin dora-v4 -- --help`
+(or `dora-v6` / `dora-api` / `dora-migrate`) to see them. Each flag also has an
+environment-variable form (see [example.yaml](./example.yaml) for config options).
 
 dora uses the [tracing](https://github.com/tokio-rs/tracing) library for stdout logs.
 

@@ -9,20 +9,21 @@ tooling is required.
 
 ## Architecture
 
-dora runs as four workloads that share one PostgreSQL database:
+dora runs as several workloads that share one PostgreSQL database:
 
-| Workload (k8s name) | dora role | Exposed as |
+| Workload (k8s name) | image | Exposed as |
 | --- | --- | --- |
-| `usg-dora-v4-server` | `--role v4` | anycast VIP, UDP/67 |
-| `usg-dora-v6-server` | `--role v6` | anycast VIP, UDP/547 |
-| `usg-dora-api` | `--role api` | site-local IP, TCP/3333 |
+| `usg-dora-v4-server` | `usg-dora-v4` | anycast VIP, UDP/67 |
+| `usg-dora-v6-server` | `usg-dora-v6` | anycast VIP, UDP/547 |
+| `usg-dora-api` | `usg-dora-api` | site-local IP, TCP/3333 |
+| `usg-dora-migrate` | `usg-dora-migrate` | run-once `Job`, no network |
 | `usg-dora-db` | PostgreSQL | in-cluster only |
 
-The three dora roles are the **same image** run with a different `--role`. They
-share lease state, reservations, and config through Postgres (`DATABASE_URL`),
-and dora runs its embedded migrations on startup. The DHCP servers sit behind a
-**Cilium anycast VIP** (advertised via BGP); the management API gets a separate
-**site-local** IP.
+Each service is its **own single-binary image**. They share lease state,
+reservations, and config through Postgres (`DATABASE_URL`). The services do not
+migrate on startup — the `usg-dora-migrate` `Job` applies the schema once before
+the servers roll out. The DHCP servers sit behind a **Cilium anycast VIP**
+(advertised via BGP); the management API gets a separate **site-local** IP.
 
 > Kubernetes object names can't contain `_`, so the workloads use hyphens; the
 > `usg-dora-v4_server` underscore form is kept as the `dora.io/workload` label.
@@ -129,12 +130,15 @@ Then set the same value on the `advertise:` label in
 
 ## Step 6 — (optional) Set the image and storage class
 
-- **Image** defaults to `ghcr.io/192d-wing/usg-dora:latest`. To pin a version or
-  use your own mirror:
+- **Images** default to `ghcr.io/192d-wing/usg-dora-{v4,v6,api,migrate}:latest`.
+  To pin a version or use your own mirror, set each image:
 
   ```sh
   cd deploy/overlays/k8s   # or overlays/k3s
-  kustomize edit set image usg-dora=ghcr.io/192d-wing/usg-dora:v0.1.0
+  kustomize edit set image usg-dora-v4=ghcr.io/192d-wing/usg-dora-v4:v0.1.0
+  kustomize edit set image usg-dora-v6=ghcr.io/192d-wing/usg-dora-v6:v0.1.0
+  kustomize edit set image usg-dora-api=ghcr.io/192d-wing/usg-dora-api:v0.1.0
+  kustomize edit set image usg-dora-migrate=ghcr.io/192d-wing/usg-dora-migrate:v0.1.0
   cd -
   ```
 
