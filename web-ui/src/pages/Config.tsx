@@ -14,6 +14,8 @@ import Tabs from "@cloudscape-design/components/tabs";
 import Badge from "@cloudscape-design/components/badge";
 import Modal from "@cloudscape-design/components/modal";
 import Textarea from "@cloudscape-design/components/textarea";
+import Table from "@cloudscape-design/components/table";
+import Pagination from "@cloudscape-design/components/pagination";
 import { api, post, ConfigDocument, ConfigCandidate } from "../api";
 import { useNotifications } from "../components/Notifications";
 
@@ -35,6 +37,15 @@ function statusColor(status: ConfigCandidate["status"]): "blue" | "green" | "red
   if (status === "invalid") return "red";
   if (status === "staged" || status === "validating") return "blue";
   return "grey";
+}
+
+function statusType(status: ConfigCandidate["status"]): "success" | "error" | "pending" | "info" | "stopped" {
+  if (status === "activated") return "success";
+  if (status === "valid") return "success";
+  if (status === "invalid") return "error";
+  if (status === "staged") return "pending";
+  if (status === "validating") return "pending";
+  return "stopped";
 }
 
 function jsonDiff(
@@ -262,6 +273,228 @@ function ConfigEditor({
   );
 }
 
+const HISTORY_PAGE_SIZE = 20;
+
+const STATUS_OPTIONS = [
+  { label: "All statuses", value: "" },
+  { label: "Activated", value: "activated" },
+  { label: "Superseded", value: "superseded" },
+  { label: "Valid", value: "valid" },
+  { label: "Invalid", value: "invalid" },
+  { label: "Staged", value: "staged" },
+  { label: "Validating", value: "validating" },
+];
+
+function ConfigHistory({ activeConfig }: { activeConfig: ConfigDocument }) {
+  const [items, setItems] = useState<ConfigCandidate[]>([]);
+  const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(1);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [statusFilter, setStatusFilter] = useState(STATUS_OPTIONS[0]);
+
+  const [detailCandidate, setDetailCandidate] = useState<ConfigCandidate | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+
+  const load = () => {
+    setLoading(true);
+    setError(null);
+    const params: Record<string, string> = {
+      limit: String(HISTORY_PAGE_SIZE),
+      offset: String((page - 1) * HISTORY_PAGE_SIZE),
+    };
+    if (statusFilter.value) params.status = statusFilter.value;
+    api
+      .configCandidates(params)
+      .then((res) => {
+        setItems(res.items);
+        setTotal(res.meta.total);
+      })
+      .catch((err) => setError(String(err)))
+      .finally(() => setLoading(false));
+  };
+
+  useEffect(() => {
+    load();
+  }, [page, statusFilter.value]);
+
+  const viewDetail = (id: string) => {
+    setDetailLoading(true);
+    api
+      .configCandidate(id)
+      .then(setDetailCandidate)
+      .catch((err) => setError(String(err)))
+      .finally(() => setDetailLoading(false));
+  };
+
+  return (
+    <SpaceBetween size="m">
+      {error && <Alert type="error" dismissible onDismiss={() => setError(null)}>{error}</Alert>}
+
+      <Table
+        loading={loading}
+        loadingText="Loading history..."
+        items={items}
+        trackBy="candidate_id"
+        variant="embedded"
+        header={
+          <Header counter={`(${total})`}>
+            Configuration Candidates
+          </Header>
+        }
+        filter={
+          <Select
+            selectedOption={statusFilter}
+            onChange={({ detail }) => {
+              setStatusFilter(detail.selectedOption as typeof statusFilter);
+              setPage(1);
+            }}
+            options={STATUS_OPTIONS}
+          />
+        }
+        pagination={
+          <Pagination
+            currentPageIndex={page}
+            pagesCount={Math.max(1, Math.ceil(total / HISTORY_PAGE_SIZE))}
+            onChange={({ detail }) => setPage(detail.currentPageIndex)}
+          />
+        }
+        columnDefinitions={[
+          {
+            id: "id",
+            header: "Candidate ID",
+            cell: (item) => (
+              <Button variant="inline-link" onClick={() => viewDetail(item.candidate_id)}>
+                {item.candidate_id.slice(0, 12)}…
+              </Button>
+            ),
+            width: 160,
+          },
+          {
+            id: "status",
+            header: "Status",
+            cell: (item) => (
+              <StatusIndicator type={statusType(item.status)}>
+                {item.status}
+              </StatusIndicator>
+            ),
+            width: 140,
+          },
+          {
+            id: "created",
+            header: "Created",
+            cell: (item) => new Date(item.created_at).toLocaleString(),
+            width: 200,
+          },
+          {
+            id: "activated",
+            header: "Activated",
+            cell: (item) =>
+              item.activated_at
+                ? new Date(item.activated_at).toLocaleString()
+                : "-",
+            width: 200,
+          },
+          {
+            id: "message",
+            header: "Message",
+            cell: (item) => item.message ?? "-",
+          },
+        ]}
+        empty={
+          <Box textAlign="center" color="inherit" padding="l">
+            No configuration candidates found.
+          </Box>
+        }
+      />
+
+      <Modal
+        visible={detailCandidate !== null}
+        onDismiss={() => setDetailCandidate(null)}
+        header={
+          <SpaceBetween direction="horizontal" size="xs">
+            <span>Candidate Detail</span>
+            {detailCandidate && (
+              <Badge color={statusColor(detailCandidate.status)}>
+                {detailCandidate.status}
+              </Badge>
+            )}
+          </SpaceBetween>
+        }
+        size="max"
+        footer={
+          <Box float="right">
+            <Button variant="primary" onClick={() => setDetailCandidate(null)}>Close</Button>
+          </Box>
+        }
+      >
+        {detailLoading && (
+          <Box textAlign="center" padding="xl"><Spinner size="large" /></Box>
+        )}
+        {detailCandidate && !detailLoading && (
+          <SpaceBetween size="m">
+            <ColumnLayout columns={3} variant="text-grid">
+              <div>
+                <Box variant="awsui-key-label">Candidate ID</Box>
+                <Box variant="code" fontSize="body-s">{detailCandidate.candidate_id}</Box>
+              </div>
+              <div>
+                <Box variant="awsui-key-label">Created</Box>
+                <Box>{new Date(detailCandidate.created_at).toLocaleString()}</Box>
+              </div>
+              <div>
+                <Box variant="awsui-key-label">Activated</Box>
+                <Box>
+                  {detailCandidate.activated_at
+                    ? new Date(detailCandidate.activated_at).toLocaleString()
+                    : "-"}
+                </Box>
+              </div>
+            </ColumnLayout>
+
+            {detailCandidate.message && (
+              <Alert type="info">{detailCandidate.message}</Alert>
+            )}
+
+            {detailCandidate.validation && detailCandidate.validation.length > 0 && (
+              <SpaceBetween size="xs">
+                <Box variant="h4">Validation</Box>
+                {detailCandidate.validation.map((v, i) => {
+                  let alertType: "error" | "warning" | "info" = "info";
+                  if (v.level === "error") alertType = "error";
+                  else if (v.level === "warning") alertType = "warning";
+                  return (
+                    <Alert key={i} type={alertType}>
+                      {v.path && <><Box variant="code" display="inline-block">{v.path}</Box>{" "}</>}
+                      {v.message}
+                    </Alert>
+                  );
+                })}
+              </SpaceBetween>
+            )}
+
+            {detailCandidate.document && (
+              <SpaceBetween size="xs">
+                <Box variant="h4">Changes vs Active Config</Box>
+                <DiffView
+                  active={activeConfig.document}
+                  candidate={detailCandidate.document}
+                />
+              </SpaceBetween>
+            )}
+
+            {!detailCandidate.document && (
+              <Box textAlign="center" padding="l" color="text-status-inactive">
+                Document not available for this candidate.
+              </Box>
+            )}
+          </SpaceBetween>
+        )}
+      </Modal>
+    </SpaceBetween>
+  );
+}
+
 export default function Config() {
   const [config, setConfig] = useState<ConfigDocument | null>(null);
   const [loading, setLoading] = useState(true);
@@ -349,6 +582,11 @@ export default function Config() {
                     id: "editor",
                     label: "Editor",
                     content: <ConfigEditor config={config} onSaved={load} />,
+                  },
+                  {
+                    id: "history",
+                    label: "History",
+                    content: <ConfigHistory activeConfig={config} />,
                   },
                   {
                     id: "diff",
