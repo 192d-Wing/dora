@@ -698,6 +698,9 @@ mod handlers {
             ServerMode::Normal
         };
         mode.set(target);
+        // Persist so the (separate-process) DHCP servers converge to this mode;
+        // in-memory `mode.set` only affects this API process.
+        ip_mgr.set_server_mode(target.as_str()).await?;
         let result = serde_json::json!({ "mode": target });
         record_sync_action(
             &ip_mgr,
@@ -735,6 +738,8 @@ mod handlers {
         reject_if_shutting_down(&mode)?;
         let req: DrainRequest = parse_optional_body(&body)?;
         mode.set(ServerMode::Drain);
+        // Persist so the (separate-process) DHCP servers converge to drain.
+        ip_mgr.set_server_mode(ServerMode::Drain.as_str()).await?;
         let result = serde_json::json!({ "mode": ServerMode::Drain });
         record_sync_action(
             &ip_mgr,

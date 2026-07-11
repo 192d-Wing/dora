@@ -17,7 +17,9 @@ use dora_core::{
     tokio,
     tracing::*,
 };
-use dora_runtime::{Shared, bootstrap, build_runtime, flatten, shutdown_signal};
+use dora_runtime::{
+    Shared, bootstrap, build_runtime, flatten, shutdown_signal, spawn_state_refresher,
+};
 use leases_v6::LeasesV6;
 use message_type::MsgType;
 
@@ -49,18 +51,23 @@ fn main() -> Result<()> {
 }
 
 async fn start(config: cli::Config) -> Result<()> {
+    let shared = bootstrap(&config).await?;
+
+    if !shared.dhcp_cfg.has_v6() {
+        warn!("config has no v6 section; nothing for the v6 server to do, exiting");
+        return Ok(());
+    }
+
+    // keep this process's in-memory mode + reservations converged with changes
+    // the (separate-process) management API writes to the database.
+    spawn_state_refresher(&shared);
     let Shared {
         dhcp_cfg,
         ip_mgr,
         mode,
         reservations,
         token,
-    } = bootstrap(&config).await?;
-
-    if !dhcp_cfg.has_v6() {
-        warn!("config has no v6 section; nothing for the v6 server to do, exiting");
-        return Ok(());
-    }
+    } = shared;
 
     info!("starting v6 server");
     let mut v6: Server<v6::Message> =

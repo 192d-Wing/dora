@@ -17,7 +17,9 @@ use dora_core::{
     tokio,
     tracing::*,
 };
-use dora_runtime::{Shared, bootstrap, build_runtime, flatten, shutdown_signal};
+use dora_runtime::{
+    Shared, bootstrap, build_runtime, flatten, shutdown_signal, spawn_state_refresher,
+};
 use leases::Leases;
 use message_type::MsgType;
 use static_addr::StaticAddr;
@@ -50,13 +52,17 @@ fn main() -> Result<()> {
 }
 
 async fn start(config: cli::Config) -> Result<()> {
+    let shared = bootstrap(&config).await?;
+    // keep this process's in-memory mode + reservations converged with changes
+    // the (separate-process) management API writes to the database.
+    spawn_state_refresher(&shared);
     let Shared {
         dhcp_cfg,
         ip_mgr,
         mode,
         reservations,
         token,
-    } = bootstrap(&config).await?;
+    } = shared;
 
     info!("starting v4 server");
     let mut v4: Server<v4::Message> =

@@ -925,6 +925,27 @@ impl Storage for PostgresDb {
         tx.commit().await?;
         Ok(())
     }
+
+    // Runtime-checked queries (not the `query!` macro) so the new `server_state`
+    // table needs no regeneration of the committed sqlx offline cache.
+    async fn get_server_mode(&self) -> Result<Option<String>, Self::Error> {
+        let row: Option<(String,)> =
+            sqlx::query_as("SELECT mode FROM server_state WHERE id = TRUE")
+                .fetch_optional(&self.inner)
+                .await?;
+        Ok(row.map(|(mode,)| mode))
+    }
+
+    async fn set_server_mode(&self, mode: &str) -> Result<(), Self::Error> {
+        sqlx::query(
+            "INSERT INTO server_state (id, mode, updated_at) VALUES (TRUE, $1, now()) \
+             ON CONFLICT (id) DO UPDATE SET mode = EXCLUDED.mode, updated_at = now()",
+        )
+        .bind(mode)
+        .execute(&self.inner)
+        .await?;
+        Ok(())
+    }
 }
 
 mod util {

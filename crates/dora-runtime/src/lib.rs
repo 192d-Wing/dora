@@ -8,6 +8,7 @@
 //! `main` only has to wire its own role on top.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{Result, anyhow};
 use config::{
@@ -72,12 +73,43 @@ pub async fn bootstrap(config: &cli::Config) -> Result<Shared> {
     // migrating so multiple services/replicas never race on migrations.
     let ip_mgr = Arc::new(IpManager::new(PostgresDb::connect(database_url).await?)?);
     // shared server mode: the management API sets it (maintenance / drain /
-    // shutdown) and the DHCP datapath reads it to decide whether to answer.
+    // shutdown) and the DHCP datapath reads it to decide whether to answer. In
+    // the split deployment the API is a separate process, so the mode is durably
+    // stored in the database; warm the in-memory handle from there on startup and
+    // keep it converged via `spawn_state_refresher`.
     let mode = SharedMode::new(ServerMode::Normal);
+    match ip_mgr.get_server_mode().await {
+        Ok(Some(s)) => {
+            let m = ServerMode::from_db_str(&s);
+            info!(?m, "loaded server mode from database");
+            mode.set(m);
+        }
+        Ok(None) => {}
+        Err(err) => warn!(?err, "failed to load server mode; defaulting to normal"),
+    }
     // shared runtime (API-managed) reservations: the management API mutates them
-    // and the DHCP datapath reads them, overriding config reservations and the
-    // pool. Warm the in-memory store from the database.
+    // (and persists them) and the DHCP datapath reads them, overriding config
+    // reservations and the pool. Warm the in-memory store from the database.
     let reservations = RuntimeReservations::new();
+    load_reservations(&ip_mgr, &reservations).await;
+
+    Ok(Shared {
+        dhcp_cfg,
+        ip_mgr,
+        mode,
+        reservations,
+        token: CancellationToken::new(),
+    })
+}
+
+/// How often the DHCP servers re-read the API-managed state (mode + runtime
+/// reservations) from the database into their in-memory handles.
+const STATE_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
+
+/// Reload the runtime reservations from the database into the in-memory store,
+/// replacing its contents. Best-effort: a database error is logged and the
+/// previous contents are kept.
+async fn load_reservations(ip_mgr: &IpManager<PostgresDb>, reservations: &RuntimeReservations) {
     match ip_mgr.list_reservations().await {
         Ok(records) => {
             let loaded: Vec<_> = records
@@ -98,18 +130,39 @@ pub async fn bootstrap(config: &cli::Config) -> Result<Shared> {
                     }
                 })
                 .collect();
-            info!(count = loaded.len(), "loaded runtime reservations");
+            debug!(count = loaded.len(), "loaded runtime reservations");
             reservations.load(loaded);
         }
         Err(err) => error!(?err, "failed to load runtime reservations from database"),
     }
+}
 
-    Ok(Shared {
-        dhcp_cfg,
-        ip_mgr,
-        mode,
-        reservations,
-        token: CancellationToken::new(),
+/// Spawn a background task that keeps a DHCP server's in-memory state converged
+/// with the database, so changes made through the (separate-process) management
+/// API take effect without a restart. Every [`STATE_REFRESH_INTERVAL`] it
+/// re-reads the server mode and the runtime reservations. Stops when the shared
+/// token is cancelled.
+pub fn spawn_state_refresher(shared: &Shared) -> JoinHandle<()> {
+    let ip_mgr = Arc::clone(&shared.ip_mgr);
+    let mode = shared.mode.clone();
+    let reservations = shared.reservations.clone();
+    let token = shared.token.clone();
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(STATE_REFRESH_INTERVAL);
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            tokio::select! {
+                _ = token.cancelled() => break,
+                _ = ticker.tick() => {
+                    match ip_mgr.get_server_mode().await {
+                        Ok(Some(s)) => mode.set(ServerMode::from_db_str(&s)),
+                        Ok(None) => {}
+                        Err(err) => warn!(?err, "server mode refresh failed"),
+                    }
+                    load_reservations(&ip_mgr, &reservations).await;
+                }
+            }
+        }
     })
 }
 
