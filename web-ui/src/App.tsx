@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { BrowserRouter, Routes, Route, useNavigate, useLocation } from "react-router-dom";
 import AppLayout from "@cloudscape-design/components/app-layout";
+import BreadcrumbGroup from "@cloudscape-design/components/breadcrumb-group";
 import SideNavigation from "@cloudscape-design/components/side-navigation";
 import TopNavigation from "@cloudscape-design/components/top-navigation";
 import Dashboard from "./pages/Dashboard";
@@ -32,6 +33,23 @@ function Shell() {
   }), [navigate]);
 
   useKeyboardShortcuts(shortcuts);
+
+  const PAGE_LABELS: Record<string, string> = {
+    "/": "Dashboard",
+    "/leases": "Leases",
+    "/reservations": "Reservations",
+    "/pools": "Pools",
+    "/config": "Configuration",
+    "/actions": "Actions",
+    "/settings": "Settings",
+  };
+
+  const breadcrumbs = [
+    { text: "Dora", href: "/" },
+    ...(location.pathname !== "/"
+      ? [{ text: PAGE_LABELS[location.pathname] ?? location.pathname, href: location.pathname }]
+      : []),
+  ];
 
   return (
     <>
@@ -70,6 +88,15 @@ function Shell() {
       />
       <AppLayout
         toolsHide
+        breadcrumbs={
+          <BreadcrumbGroup
+            items={breadcrumbs}
+            onFollow={(e) => {
+              e.preventDefault();
+              navigate(e.detail.href);
+            }}
+          />
+        }
         navigation={
           <SideNavigation
             activeHref={location.pathname}
