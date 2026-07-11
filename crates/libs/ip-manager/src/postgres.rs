@@ -34,14 +34,42 @@ impl Clone for PostgresDb {
 }
 
 impl PostgresDb {
-    pub async fn new(uri: impl AsRef<str>) -> Result<Self, sqlx::Error> {
+    /// Connect a pool to `uri` **without** running migrations.
+    ///
+    /// In the split-service deployment the schema is owned by the run-once
+    /// `dora-migrate` job, not by the servers: having every v4/v6/api process
+    /// race to migrate the shared database on boot is exactly what we want to
+    /// avoid. Services call this; the migrator (and unit tests) call
+    /// [`PostgresDb::migrate`] / [`PostgresDb::new`].
+    pub async fn connect(uri: impl AsRef<str>) -> Result<Self, sqlx::Error> {
         let mut opts = PgConnectOptions::from_str(uri.as_ref())?;
         // log queries at trace level so we don't get a bloated log on `info`
         opts.log_statements(tracing::log::LevelFilter::Trace);
 
         let inner = PgPool::connect_with(opts).await?;
-        sqlx::migrate!("../../../migrations").run(&inner).await?;
         Ok(Self { inner })
+    }
+
+    /// Connect a pool to `uri` and run the embedded migrations against it.
+    ///
+    /// Kept for in-process users that own their database (e.g. unit tests). The
+    /// split services use [`PostgresDb::connect`] instead and rely on the
+    /// `dora-migrate` job having already applied the schema.
+    pub async fn new(uri: impl AsRef<str>) -> Result<Self, sqlx::Error> {
+        let db = Self::connect(uri).await?;
+        sqlx::migrate!("../../../migrations").run(&db.inner).await?;
+        Ok(db)
+    }
+
+    /// Run the embedded migrations against `uri` and return.
+    ///
+    /// This is the entry point for the run-once `dora-migrate` binary: it
+    /// connects, applies any pending migrations, and drops the pool. Idempotent
+    /// — re-running against an up-to-date database is a no-op.
+    pub async fn migrate(uri: impl AsRef<str>) -> Result<(), sqlx::Error> {
+        let db = Self::connect(uri).await?;
+        sqlx::migrate!("../../../migrations").run(&db.inner).await?;
+        Ok(())
     }
 
     /// Create an isolated Postgres database for a single test/dev run.
