@@ -11,22 +11,24 @@ overlays.
 
 ## Architecture
 
-| Workload | k8s name | dora role | Exposure |
+| Workload | k8s name | image / binary | Exposure |
 | --- | --- | --- | --- |
-| `usg-dora-v4_server` | `usg-dora-v4-server` | `--role v4` | anycast VIP, UDP/67 |
-| `usg-dora-v6_server` | `usg-dora-v6-server` | `--role v6` | anycast VIP, UDP/547 |
-| `usg-dora-api` | `usg-dora-api` | `--role api` | site-local IP, TCP/3333 |
+| `usg-dora-v4_server` | `usg-dora-v4-server` | `usg-dora-v4` / `dora-v4` | anycast VIP, UDP/67 |
+| `usg-dora-v6_server` | `usg-dora-v6-server` | `usg-dora-v6` / `dora-v6` | anycast VIP, UDP/547 |
+| `usg-dora-api` | `usg-dora-api` | `usg-dora-api` / `dora-api` | site-local IP, TCP/3333 |
+| `usg-dora-migrate` | `usg-dora-migrate` | `usg-dora-migrate` / `dora-migrate` | run-once `Job`, no network |
 | `usg-dora-db` | `usg-dora-db` | — (PostgreSQL) | in-cluster only |
 
 > **Naming:** Kubernetes object names can't contain `_`, so the workload names
 > use hyphens (`usg-dora-v4-server`). The exact underscore form is preserved on
 > each workload as the `dora.io/workload` label.
 
-All three dora roles are the **same image** running with a different `--role`
-(see the `--role` flag). They share one Postgres (`usg-dora-db`) via
-`DATABASE_URL`, which is how separate v4/v6/api pods share lease state, runtime
-reservations, operation/audit records, and config candidates. dora runs its
-embedded migrations against Postgres on startup.
+Each service is its **own single-binary image**. They share one Postgres
+(`usg-dora-db`) via `DATABASE_URL`, which is how the separate v4/v6/api pods
+share lease state, runtime reservations, operation/audit records, and config
+candidates. The services do **not** migrate on startup: the `usg-dora-migrate`
+`Job` applies the schema once (idempotently) before the servers roll out, so
+multiple services/replicas never race on migrations.
 
 ## Networking (Cilium)
 
@@ -67,10 +69,11 @@ source address and the relay accepts them.
 
 ## What you MUST edit before applying
 
-1. **Image** — defaults to `ghcr.io/192d-wing/usg-dora:latest` (published by the
-   `release.yml` workflow). Pin a version or point at your own mirror via
-   `deploy/base/kustomization.yaml` `images:`, e.g.
-   `kustomize edit set image usg-dora=ghcr.io/192d-wing/usg-dora:v1.2.3`.
+1. **Images** — default to `ghcr.io/192d-wing/usg-dora-{v4,v6,api,migrate}:latest`
+   (published by the `release.yml` workflow). Pin a version or point at your own
+   mirror via `deploy/base/kustomization.yaml` `images:`, e.g.
+   `kustomize edit set image usg-dora-v4=ghcr.io/192d-wing/usg-dora-v4:v1.2.3`
+   (repeat for `usg-dora-v6`, `usg-dora-api`, `usg-dora-migrate`).
 2. **DB secret** — `deploy/base/db-secret.yaml` (`POSTGRES_PASSWORD`,
    `DATABASE_URL`). Replace with a real, out-of-band-managed secret.
 3. **dora config** — `deploy/base/dora-config.yaml` (`config.yaml`): your
