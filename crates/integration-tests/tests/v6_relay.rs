@@ -42,7 +42,17 @@ impl DoraV6 {
             "{}/tests/test_configs/v6_relay.yaml",
             env!("CARGO_MANIFEST_DIR")
         );
-        let child = Command::new(env!("CARGO_BIN_EXE_dora"))
+        // The v6 server no longer migrates on startup, so apply the schema first
+        // with the dedicated migrator (loopback here, no namespace needed).
+        let migrate = Command::new(bin_path("dora-migrate"))
+            .args(["-d", &db_url, "--dora-log", "warn"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .expect("failed to run dora-migrate");
+        assert!(migrate.success(), "dora-migrate failed: {migrate:?}");
+        let child = Command::new(bin_path("dora-v6"))
             .args([
                 "-c",
                 &config,
@@ -60,7 +70,7 @@ impl DoraV6 {
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
-            .expect("failed to start dora");
+            .expect("failed to start dora-v6");
         // give it a moment to bind; the exchange helper also retries
         thread::sleep(Duration::from_millis(500));
         Self { child, db_name }
@@ -75,6 +85,24 @@ impl Drop for DoraV6 {
             eprintln!("failed to drop test database {}: {err:?}", self.db_name);
         }
     }
+}
+
+/// Absolute path to a workspace binary (e.g. `dora-v6`), resolved from the test
+/// executable's own location — see the note in `common/env.rs::bin_path`. This
+/// test does not use the `common` module, so it keeps its own copy.
+fn bin_path(name: &str) -> String {
+    let mut path = std::env::current_exe().expect("failed to resolve current exe");
+    path.pop(); // drop the test executable's file name
+    if path.file_name().is_some_and(|n| n == "deps") {
+        path.pop(); // drop `deps/`, leaving target/<profile>/
+    }
+    let file = if cfg!(windows) {
+        format!("{name}.exe")
+    } else {
+        name.to_owned()
+    };
+    path.push(file);
+    path.to_string_lossy().into_owned()
 }
 
 /// Run a future to completion on a throwaway current-thread runtime.

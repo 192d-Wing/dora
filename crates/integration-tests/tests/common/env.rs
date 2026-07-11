@@ -6,7 +6,10 @@ use std::{
 
 #[derive(Debug)]
 pub(crate) struct DhcpServerEnv {
-    daemon: Child,
+    // one process per service now: the API (health endpoint) and the v4 server.
+    // They share the per-test database; the schema is applied by `dora-migrate`
+    // before either starts.
+    daemons: Vec<Child>,
     db_name: String,
     netns: String,
     veth_cli: String,
@@ -43,7 +46,7 @@ impl DhcpServerEnv {
         create_test_net_namespace(netns);
         create_test_veth_nics(netns, srv_ip, veth_cli, veth_srv);
         Self {
-            daemon: start_dhcp_server(config, netns, &db_url),
+            daemons: start_services(config, netns, &db_url),
             db_name,
             netns: netns.to_owned(),
             veth_cli: veth_cli.to_owned(),
@@ -55,7 +58,9 @@ impl DhcpServerEnv {
 
 impl Drop for DhcpServerEnv {
     fn drop(&mut self) {
-        stop_dhcp_server(&mut self.daemon);
+        for daemon in &mut self.daemons {
+            stop_dhcp_server(daemon);
+        }
         remove_test_veth_nics(&self.veth_cli);
         remove_test_net_namespace(&self.netns);
         // best-effort: the daemon is dead, so its connection is gone; WITH (FORCE)
@@ -151,35 +156,86 @@ fn remove_test_veth_nics(veth_cli: &str) {
     run_cmd_ignore_failure(&format!("{SUDO} ip link del {veth_cli}"));
 }
 
-fn start_dhcp_server(config: &str, netns: &str, db_url: &str) -> Child {
-    let workspace_root = env::var("WORKSPACE_ROOT").unwrap_or_else(|_| "..".to_owned());
-    let bin_path = env!("CARGO_BIN_EXE_dora");
-    let config_path = format!("{workspace_root}/bin/tests/test_configs/{config}");
-    let dora_debug = format!(
-        "{bin_path} -d={db_url} --config-path={config_path} --threads=2 --dora-log=debug --v4-addr=0.0.0.0:9900",
-    );
-    let cmd = format!("{SUDO} ip netns exec {netns} {dora_debug}");
+/// Absolute path to a workspace binary (e.g. `dora-v4`), resolved from the test
+/// executable's own location. `env!("CARGO_BIN_EXE_...")` is unavailable here
+/// because this test crate does not (and cannot) depend on the binary-only
+/// service crates; instead the test exe lives at `target/<profile>/deps/<exe>`,
+/// so the sibling service binaries are two directories up.
+fn bin_path(name: &str) -> String {
+    let mut path = env::current_exe().expect("failed to resolve current exe");
+    path.pop(); // drop the test executable's file name
+    if path.file_name().is_some_and(|n| n == "deps") {
+        path.pop(); // drop `deps/`, leaving target/<profile>/
+    }
+    let file = if cfg!(windows) {
+        format!("{name}.exe")
+    } else {
+        name.to_owned()
+    };
+    path.push(file);
+    path.to_string_lossy().into_owned()
+}
 
+/// Run `dora-migrate` against the per-test database and wait for it to finish.
+///
+/// The services no longer migrate on startup, so the schema has to exist before
+/// they connect. Runs inside the test namespace so it reaches Postgres over the
+/// same veth the servers use.
+fn run_migrate(netns: &str, db_url: &str) {
+    let migrate = bin_path("dora-migrate");
+    let cmd = format!("{SUDO} ip netns exec {netns} {migrate} -d={db_url} --dora-log=info");
     let cmds: Vec<&str> = cmd.split(' ').collect();
-    let mut child = Command::new(cmds[0])
+    let status = Command::new(cmds[0])
         .args(&cmds[1..])
-        // seems to mess up output formatting
         .stdin(Stdio::null())
-        .spawn()
-        .expect("Failed to start DHCP server");
+        .status()
+        .expect("failed to run dora-migrate");
+    assert!(status.success(), "dora-migrate failed: {status:?}");
+}
 
-    // Wait until dora is actually serving before the test sends. It connects to
-    // Postgres and runs migrations at startup, so readiness is not instant and a
-    // fixed sleep is fragile under CI load. Poll dora's health endpoint instead
-    // (its management API binds 127.0.0.1:3333 inside the namespace); the v4
-    // server is registered right after the API reports healthy. Bounded so a dora
-    // that never comes up still falls through to the liveness check below.
+/// Bring up the services for a test: migrate the DB, then start `dora-api` (for
+/// the health endpoint the readiness probe hits) and `dora-v4`, both inside the
+/// namespace against the shared database. Returns the child processes so the
+/// harness can kill them on drop.
+fn start_services(config: &str, netns: &str, db_url: &str) -> Vec<Child> {
+    // schema first — the services assume it exists.
+    run_migrate(netns, db_url);
+
+    let config_path = format!("{}/tests/test_configs/{config}", env!("CARGO_MANIFEST_DIR"));
+
+    let spawn = |bin: &str, extra: &[&str]| -> Child {
+        let base = format!(
+            "{SUDO} ip netns exec {netns} {bin} -d={db_url} --config-path={config_path} --threads=2 --dora-log=debug",
+        );
+        let mut parts: Vec<String> = base.split(' ').map(str::to_owned).collect();
+        parts.extend(extra.iter().map(|s| s.to_string()));
+        Command::new(&parts[0])
+            .args(&parts[1..])
+            // seems to mess up output formatting
+            .stdin(Stdio::null())
+            .spawn()
+            .unwrap_or_else(|e| panic!("Failed to start {bin}: {e}"))
+    };
+
+    // the API provides the readiness signal; the v4 server serves the datapath.
+    let mut children = vec![
+        spawn(&bin_path("dora-api"), &[]),
+        spawn(&bin_path("dora-v4"), &["--v4-addr=0.0.0.0:9900"]),
+    ];
+
+    // Wait until the API is serving before the test sends. Both services connect
+    // to Postgres at startup, so readiness is not instant and a fixed sleep is
+    // fragile under CI load. Poll the API health endpoint (it binds
+    // 127.0.0.1:3333 inside the namespace). Bounded so a service that never comes
+    // up still falls through to the liveness check below.
     let health =
         format!("{SUDO} ip netns exec {netns} curl -sf --max-time 1 http://127.0.0.1:3333/health",);
     let health_cmd: Vec<&str> = health.split(' ').collect();
     for _ in 0..40 {
-        if let Ok(Some(ret)) = child.try_wait() {
-            panic!("Failed to start DHCP server {ret:?}");
+        for child in &mut children {
+            if let Ok(Some(ret)) = child.try_wait() {
+                panic!("a dora service exited before becoming ready: {ret:?}");
+            }
         }
         let ready = Command::new(health_cmd[0])
             .args(&health_cmd[1..])
@@ -194,10 +250,12 @@ fn start_dhcp_server(config: &str, netns: &str, db_url: &str) -> Child {
         }
         thread::sleep(std::time::Duration::from_millis(250));
     }
-    if let Ok(Some(ret)) = child.try_wait() {
-        panic!("Failed to start DHCP server {ret:?}");
+    for child in &mut children {
+        if let Ok(Some(ret)) = child.try_wait() {
+            panic!("a dora service exited before becoming ready: {ret:?}");
+        }
     }
-    child
+    children
 }
 
 fn stop_dhcp_server(daemon: &mut Child) {

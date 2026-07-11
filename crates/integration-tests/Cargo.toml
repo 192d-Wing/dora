@@ -1,0 +1,28 @@
+[package]
+name = "integration-tests"
+version = "0.2.0"
+edition = "2024"
+license = "MPL-2.0"
+publish = false
+
+# Out-of-process integration tests. They spawn the split service binaries
+# (dora-migrate + dora-v4 / dora-v6 / dora-api) as child processes, so this crate
+# only needs an (empty) lib target to host the `tests/` harness. The service
+# binaries are located at runtime relative to the test executable (see
+# `tests/common/env.rs::bin_path`), so no path-dependency on the bin crates is
+# needed — and a binary-only crate cannot be depended on anyway.
+
+[lib]
+path = "src/lib.rs"
+
+[dev-dependencies]
+dora-core = { path = "../dora-core" }
+ip-manager = { path = "../libs/ip-manager" }
+anyhow = { workspace = true }
+tokio = { workspace = true }
+mac_address = "1.1.8"
+derive_builder = "0.20.2"
+crossbeam-channel = "0.5.15"
+rand = "0.10"
+socket2 = { workspace = true }
+tracing-test = { workspace = true }
