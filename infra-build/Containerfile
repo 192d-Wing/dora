@@ -65,6 +65,9 @@ RUN dnf -y install --setopt=install_weak_deps=False --nodocs \
 # The single service binary for this image, exec'd by the entrypoint via $DORA_BIN.
 COPY --from=builder /usr/local/bin/dora-service /usr/local/bin/dora-service
 ENV DORA_BIN=/usr/local/bin/dora-service
+# Which role this image is: the entrypoint uses it to decide whether to run the
+# DHCP data-dir/interface-wait dance (v4/v6) or just exec the binary (api/migrate).
+ENV DORA_SERVICE=${SERVICE}
 # Record which role this image is for (useful for `podman inspect` / debugging).
 LABEL dora.io/service="${SERVICE}"
 

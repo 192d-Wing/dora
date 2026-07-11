@@ -15,6 +15,16 @@ else
     run="exec"
 fi
 
+# Only the DHCP servers use the data-dir / interface-wait dance below. The API
+# and the migrator take their config/DB from flags or env and need no config
+# file or interface, so run them directly with whatever args were given (this
+# also makes a bare, no-arg `docker run usg-dora-migrate` work). A v4/v6 image
+# (or an unset DORA_SERVICE, for backward compatibility) falls through.
+case "${DORA_SERVICE:-}" in
+    v4 | v6 | "") : ;;
+    *) $run "$DORA_BIN" "$@" ;;
+esac
+
 # Flag-style args (a leading '-', e.g. `-c /etc/dora/config.yaml --v4-addr ...`)
 # are options for the service binary — the way the Kubernetes manifests invoke
 # each service. Forward them straight to $DORA_BIN and skip the docker-run
