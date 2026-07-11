@@ -13,6 +13,7 @@ import ContentLayout from "@cloudscape-design/components/content-layout";
 import Alert from "@cloudscape-design/components/alert";
 import { api, V4Reservation, V6Reservation } from "../api";
 import { useNotifications } from "../components/Notifications";
+import { toCsv, downloadCsv } from "../utils/csv";
 
 const PAGE_SIZE = 50;
 
@@ -155,6 +156,19 @@ function V4ReservationTable() {
     }
   };
 
+  const exportCsv = async () => {
+    const params: Record<string, string> = { limit: "1000", offset: "0" };
+    if (ipFilter) params.ip = ipFilter;
+    if (networkFilter) params.network = networkFilter;
+    if (clientIdFilter) params.client_id = clientIdFilter;
+    const res = await api.reservationsV4(params);
+    const headers = ["IP", "Network", "Source", "Match"];
+    const rows = res.items.map((r) => [
+      r.ip, r.network ?? "", r.source, formatMatch(r.match),
+    ]);
+    downloadCsv("dhcpv4-reservations.csv", toCsv(headers, rows));
+  };
+
   return (
     <SpaceBetween size="m">
       {error && <Alert type="error" dismissible onDismiss={() => setError(null)}>{error}</Alert>}
@@ -170,6 +184,7 @@ function V4ReservationTable() {
             counter={`(${total})`}
             actions={
               <SpaceBetween direction="horizontal" size="xs">
+                <Button iconName="download" onClick={exportCsv}>Export CSV</Button>
                 <Button iconName="refresh" onClick={load} />
                 <Button variant="primary" onClick={openCreate}>
                   Add reservation
@@ -407,6 +422,19 @@ function V6ReservationTable() {
     }
   };
 
+  const exportCsv = async () => {
+    const params: Record<string, string> = { limit: "1000", offset: "0" };
+    if (ipFilter) params.ip = ipFilter;
+    if (networkFilter) params.network = networkFilter;
+    if (clientIdFilter) params.client_id = clientIdFilter;
+    const res = await api.reservationsV6(params);
+    const headers = ["IP", "Prefix", "Network", "Source", "Match"];
+    const rows = res.items.map((r) => [
+      r.ip ?? "", r.prefix ?? "", r.network ?? "", r.source, formatMatch(r.match),
+    ]);
+    downloadCsv("dhcpv6-reservations.csv", toCsv(headers, rows));
+  };
+
   return (
     <SpaceBetween size="m">
       {error && <Alert type="error" dismissible onDismiss={() => setError(null)}>{error}</Alert>}
@@ -422,6 +450,7 @@ function V6ReservationTable() {
             counter={`(${total})`}
             actions={
               <SpaceBetween direction="horizontal" size="xs">
+                <Button iconName="download" onClick={exportCsv}>Export CSV</Button>
                 <Button iconName="refresh" onClick={load} />
                 <Button variant="primary" onClick={openCreate}>
                   Add reservation

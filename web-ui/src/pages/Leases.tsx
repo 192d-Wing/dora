@@ -14,6 +14,7 @@ import Modal from "@cloudscape-design/components/modal";
 import { api, V4Lease, V6Lease } from "../api";
 import { useNotifications } from "../components/Notifications";
 import RefreshControl, { useAutoRefresh } from "../components/RefreshControl";
+import { toCsv, downloadCsv } from "../utils/csv";
 
 const PAGE_SIZE = 50;
 
@@ -84,6 +85,20 @@ function V4LeaseTable() {
     load();
   }, [load]);
 
+  const exportCsv = async () => {
+    const params: Record<string, string> = { limit: "1000", offset: "0" };
+    if (stateFilter.value) params.state = stateFilter.value;
+    if (ipFilter) params.ip = ipFilter;
+    if (networkFilter) params.network = networkFilter;
+    if (clientIdFilter) params.client_id = clientIdFilter;
+    const res = await api.leasesV4(params);
+    const headers = ["IP", "State", "Network", "Client ID", "Expires", "Source"];
+    const rows = res.items.map((l) => [
+      l.ip, l.state, l.network, l.client_id ?? "", l.expires_at ?? "", l.source ?? "",
+    ]);
+    downloadCsv("dhcpv4-leases.csv", toCsv(headers, rows));
+  };
+
   return (
     <SpaceBetween size="m">
       {error && <Alert type="error" dismissible onDismiss={() => setError(null)}>{error}</Alert>}
@@ -98,13 +113,16 @@ function V4LeaseTable() {
           <Header
             counter={`(${total})`}
             actions={
-              <RefreshControl
-                onRefresh={load}
-                intervalSeconds={v4Refresh.intervalSeconds}
-                onIntervalChange={v4Refresh.setIntervalSeconds}
-                paused={v4Refresh.paused}
-                onPausedChange={v4Refresh.setPaused}
-              />
+              <SpaceBetween direction="horizontal" size="xs">
+                <Button iconName="download" onClick={exportCsv}>Export CSV</Button>
+                <RefreshControl
+                  onRefresh={load}
+                  intervalSeconds={v4Refresh.intervalSeconds}
+                  onIntervalChange={v4Refresh.setIntervalSeconds}
+                  paused={v4Refresh.paused}
+                  onPausedChange={v4Refresh.setPaused}
+                />
+              </SpaceBetween>
             }
           >
             DHCPv4 Leases
@@ -302,6 +320,21 @@ function V6LeaseTable() {
     load();
   }, [load]);
 
+  const exportCsv = async () => {
+    const params: Record<string, string> = { limit: "1000", offset: "0" };
+    if (stateFilter.value) params.state = stateFilter.value;
+    if (ipFilter) params.ip = ipFilter;
+    if (networkFilter) params.network = networkFilter;
+    if (clientIdFilter) params.client_id = clientIdFilter;
+    const res = await api.leasesV6(params);
+    const headers = ["IP", "Prefix", "State", "Type", "Network", "Client ID", "IAID", "Expires", "Source"];
+    const rows = res.items.map((l) => [
+      l.ip ?? "", l.prefix ?? "", l.state, l.lease_type, l.network,
+      l.client_id ?? "", l.iaid != null ? String(l.iaid) : "", l.expires_at ?? "", l.source ?? "",
+    ]);
+    downloadCsv("dhcpv6-leases.csv", toCsv(headers, rows));
+  };
+
   return (
     <SpaceBetween size="m">
       {error && <Alert type="error" dismissible onDismiss={() => setError(null)}>{error}</Alert>}
@@ -316,13 +349,16 @@ function V6LeaseTable() {
           <Header
             counter={`(${total})`}
             actions={
-              <RefreshControl
-                onRefresh={load}
-                intervalSeconds={v6Refresh.intervalSeconds}
-                onIntervalChange={v6Refresh.setIntervalSeconds}
-                paused={v6Refresh.paused}
-                onPausedChange={v6Refresh.setPaused}
-              />
+              <SpaceBetween direction="horizontal" size="xs">
+                <Button iconName="download" onClick={exportCsv}>Export CSV</Button>
+                <RefreshControl
+                  onRefresh={load}
+                  intervalSeconds={v6Refresh.intervalSeconds}
+                  onIntervalChange={v6Refresh.setIntervalSeconds}
+                  paused={v6Refresh.paused}
+                  onPausedChange={v6Refresh.setPaused}
+                />
+              </SpaceBetween>
             }
           >
             DHCPv6 Leases
