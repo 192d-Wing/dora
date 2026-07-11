@@ -63,6 +63,8 @@ cargo run --bin dora-v4 -- --help
 
 ## Running dora
 
+[For an architecture overview (crates, services, deployment) see docs/architecture.md](./docs/architecture.md)
+
 [To build and run dora in docker see docs/docker.md](./docs/docker.md)
 
 [To deploy dora on Kubernetes/K3s with Cilium see docs/kubernetes_deploy.md](./docs/kubernetes_deploy.md)
