@@ -4,7 +4,8 @@ import "@cloudscape-design/global-styles/index.css";
 import { applyMode, Mode } from "@cloudscape-design/global-styles";
 import App from "./App";
 
-applyMode(Mode.Dark);
+const savedMode = localStorage.getItem("dora_theme") ?? "dark";
+applyMode(savedMode === "light" ? Mode.Light : Mode.Dark);
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
