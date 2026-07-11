@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import Box from "@cloudscape-design/components/box";
 import Button from "@cloudscape-design/components/button";
 import Header from "@cloudscape-design/components/header";
@@ -13,6 +13,7 @@ import Alert from "@cloudscape-design/components/alert";
 import Modal from "@cloudscape-design/components/modal";
 import { api, V4Lease, V6Lease } from "../api";
 import { useNotifications } from "../components/Notifications";
+import RefreshControl, { useAutoRefresh } from "../components/RefreshControl";
 
 const PAGE_SIZE = 50;
 
@@ -55,7 +56,7 @@ function V4LeaseTable() {
     }
   };
 
-  const load = () => {
+  const load = useCallback(() => {
     setLoading(true);
     setError(null);
     const params: Record<string, string> = {
@@ -75,11 +76,13 @@ function V4LeaseTable() {
       })
       .catch((err) => setError(String(err)))
       .finally(() => setLoading(false));
-  };
+  }, [page, stateFilter.value, ipFilter, networkFilter, clientIdFilter]);
+
+  const v4Refresh = useAutoRefresh(load, 0);
 
   useEffect(() => {
     load();
-  }, [page, stateFilter.value]);
+  }, [load]);
 
   return (
     <SpaceBetween size="m">
@@ -94,7 +97,15 @@ function V4LeaseTable() {
         header={
           <Header
             counter={`(${total})`}
-            actions={<Button iconName="refresh" onClick={load} />}
+            actions={
+              <RefreshControl
+                onRefresh={load}
+                intervalSeconds={v4Refresh.intervalSeconds}
+                onIntervalChange={v4Refresh.setIntervalSeconds}
+                paused={v4Refresh.paused}
+                onPausedChange={v4Refresh.setPaused}
+              />
+            }
           >
             DHCPv4 Leases
           </Header>
@@ -263,7 +274,7 @@ function V6LeaseTable() {
     }
   };
 
-  const load = () => {
+  const load = useCallback(() => {
     setLoading(true);
     setError(null);
     const params: Record<string, string> = {
@@ -283,11 +294,13 @@ function V6LeaseTable() {
       })
       .catch((err) => setError(String(err)))
       .finally(() => setLoading(false));
-  };
+  }, [page, stateFilter.value, ipFilter, networkFilter, clientIdFilter]);
+
+  const v6Refresh = useAutoRefresh(load, 0);
 
   useEffect(() => {
     load();
-  }, [page, stateFilter.value]);
+  }, [load]);
 
   return (
     <SpaceBetween size="m">
@@ -302,7 +315,15 @@ function V6LeaseTable() {
         header={
           <Header
             counter={`(${total})`}
-            actions={<Button iconName="refresh" onClick={load} />}
+            actions={
+              <RefreshControl
+                onRefresh={load}
+                intervalSeconds={v6Refresh.intervalSeconds}
+                onIntervalChange={v6Refresh.setIntervalSeconds}
+                paused={v6Refresh.paused}
+                onPausedChange={v6Refresh.setPaused}
+              />
+            }
           >
             DHCPv6 Leases
           </Header>

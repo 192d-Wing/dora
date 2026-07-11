@@ -1,6 +1,5 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import Box from "@cloudscape-design/components/box";
-import Button from "@cloudscape-design/components/button";
 import ColumnLayout from "@cloudscape-design/components/column-layout";
 import Container from "@cloudscape-design/components/container";
 import Header from "@cloudscape-design/components/header";
@@ -11,6 +10,7 @@ import Spinner from "@cloudscape-design/components/spinner";
 import Alert from "@cloudscape-design/components/alert";
 import PieChart from "@cloudscape-design/components/pie-chart";
 import { api, MetricsSummary, ReadinessResponse, ServerInfo } from "../api";
+import RefreshControl, { useAutoRefresh } from "../components/RefreshControl";
 
 function formatUptime(seconds: number): string {
   const d = Math.floor(seconds / 86400);
@@ -121,7 +121,7 @@ export default function Dashboard() {
   const [v6ReservationCount, setV6ReservationCount] = useState<number | null>(null);
   const [pendingCount, setPendingCount] = useState<number | null>(null);
 
-  const load = () => {
+  const load = useCallback(() => {
     setLoading(true);
     setError(null);
     Promise.all([
@@ -152,13 +152,13 @@ export default function Dashboard() {
         }
       })
       .finally(() => setLoading(false));
-  };
+  }, []);
+
+  const refresh = useAutoRefresh(load, 30);
 
   useEffect(() => {
     load();
-    const interval = setInterval(load, 30000);
-    return () => clearInterval(interval);
-  }, []);
+  }, [load]);
 
   if (loading && !server) {
     return <Spinner size="large" />;
@@ -173,7 +173,15 @@ export default function Dashboard() {
         <Header
           variant="h1"
           description="DHCP server overview"
-          actions={<Button iconName="refresh" onClick={load} />}
+          actions={
+            <RefreshControl
+              onRefresh={load}
+              intervalSeconds={refresh.intervalSeconds}
+              onIntervalChange={refresh.setIntervalSeconds}
+              paused={refresh.paused}
+              onPausedChange={refresh.setPaused}
+            />
+          }
         >
           Dashboard
         </Header>
