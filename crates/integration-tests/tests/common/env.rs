@@ -4,6 +4,8 @@ use std::{
     thread,
 };
 
+use integration_tests::{bin_path, block_on};
+
 #[derive(Debug)]
 pub(crate) struct DhcpServerEnv {
     // one process per service now: the API (health endpoint) and the v4 server.
@@ -69,16 +71,6 @@ impl Drop for DhcpServerEnv {
             eprintln!("failed to drop test database {}: {err:?}", self.db_name);
         }
     }
-}
-
-/// Run a future to completion on a throwaway current-thread runtime (the harness
-/// itself is synchronous; only the DB provisioning is async).
-fn block_on<F: std::future::Future>(fut: F) -> F::Output {
-    tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("failed to build test runtime")
-        .block_on(fut)
 }
 
 /// Derive a valid Postgres identifier from the test's legacy `.db` filename,
@@ -156,24 +148,17 @@ fn remove_test_veth_nics(veth_cli: &str) {
     run_cmd_ignore_failure(&format!("{SUDO} ip link del {veth_cli}"));
 }
 
-/// Absolute path to a workspace binary (e.g. `dora-v4`), resolved from the test
-/// executable's own location. `env!("CARGO_BIN_EXE_...")` is unavailable here
-/// because this test crate does not (and cannot) depend on the binary-only
-/// service crates; instead the test exe lives at `target/<profile>/deps/<exe>`,
-/// so the sibling service binaries are two directories up.
-fn bin_path(name: &str) -> String {
-    let mut path = env::current_exe().expect("failed to resolve current exe");
-    path.pop(); // drop the test executable's file name
-    if path.file_name().is_some_and(|n| n == "deps") {
-        path.pop(); // drop `deps/`, leaving target/<profile>/
-    }
-    let file = if cfg!(windows) {
-        format!("{name}.exe")
-    } else {
-        name.to_owned()
-    };
-    path.push(file);
-    path.to_string_lossy().into_owned()
+/// Run a command inside the test namespace (`sudo ip netns exec <netns> …`),
+/// returning a `Command` ready to `.spawn()`/`.status()`. Arguments are passed
+/// as discrete argv entries — never a space-split string — so a path containing
+/// a space (e.g. `CARGO_MANIFEST_DIR` under a spaced checkout) stays a single
+/// argument.
+fn netns_command(netns: &str, program: &str, args: &[&str]) -> Command {
+    let mut cmd = Command::new(SUDO);
+    cmd.args(["ip", "netns", "exec", netns, program]);
+    cmd.args(args);
+    cmd.stdin(Stdio::null());
+    cmd
 }
 
 /// Run `dora-migrate` against the per-test database and wait for it to finish.
@@ -183,11 +168,7 @@ fn bin_path(name: &str) -> String {
 /// same veth the servers use.
 fn run_migrate(netns: &str, db_url: &str) {
     let migrate = bin_path("dora-migrate");
-    let cmd = format!("{SUDO} ip netns exec {netns} {migrate} -d={db_url} --dora-log=info");
-    let cmds: Vec<&str> = cmd.split(' ').collect();
-    let status = Command::new(cmds[0])
-        .args(&cmds[1..])
-        .stdin(Stdio::null())
+    let status = netns_command(netns, &migrate, &["-d", db_url, "--dora-log", "info"])
         .status()
         .expect("failed to run dora-migrate");
     assert!(status.success(), "dora-migrate failed: {status:?}");
@@ -204,15 +185,18 @@ fn start_services(config: &str, netns: &str, db_url: &str) -> Vec<Child> {
     let config_path = format!("{}/tests/test_configs/{config}", env!("CARGO_MANIFEST_DIR"));
 
     let spawn = |bin: &str, extra: &[&str]| -> Child {
-        let base = format!(
-            "{SUDO} ip netns exec {netns} {bin} -d={db_url} --config-path={config_path} --threads=2 --dora-log=debug",
-        );
-        let mut parts: Vec<String> = base.split(' ').map(str::to_owned).collect();
-        parts.extend(extra.iter().map(|s| s.to_string()));
-        Command::new(&parts[0])
-            .args(&parts[1..])
-            // seems to mess up output formatting
-            .stdin(Stdio::null())
+        let mut args = vec![
+            "-d",
+            db_url,
+            "--config-path",
+            config_path.as_str(),
+            "--threads",
+            "2",
+            "--dora-log",
+            "debug",
+        ];
+        args.extend_from_slice(extra);
+        netns_command(netns, bin, &args)
             .spawn()
             .unwrap_or_else(|e| panic!("Failed to start {bin}: {e}"))
     };
@@ -220,7 +204,7 @@ fn start_services(config: &str, netns: &str, db_url: &str) -> Vec<Child> {
     // the API provides the readiness signal; the v4 server serves the datapath.
     let mut children = vec![
         spawn(&bin_path("dora-api"), &[]),
-        spawn(&bin_path("dora-v4"), &["--v4-addr=0.0.0.0:9900"]),
+        spawn(&bin_path("dora-v4"), &["--v4-addr", "0.0.0.0:9900"]),
     ];
 
     // Wait until the API is serving before the test sends. Both services connect
@@ -228,34 +212,61 @@ fn start_services(config: &str, netns: &str, db_url: &str) -> Vec<Child> {
     // fragile under CI load. Poll the API health endpoint (it binds
     // 127.0.0.1:3333 inside the namespace). Bounded so a service that never comes
     // up still falls through to the liveness check below.
-    let health =
-        format!("{SUDO} ip netns exec {netns} curl -sf --max-time 1 http://127.0.0.1:3333/health",);
-    let health_cmd: Vec<&str> = health.split(' ').collect();
-    for _ in 0..40 {
-        for child in &mut children {
+    let assert_alive = |children: &mut [Child]| {
+        for child in children {
             if let Ok(Some(ret)) = child.try_wait() {
                 panic!("a dora service exited before becoming ready: {ret:?}");
             }
         }
-        let ready = Command::new(health_cmd[0])
-            .args(&health_cmd[1..])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false);
+    };
+    for _ in 0..40 {
+        assert_alive(&mut children);
+        let ready = netns_command(
+            netns,
+            "curl",
+            &["-sf", "--max-time", "1", "http://127.0.0.1:3333/health"],
+        )
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
         if ready {
             break;
         }
         thread::sleep(std::time::Duration::from_millis(250));
     }
-    for child in &mut children {
-        if let Ok(Some(ret)) = child.try_wait() {
-            panic!("a dora service exited before becoming ready: {ret:?}");
-        }
-    }
+    assert_alive(&mut children);
+
+    // The API's health only proves the API process is up. dora-v4 is a SEPARATE
+    // process and may not have bound its UDP socket yet, so gate on the v4
+    // listener too before the test starts sending (otherwise the first DISCOVER
+    // races the bind). Falls through after the bound so the client's own retry
+    // loop still covers a very late bind.
+    wait_for_udp_port(netns, 9900, &mut children);
+
     children
+}
+
+/// Poll until a UDP socket is listening on `port` inside the namespace (via
+/// `ss`), or a bounded number of tries elapse. Panics if a service dies first.
+fn wait_for_udp_port(netns: &str, port: u16, children: &mut [Child]) {
+    let needle = format!(":{port}");
+    for _ in 0..40 {
+        for child in children.iter_mut() {
+            if let Ok(Some(ret)) = child.try_wait() {
+                panic!("a dora service exited before becoming ready: {ret:?}");
+            }
+        }
+        if let Ok(out) = netns_command(netns, "ss", &["-H", "-u", "-l", "-n"]).output()
+            && String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .any(|l| l.contains(&needle))
+        {
+            return;
+        }
+        thread::sleep(std::time::Duration::from_millis(250));
+    }
 }
 
 fn stop_dhcp_server(daemon: &mut Child) {

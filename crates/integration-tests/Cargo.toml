@@ -20,11 +20,15 @@ publish = false
 [lib]
 path = "src/lib.rs"
 
+# tokio is a normal dependency (not dev-only) because the shared `block_on`
+# helper lives in the lib target, which cannot see dev-dependencies.
+[dependencies]
+tokio = { workspace = true }
+
 [dev-dependencies]
 dora-core = { path = "../dora-core" }
 ip-manager = { path = "../libs/ip-manager" }
 anyhow = { workspace = true }
-tokio = { workspace = true }
 mac_address = "1.1.8"
 derive_builder = "0.20.2"
 crossbeam-channel = "0.5.15"

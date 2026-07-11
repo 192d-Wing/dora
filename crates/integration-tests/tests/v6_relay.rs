@@ -22,6 +22,7 @@ use dora_core::dhcproto::{
         Status,
     },
 };
+use integration_tests::{bin_path, block_on};
 
 /// a running `dora` server bound to loopback, killed and cleaned up on drop
 struct DoraV6 {
@@ -85,33 +86,6 @@ impl Drop for DoraV6 {
             eprintln!("failed to drop test database {}: {err:?}", self.db_name);
         }
     }
-}
-
-/// Absolute path to a workspace binary (e.g. `dora-v6`), resolved from the test
-/// executable's own location — see the note in `common/env.rs::bin_path`. This
-/// test does not use the `common` module, so it keeps its own copy.
-fn bin_path(name: &str) -> String {
-    let mut path = std::env::current_exe().expect("failed to resolve current exe");
-    path.pop(); // drop the test executable's file name
-    if path.file_name().is_some_and(|n| n == "deps") {
-        path.pop(); // drop `deps/`, leaving target/<profile>/
-    }
-    let file = if cfg!(windows) {
-        format!("{name}.exe")
-    } else {
-        name.to_owned()
-    };
-    path.push(file);
-    path.to_string_lossy().into_owned()
-}
-
-/// Run a future to completion on a throwaway current-thread runtime.
-fn block_on<F: std::future::Future>(fut: F) -> F::Output {
-    tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("failed to build test runtime")
-        .block_on(fut)
 }
 
 /// Build dora's connection URL by swapping the database-name segment of the
