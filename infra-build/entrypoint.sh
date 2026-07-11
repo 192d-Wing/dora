@@ -2,6 +2,9 @@
 
 set -e
 
+# The image bakes DORA_BIN to the single service binary it ships (dora-v4 /
+# dora-v6 / dora-api / dora-migrate); fall back to a sane default if unset.
+: "${DORA_BIN:=/usr/local/bin/dora-service}"
 
 # Prefer `docker run --init` / `podman --init`, which obsoletes dumb-init. Only
 # fall back to dumb-init if it is actually installed -- the hardened UBI base
@@ -10,6 +13,14 @@ if [ $$ -eq 1 ] && command -v dumb-init >/dev/null 2>&1; then
     run="exec dumb-init --"
 else
     run="exec"
+fi
+
+# Flag-style args (a leading '-', e.g. `-c /etc/dora/config.yaml --v4-addr ...`)
+# are options for the service binary — the way the Kubernetes manifests invoke
+# each service. Forward them straight to $DORA_BIN and skip the docker-run
+# interface-wait dance below (which only applies to a bare interface-name arg).
+if [ "$#" -gt 0 ] && [ "${1#-}" != "$1" ]; then
+    $run "$DORA_BIN" "$@"
 fi
 
 # Single argument to command line is interface name
@@ -74,7 +85,7 @@ if [ -n "$IFACE" ]; then
         esac
     fi
 
-    exec /usr/local/bin/dora
+    exec "$DORA_BIN"
 else
     # Run another binary
     if [ $$ -eq 1 ] && command -v dumb-init >/dev/null 2>&1; then

@@ -1,10 +1,16 @@
 # syntax=docker/dockerfile:1
 #
-# Multi-arch (linux/amd64, linux/arm64) build for dora.
-# Cache bust: 2026-07-10
-# Build from the REPO ROOT (the build context needs the whole workspace), e.g.:
-#   podman build -f infra-build/Containerfile -t dora .
-#   docker buildx build --platform linux/amd64,linux/arm64 -f infra-build/Containerfile -t dora .
+# Multi-arch (linux/amd64, linux/arm64) per-service build for dora.
+# Cache bust: 2026-07-11
+#
+# dora is split into one binary per role. This file builds ONE service image at a
+# time, selected by the SERVICE build-arg (v4 | v6 | api | migrate), producing the
+# `dora-${SERVICE}` binary. Build from the REPO ROOT (the build context needs the
+# whole workspace), e.g.:
+#   podman build -f infra-build/Containerfile --build-arg SERVICE=v4  -t usg-dora-v4  .
+#   podman build -f infra-build/Containerfile --build-arg SERVICE=api -t usg-dora-api .
+#   docker buildx build --platform linux/amd64,linux/arm64 \
+#       -f infra-build/Containerfile --build-arg SERVICE=v6 -t usg-dora-v6 .
 #
 # The runtime base is the Iron Bank hardened UBI 10 image, which requires
 # authenticating to registry1.dso.mil first (see the CI `docker` job).
@@ -19,23 +25,27 @@ WORKDIR /usr/src/dora
 # are needed at image-build time.
 ENV SQLX_OFFLINE=true
 ARG BUILD_MODE=release
+# Which service binary to build: v4 | v6 | api | migrate -> dora-${SERVICE}.
+ARG SERVICE
 COPY . .
 # BuildKit cache mounts keep the cargo registry and the compiled `target/` dir
 # out of the image layers and let CI persist them across builds (restored via
 # reproducible-containers/buildkit-cache-dance). The dominant build cost is
 # recompiling dora's own crates; with a warm `target` mount an ordinary source
 # edit recompiles only what changed instead of the whole workspace. The binary
-# lives inside the mounted target dir, so copy it out before the mount is
-# released at the end of the RUN.
+# lives inside the mounted target dir, so copy it out to a stable path before the
+# mount is released at the end of the RUN.
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
     --mount=type=cache,target=/usr/src/dora/target,sharing=locked \
-    cargo build --${BUILD_MODE} --bin dora \
-    && cp "target/${BUILD_MODE}/dora" /usr/local/bin/dora
+    test -n "${SERVICE}" || { echo "SERVICE build-arg is required (v4|v6|api|migrate)" >&2; exit 1; } \
+    && cargo build --${BUILD_MODE} --bin "dora-${SERVICE}" \
+    && cp "target/${BUILD_MODE}/dora-${SERVICE}" /usr/local/bin/dora-service
 
 # ---- runtime ----
 # Iron Bank hardened UBI 10 (published for linux/amd64 and linux/arm64).
 FROM registry1.dso.mil/ironbank/redhat/ubi/ubi10:10.2
+ARG SERVICE
 
 # UBI is RHEL-based, so runtime deps come from dnf (not apt). The `dhcpd` user
 # was previously provided by the isc-dhcp-server package on Ubuntu; UBI has no
@@ -52,7 +62,11 @@ RUN dnf -y install --setopt=install_weak_deps=False --nodocs \
     && groupadd -r dhcpd \
     && useradd -r -g dhcpd -s /sbin/nologin -d /var/lib/dora dhcpd
 
-COPY --from=builder /usr/local/bin/dora /usr/local/bin/dora
+# The single service binary for this image, exec'd by the entrypoint via $DORA_BIN.
+COPY --from=builder /usr/local/bin/dora-service /usr/local/bin/dora-service
+ENV DORA_BIN=/usr/local/bin/dora-service
+# Record which role this image is for (useful for `podman inspect` / debugging).
+LABEL dora.io/service="${SERVICE}"
 
 RUN mkdir -p /var/lib/dora/
 
