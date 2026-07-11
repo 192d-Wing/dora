@@ -219,8 +219,8 @@ jobs:
         run: sudo sysctl -w net.ipv4.ping_group_range="0 2147483647"
 
       # run coverage through nextest so it honors the serial test-groups in
-      # .config/nextest.toml (the v6 server-id and dora-bin netns tests share
-      # global OS state and must not run concurrently); plain `cargo llvm-cov`
+      # .config/nextest.toml (the v6 server-id and integration-tests netns tests
+      # share global OS state and must not run concurrently); plain `cargo llvm-cov`
       # uses threaded `cargo test`, which ignores those groups and races.
       - name: Generate code coverage
         run: cargo llvm-cov nextest --all-features --exclude register_derive_impl --workspace --no-fail-fast --lcov --output-path lcov.info
@@ -240,7 +240,7 @@ jobs:
   # built AND published to GHCR by the separate `release.yml` workflow, so this
   # job intentionally does not run on push (no duplicate build).
   docker:
-    name: Container image (${{ matrix.platform }})
+    name: Container image (${{ matrix.service }} / ${{ matrix.platform }})
     needs: changes
     if: >-
       github.event_name == 'pull_request' &&
@@ -250,6 +250,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # one single-binary image per service, built for each architecture
+        service: [v4, v6, api, migrate]
+        platform: [linux/amd64, linux/arm64]
+        # attach the arch label + native runner to each platform
         include:
           - platform: linux/amd64
             arch: amd64
@@ -308,9 +312,13 @@ jobs:
           file: infra-build/Containerfile
           platforms: ${{ matrix.platform }}
           push: false
-          tags: dora:${{ github.sha }}
+          build-args: |
+            SERVICE=${{ matrix.service }}
+          tags: dora-${{ matrix.service }}:${{ github.sha }}
           # The heavy compile artifacts live in the cache mounts above, so the
           # gha layer cache only needs to carry the small final-image layers
-          # (runtime base + binary) — mode=min keeps that export cheap.
-          cache-from: type=gha,scope=${{ matrix.platform }}
-          cache-to: type=gha,mode=min,scope=${{ matrix.platform }}
+          # (runtime base + binary) — mode=min keeps that export cheap. Scope per
+          # service+platform so the four services don't clobber each other's
+          # final-layer cache.
+          cache-from: type=gha,scope=${{ matrix.service }}-${{ matrix.platform }}
+          cache-to: type=gha,mode=min,scope=${{ matrix.service }}-${{ matrix.platform }}

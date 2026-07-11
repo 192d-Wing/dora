@@ -1,13 +1,15 @@
-# Publish the usg-dora container image to GitHub Container Registry (GHCR).
+# Publish the split dora service images to GitHub Container Registry (GHCR).
 #
+# dora is one image per service: usg-dora-v4, usg-dora-v6, usg-dora-api, and
+# usg-dora-migrate. Each is built and tagged identically:
 #   * push a `v*` tag (e.g. v1.2.3) -> immutable :1.2.3, :1.2, and :latest
 #   * push to `main`                -> rolling :main and :sha-<short>
 #
-# Each architecture builds natively on its own runner (no QEMU, matching the CI
-# `docker` job) and is pushed to GHCR *by digest*; a final job stitches the
-# per-arch digests into one multi-arch manifest and applies the human-readable
-# tags. The runtime base is Iron Bank's hardened UBI, so the build still logs in
-# to registry1.dso.mil to pull it.
+# Each (service, architecture) builds natively on its own runner (no QEMU,
+# matching the CI `docker` job) and is pushed to GHCR *by digest*; a final job
+# stitches the per-arch digests into one multi-arch manifest per service and
+# applies the human-readable tags. The runtime base is Iron Bank's hardened UBI,
+# so the build still logs in to registry1.dso.mil to pull it.
 name: Release
 
 on:
@@ -24,15 +26,20 @@ permissions:
   packages: write
 
 env:
-  IMAGE: ghcr.io/192d-wing/usg-dora
+  # per-service images are ${IMAGE_PREFIX}-${service} (e.g. usg-dora-v4)
+  IMAGE_PREFIX: ghcr.io/192d-wing/usg-dora
 
 jobs:
   build:
-    name: Build & push (${{ matrix.platform }})
+    name: Build & push (${{ matrix.service }} / ${{ matrix.platform }})
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
+        # one single-binary image per service, built for each architecture
+        service: [v4, v6, api, migrate]
+        platform: [linux/amd64, linux/arm64]
+        # attach the arch label + native runner to each platform
         include:
           - platform: linux/amd64
             arch: amd64
@@ -93,10 +100,12 @@ jobs:
           context: .
           file: infra-build/Containerfile
           platforms: ${{ matrix.platform }}
+          build-args: |
+            SERVICE=${{ matrix.service }}
           # push the per-arch image by digest only; the merge job applies tags
-          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
-          cache-from: type=gha,scope=${{ matrix.platform }}
-          cache-to: type=gha,mode=min,scope=${{ matrix.platform }}
+          outputs: type=image,name=${{ env.IMAGE_PREFIX }}-${{ matrix.service }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=${{ matrix.service }}-${{ matrix.platform }}
+          cache-to: type=gha,mode=min,scope=${{ matrix.service }}-${{ matrix.platform }}
 
       - name: Export digest
         run: |
@@ -107,21 +116,26 @@ jobs:
       - name: Upload digest
         uses: actions/upload-artifact@v4
         with:
-          name: digest-${{ matrix.arch }}
+          name: digest-${{ matrix.service }}-${{ matrix.arch }}
           path: /tmp/digests/*
           if-no-files-found: error
           retention-days: 1
 
   merge:
-    name: Publish multi-arch manifest
+    name: Publish multi-arch manifest (${{ matrix.service }})
     needs: build
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [v4, v6, api, migrate]
     steps:
+      # only this service's per-arch digests
       - name: Download digests
         uses: actions/download-artifact@v4
         with:
           path: /tmp/digests
-          pattern: digest-*
+          pattern: digest-${{ matrix.service }}-*
           merge-multiple: true
 
       - name: Set up Docker Buildx
@@ -140,7 +154,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.IMAGE }}
+          images: ${{ env.IMAGE_PREFIX }}-${{ matrix.service }}
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
@@ -154,7 +168,7 @@ jobs:
         run: |
           docker buildx imagetools create \
             $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
-            $(printf '${{ env.IMAGE }}@sha256:%s ' *)
+            $(printf '${{ env.IMAGE_PREFIX }}-${{ matrix.service }}@sha256:%s ' *)
 
       - name: Inspect published image
-        run: docker buildx imagetools inspect ${{ env.IMAGE }}:${{ steps.meta.outputs.version }}
+        run: docker buildx imagetools inspect ${{ env.IMAGE_PREFIX }}-${{ matrix.service }}:${{ steps.meta.outputs.version }}
