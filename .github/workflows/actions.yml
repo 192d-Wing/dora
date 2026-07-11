@@ -115,6 +115,13 @@ jobs:
       - name: Allow ICMP socket creation
         run: sudo sysctl -w net.ipv4.ping_group_range="0 2147483647"
 
+      # The integration-tests harness execs the service binaries (dora-migrate,
+      # dora-v4, dora-v6) as child processes, locating them in target/. nextest
+      # only builds test targets, not those [[bin]] crates (and a test crate
+      # cannot depend on binary-only crates to force it), so build them first.
+      - name: Build service binaries
+        run: cargo build --all-features --workspace --bins
+
       - name: Run tests
         run: cargo nextest run --all-features --workspace --exclude register_derive_impl
 
@@ -218,12 +225,23 @@ jobs:
       - name: Allow ICMP socket creation
         run: sudo sysctl -w net.ipv4.ping_group_range="0 2147483647"
 
-      # run coverage through nextest so it honors the serial test-groups in
+      # Coverage runs through nextest so it honors the serial test-groups in
       # .config/nextest.toml (the v6 server-id and integration-tests netns tests
-      # share global OS state and must not run concurrently); plain `cargo llvm-cov`
-      # uses threaded `cargo test`, which ignores those groups and races.
+      # share global OS state and must not run concurrently).
+      #
+      # The integration-tests harness execs the service binaries (dora-migrate,
+      # dora-v4, dora-v6) as child processes. Use the `llvm-cov show-env` flow so
+      # those binaries are built WITH coverage instrumentation and are present in
+      # target/ before the tests run: source the env, build the bins, run plain
+      # nextest (still honoring the groups), then emit the report. This also
+      # captures the spawned processes' coverage, not just the in-process tests.
       - name: Generate code coverage
-        run: cargo llvm-cov nextest --all-features --exclude register_derive_impl --workspace --no-fail-fast --lcov --output-path lcov.info
+        run: |
+          source <(cargo llvm-cov show-env --export-prefix)
+          cargo llvm-cov clean --workspace
+          cargo build --all-features --workspace --bins
+          cargo nextest run --all-features --exclude register_derive_impl --workspace --no-fail-fast
+          cargo llvm-cov report --lcov --output-path lcov.info
 
       - name: Coveralls upload
         uses: coverallsapp/github-action@v2

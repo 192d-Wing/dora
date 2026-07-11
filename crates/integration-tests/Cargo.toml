@@ -11,6 +11,11 @@ publish = false
 # binaries are located at runtime relative to the test executable (see
 # `tests/common/env.rs::bin_path`), so no path-dependency on the bin crates is
 # needed — and a binary-only crate cannot be depended on anyway.
+#
+# NOTE: because this crate does not depend on the bin crates, `cargo test`/nextest
+# will NOT build them automatically. Build them first, into the same target dir:
+#   cargo build --workspace --bins && cargo nextest run -p integration-tests
+# (CI does this in the Test Suite / coverage jobs.)
 
 [lib]
 path = "src/lib.rs"
