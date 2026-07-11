@@ -11,12 +11,41 @@ import Tabs from "@cloudscape-design/components/tabs";
 import ContentLayout from "@cloudscape-design/components/content-layout";
 import Alert from "@cloudscape-design/components/alert";
 import Modal from "@cloudscape-design/components/modal";
+import CollectionPreferences from "@cloudscape-design/components/collection-preferences";
 import { api, V4Lease, V6Lease } from "../api";
 import { useNotifications } from "../components/Notifications";
 import RefreshControl, { useAutoRefresh } from "../components/RefreshControl";
 import { toCsv, downloadCsv } from "../utils/csv";
+import { useTablePreferences } from "../hooks/useTablePreferences";
 
-const PAGE_SIZE = 50;
+const DEFAULT_PAGE_SIZE = 50;
+
+const V4_COLUMNS = [
+  { id: "ip", label: "IP Address" },
+  { id: "state", label: "State" },
+  { id: "network", label: "Network" },
+  { id: "client_id", label: "Client ID" },
+  { id: "expires_at", label: "Expires" },
+  { id: "source", label: "Source" },
+  { id: "actions", label: "Actions" },
+];
+
+const V6_COLUMNS = [
+  { id: "ip", label: "IP / Prefix" },
+  { id: "state", label: "State" },
+  { id: "lease_type", label: "Type" },
+  { id: "network", label: "Network" },
+  { id: "client_id", label: "Client ID" },
+  { id: "expires_at", label: "Expires" },
+  { id: "source", label: "Source" },
+  { id: "actions", label: "Actions" },
+];
+
+const PAGE_SIZE_OPTIONS = [
+  { value: 25, label: "25" },
+  { value: 50, label: "50" },
+  { value: 100, label: "100" },
+];
 
 const STATE_OPTIONS = [
   { label: "All states", value: "" },
@@ -29,6 +58,11 @@ const STATE_OPTIONS = [
 
 function V4LeaseTable() {
   const { notify } = useNotifications();
+  const [prefs, setPrefs] = useTablePreferences("v4-leases", {
+    pageSize: DEFAULT_PAGE_SIZE,
+    wrapLines: false,
+    visibleColumns: V4_COLUMNS.map((c) => c.id),
+  });
   const [items, setItems] = useState<V4Lease[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
@@ -61,8 +95,8 @@ function V4LeaseTable() {
     setLoading(true);
     setError(null);
     const params: Record<string, string> = {
-      limit: String(PAGE_SIZE),
-      offset: String((page - 1) * PAGE_SIZE),
+      limit: String(prefs.pageSize),
+      offset: String((page - 1) * prefs.pageSize),
     };
     if (stateFilter.value) params.state = stateFilter.value;
     if (ipFilter) params.ip = ipFilter;
@@ -77,7 +111,7 @@ function V4LeaseTable() {
       })
       .catch((err) => setError(String(err)))
       .finally(() => setLoading(false));
-  }, [page, stateFilter.value, ipFilter, networkFilter, clientIdFilter]);
+  }, [page, prefs.pageSize, stateFilter.value, ipFilter, networkFilter, clientIdFilter]);
 
   const v4Refresh = useAutoRefresh(load, 0);
 
@@ -177,8 +211,35 @@ function V4LeaseTable() {
         pagination={
           <Pagination
             currentPageIndex={page}
-            pagesCount={Math.max(1, Math.ceil(total / PAGE_SIZE))}
+            pagesCount={Math.max(1, Math.ceil(total / prefs.pageSize))}
             onChange={({ detail }) => setPage(detail.currentPageIndex)}
+          />
+        }
+        columnDisplay={V4_COLUMNS.map((c) => ({ id: c.id, visible: prefs.visibleColumns.includes(c.id) }))}
+        wrapLines={prefs.wrapLines}
+        preferences={
+          <CollectionPreferences
+            title="Table preferences"
+            confirmLabel="Confirm"
+            cancelLabel="Cancel"
+            preferences={{
+              pageSize: prefs.pageSize,
+              wrapLines: prefs.wrapLines,
+              visibleContent: prefs.visibleColumns,
+            }}
+            onConfirm={({ detail }) =>
+              setPrefs({
+                pageSize: detail.pageSize ?? DEFAULT_PAGE_SIZE,
+                wrapLines: detail.wrapLines ?? false,
+                visibleColumns: (detail.visibleContent as string[]) ?? V4_COLUMNS.map((c) => c.id),
+              })
+            }
+            pageSizePreference={{ title: "Page size", options: PAGE_SIZE_OPTIONS }}
+            wrapLinesPreference={{ label: "Wrap lines", description: "Wrap long cell content" }}
+            visibleContentPreference={{
+              title: "Visible columns",
+              options: [{ label: "Columns", options: V4_COLUMNS.map((c) => ({ id: c.id, label: c.label })) }],
+            }}
           />
         }
         columnDefinitions={[
@@ -264,6 +325,11 @@ function V4LeaseTable() {
 
 function V6LeaseTable() {
   const { notify } = useNotifications();
+  const [prefs, setPrefs] = useTablePreferences("v6-leases", {
+    pageSize: DEFAULT_PAGE_SIZE,
+    wrapLines: false,
+    visibleColumns: V6_COLUMNS.map((c) => c.id),
+  });
   const [items, setItems] = useState<V6Lease[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
@@ -296,8 +362,8 @@ function V6LeaseTable() {
     setLoading(true);
     setError(null);
     const params: Record<string, string> = {
-      limit: String(PAGE_SIZE),
-      offset: String((page - 1) * PAGE_SIZE),
+      limit: String(prefs.pageSize),
+      offset: String((page - 1) * prefs.pageSize),
     };
     if (stateFilter.value) params.state = stateFilter.value;
     if (ipFilter) params.ip = ipFilter;
@@ -312,7 +378,7 @@ function V6LeaseTable() {
       })
       .catch((err) => setError(String(err)))
       .finally(() => setLoading(false));
-  }, [page, stateFilter.value, ipFilter, networkFilter, clientIdFilter]);
+  }, [page, prefs.pageSize, stateFilter.value, ipFilter, networkFilter, clientIdFilter]);
 
   const v6Refresh = useAutoRefresh(load, 0);
 
@@ -413,8 +479,35 @@ function V6LeaseTable() {
         pagination={
           <Pagination
             currentPageIndex={page}
-            pagesCount={Math.max(1, Math.ceil(total / PAGE_SIZE))}
+            pagesCount={Math.max(1, Math.ceil(total / prefs.pageSize))}
             onChange={({ detail }) => setPage(detail.currentPageIndex)}
+          />
+        }
+        columnDisplay={V6_COLUMNS.map((c) => ({ id: c.id, visible: prefs.visibleColumns.includes(c.id) }))}
+        wrapLines={prefs.wrapLines}
+        preferences={
+          <CollectionPreferences
+            title="Table preferences"
+            confirmLabel="Confirm"
+            cancelLabel="Cancel"
+            preferences={{
+              pageSize: prefs.pageSize,
+              wrapLines: prefs.wrapLines,
+              visibleContent: prefs.visibleColumns,
+            }}
+            onConfirm={({ detail }) =>
+              setPrefs({
+                pageSize: detail.pageSize ?? DEFAULT_PAGE_SIZE,
+                wrapLines: detail.wrapLines ?? false,
+                visibleColumns: (detail.visibleContent as string[]) ?? V6_COLUMNS.map((c) => c.id),
+              })
+            }
+            pageSizePreference={{ title: "Page size", options: PAGE_SIZE_OPTIONS }}
+            wrapLinesPreference={{ label: "Wrap lines", description: "Wrap long cell content" }}
+            visibleContentPreference={{
+              title: "Visible columns",
+              options: [{ label: "Columns", options: V6_COLUMNS.map((c) => ({ id: c.id, label: c.label })) }],
+            }}
           />
         }
         columnDefinitions={[
