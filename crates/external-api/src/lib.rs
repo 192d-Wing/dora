@@ -80,6 +80,9 @@ struct ApiState {
 #[derive(Debug, Clone)]
 struct ApiAuth {
     bearer_token: Option<Arc<str>>,
+    /// Explicit escape hatch for trusted local development. Production is
+    /// fail-closed when neither a bearer token nor mTLS is configured.
+    allow_unauthenticated: bool,
     /// whether mTLS client-cert auth is offered (a client-CA trust bundle is
     /// configured). Only affects what `auth_methods()` advertises; the actual
     /// per-request check reads the trusted `x-dora-client-verified` header the
@@ -94,9 +97,15 @@ impl ApiAuth {
             .map(|token| token.trim().to_string())
             .filter(|token| !token.is_empty())
             .map(Arc::<str>::from);
+        let allow_unauthenticated = std::env::var("DORA_API_ALLOW_UNAUTHENTICATED")
+            .ok()
+            .is_some_and(|value| {
+                matches!(value.trim().to_ascii_lowercase().as_str(), "1" | "true")
+            });
 
         Self {
             bearer_token,
+            allow_unauthenticated,
             mtls_enabled: false,
         }
     }
@@ -105,6 +114,7 @@ impl ApiAuth {
     fn disabled() -> Self {
         Self {
             bearer_token: None,
+            allow_unauthenticated: true,
             mtls_enabled: false,
         }
     }
@@ -113,6 +123,7 @@ impl ApiAuth {
     fn bearer(token: &str) -> Self {
         Self {
             bearer_token: Some(Arc::<str>::from(token)),
+            allow_unauthenticated: false,
             mtls_enabled: false,
         }
     }
@@ -305,7 +316,12 @@ fn api_router<S: Storage>(
     shutdown: CancellationToken,
     timeout: Duration,
 ) -> Router {
+    use axum::extract::DefaultBodyLimit;
     use tower_http::{timeout::TimeoutLayer, trace::TraceLayer};
+
+    // Config candidates are the largest legitimate request. Keep a hard cap so
+    // Bytes extractors cannot be used to force unbounded request buffering.
+    const MAX_REQUEST_BODY_BYTES: usize = 1024 * 1024;
 
     Router::new()
         .route("/health", routing::get(handlers::health))
@@ -406,6 +422,7 @@ fn api_router<S: Storage>(
             axum::http::StatusCode::REQUEST_TIMEOUT,
             timeout,
         ))
+        .layer(DefaultBodyLimit::max(MAX_REQUEST_BODY_BYTES))
         .layer(Extension(state))
         .layer(Extension(api_state))
         .layer(Extension(auth))
@@ -1185,7 +1202,7 @@ mod handlers {
         Ok(headers)
     }
 
-    fn authorize(headers: &HeaderMap, auth: &crate::ApiAuth) -> ServerResult<()> {
+    pub(crate) fn authorize(headers: &HeaderMap, auth: &crate::ApiAuth) -> ServerResult<()> {
         // A verified client certificate satisfies auth on its own. The TLS layer
         // stamps this header from the connection's peer cert and always strips
         // any client-supplied value first, so it can't be spoofed.
@@ -1197,7 +1214,13 @@ mod handlers {
         }
 
         let Some(expected) = auth.bearer_token.as_deref() else {
-            return Ok(());
+            return if auth.allow_unauthenticated {
+                Ok(())
+            } else {
+                Err(crate::models::ServerError::unauthorized(
+                    "management API authentication is not configured",
+                ))
+            };
         };
 
         let Some(actual) = headers
@@ -3577,6 +3600,21 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn auth_fails_closed_without_an_explicit_method() {
+        let auth = ApiAuth {
+            bearer_token: None,
+            allow_unauthenticated: false,
+            mtls_enabled: false,
+        };
+        let err = handlers::authorize(&axum::http::HeaderMap::new(), &auth)
+            .expect_err("an unconfigured production API must reject protected routes");
+        assert_eq!(
+            axum::response::IntoResponse::into_response(err).status(),
+            axum::http::StatusCode::UNAUTHORIZED
+        );
+    }
+
     async fn spawn_test_api(health: Health) -> anyhow::Result<(SocketAddr, CancellationToken)> {
         spawn_test_api_with_auth(health, ApiAuth::disabled()).await
     }
@@ -5018,6 +5056,7 @@ v4:
     async fn test_config_write_requires_mtls_when_enabled() -> anyhow::Result<()> {
         let auth = ApiAuth {
             bearer_token: Some(std::sync::Arc::from("secret")),
+            allow_unauthenticated: false,
             mtls_enabled: true,
         };
         let (addr, token, _mode, _mgr) = spawn_test_api_full(Health::Good, auth).await?;

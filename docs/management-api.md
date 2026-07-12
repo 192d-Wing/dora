@@ -48,6 +48,9 @@ provides the client-CA bundle.
   With a client-CA and **no** bearer token, mTLS is *mandatory* at the TLS layer
   (a certless client can't connect), so a `client-ca`-only deployment can never
   be left open to unauthenticated clients.
+
+Protected routes fail closed when neither method is configured. For trusted local
+development only, set `DORA_API_ALLOW_UNAUTHENTICATED=true` to explicitly opt out.
 - The config-lifecycle write endpoints (below) additionally **require** a
   verified client certificate whenever a client-CA is configured — this is how a
   GitOps orchestrator's certificate gates configuration pushes in production.

@@ -16,4 +16,4 @@ ip-manager = { path = "../libs/ip-manager" }
 anyhow = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
-dotenv = "0.15.0"
+dotenv = { package = "dotenvy", version = "0.15.7" }

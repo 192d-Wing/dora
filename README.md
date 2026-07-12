@@ -170,7 +170,9 @@ OpenAPI 3.1 document in [`docs/openapi.yaml`](docs/openapi.yaml), also served at
 `GET /openapi.json`.
 
 Public (unauthenticated): `GET /health`, `GET /ready`, `GET /openapi.json`.
-Everything else is gated by a Bearer token when `DORA_API_TOKEN` is set. Current
+Everything else requires a Bearer token (`DORA_API_TOKEN`) or verified mTLS client
+certificate. Trusted local development can explicitly opt out by setting
+`DORA_API_ALLOW_UNAUTHENTICATED=true`. Current
 endpoints:
 
 ```text

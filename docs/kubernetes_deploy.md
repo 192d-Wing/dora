@@ -192,7 +192,7 @@ VIPs as `EXTERNAL-IP`, and the BGP session to your router is `established`.
 
 ## Using the management API
 
-The API is unauthenticated by default. To require a **bearer token**, create the
+The API fails closed by default. Configure a **bearer token** by creating the
 `dora-api` secret before (or after) applying — the deployment reads it if present:
 
 ```sh

@@ -1,0 +1,6 @@
+[advisories]
+# SQLx 0.8.6 lists its optional MySQL driver in Cargo.lock. Dora disables SQLx
+# default features and enables only PostgreSQL, so `rsa` is not present in the
+# resolved build graph (`cargo tree -i rsa` is empty). Remove this exception
+# when SQLx stops locking the optional driver or the upstream advisory is fixed.
+ignore = ["RUSTSEC-2023-0071"]

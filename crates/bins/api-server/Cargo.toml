@@ -16,7 +16,7 @@ config = { path = "../../libs/config" }
 ip-manager = { path = "../../libs/ip-manager" }
 # external
 anyhow = { workspace = true }
-dotenv = "0.15.0"
+dotenv = { package = "dotenvy", version = "0.15.7" }
 
 [target.'cfg(not(target_env = "musl"))'.dependencies]
 jemallocator = { version = "0.5.4", features = ["background_threads"] }

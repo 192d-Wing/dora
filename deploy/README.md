@@ -115,7 +115,7 @@ kubectl kustomize deploy/overlays/k8s
 
 ## Securing the API
 
-The API is unauthenticated by default. To require a **bearer token**, create the
+The API fails closed by default. Configure a **bearer token** by creating the
 `dora-api` secret (the deployment reads it if present):
 
 ```sh
