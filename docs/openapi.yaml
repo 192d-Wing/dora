@@ -1101,16 +1101,14 @@ components:
           type: boolean
           const: true
         document:
-          type: object
-          additionalProperties: true
+          $ref: "#/components/schemas/DhcpConfig"
       additionalProperties: false
     ConfigUpdateRequest:
       type: object
       required: [document]
       properties:
         document:
-          type: object
-          additionalProperties: true
+          $ref: "#/components/schemas/DhcpConfig"
         message:
           type: string
       additionalProperties: false
@@ -1147,8 +1145,7 @@ components:
           items:
             $ref: "#/components/schemas/ValidationMessage"
         document:
-          type: object
-          additionalProperties: true
+          $ref: "#/components/schemas/DhcpConfig"
       additionalProperties: false
     ValidationMessage:
       type: object
@@ -1343,3 +1340,672 @@ components:
         reason:
           type: string
       additionalProperties: false
+    Cfg_client_classes:
+      description: client classification (DHCPv4). v6 classes live under `v6.client_classes`
+      properties:
+        v4:
+          items:
+            properties:
+              assert:
+                description: Kea-style predicate expression evaluated per message
+                type: string
+              name:
+                type: string
+              options:
+                $ref: '#/components/schemas/Cfg_options'
+            required:
+            - name
+            - assert
+            type: object
+          type: array
+      required:
+      - v4
+      type: object
+    Cfg_config:
+      description: lease/lifetime settings for a v4 scope
+      properties:
+        lease_time:
+          $ref: '#/components/schemas/Cfg_min_max'
+      type: object
+    Cfg_ddns:
+      description: dynamic DNS update configuration
+      properties:
+        enable_updates:
+          type: boolean
+        forward:
+          items:
+            $ref: '#/components/schemas/Cfg_ddns_server'
+          type: array
+        override_client_updates:
+          type: boolean
+        override_no_updates:
+          type: boolean
+        reverse:
+          items:
+            $ref: '#/components/schemas/Cfg_ddns_server'
+          type: array
+        tsig_keys:
+          additionalProperties:
+            $ref: '#/components/schemas/Cfg_tsig_key'
+          type: object
+      required:
+      - forward
+      - reverse
+      - tsig_keys
+      type: object
+    Cfg_ddns_server:
+      properties:
+        ip:
+          description: socket address of the DNS server (e.g. "192.168.3.111:53")
+          type: string
+        key:
+          description: name of a tsig key defined in `tsig_keys`
+          type: string
+        name:
+          description: DNS zone / FQDN this server is authoritative for (e.g. "example.com.")
+          type: string
+      required:
+      - name
+      - ip
+      type: object
+    Cfg_duration:
+      description: seconds as a positive integer, or a duration string with a unit (e.g. "3600s", "60m", "24h")
+      oneOf:
+      - minimum: 1
+        type: integer
+      - type: string
+    Cfg_int_or_int_list:
+      oneOf:
+      - type: integer
+      - items:
+          type: integer
+        type: array
+    Cfg_match:
+      description: 'a reservation match: a single `chaddr` or `options` key'
+      oneOf:
+      - additionalProperties: false
+        properties:
+          chaddr:
+            type: string
+        required:
+        - chaddr
+      - additionalProperties: false
+        properties:
+          options:
+            $ref: '#/components/schemas/Cfg_options'
+        required:
+        - options
+      type: object
+    Cfg_min_max:
+      description: a lifetime with a required default and optional min/max clamps
+      properties:
+        default:
+          $ref: '#/components/schemas/Cfg_duration'
+        max:
+          $ref: '#/components/schemas/Cfg_duration'
+        min:
+          $ref: '#/components/schemas/Cfg_duration'
+      required:
+      - default
+      type: object
+    Cfg_option:
+      description: a single DHCPv4 option, tagged by `type` with a matching `value`
+      oneOf:
+      - additionalProperties: false
+        properties:
+          type:
+            const: ip
+          value:
+            oneOf:
+            - format: ipv4
+              type: string
+            - items:
+                format: ipv4
+                type: string
+              type: array
+      - additionalProperties: false
+        properties:
+          type:
+            const: ip_list
+          value:
+            items:
+              format: ipv4
+              type: string
+            type: array
+      - additionalProperties: false
+        properties:
+          type:
+            const: domain
+          value:
+            oneOf:
+            - type: string
+            - items:
+                type: string
+              type: array
+      - additionalProperties: false
+        properties:
+          type:
+            const: domain_list
+          value:
+            items:
+              type: string
+            type: array
+      - additionalProperties: false
+        properties:
+          type:
+            const: u8
+          value:
+            $ref: '#/components/schemas/Cfg_int_or_int_list'
+      - additionalProperties: false
+        properties:
+          type:
+            const: i8
+          value:
+            $ref: '#/components/schemas/Cfg_int_or_int_list'
+      - additionalProperties: false
+        properties:
+          type:
+            const: u16
+          value:
+            $ref: '#/components/schemas/Cfg_int_or_int_list'
+      - additionalProperties: false
+        properties:
+          type:
+            const: i16
+          value:
+            $ref: '#/components/schemas/Cfg_int_or_int_list'
+      - additionalProperties: false
+        properties:
+          type:
+            const: u32
+          value:
+            $ref: '#/components/schemas/Cfg_int_or_int_list'
+      - additionalProperties: false
+        properties:
+          type:
+            const: i32
+          value:
+            $ref: '#/components/schemas/Cfg_int_or_int_list'
+      - additionalProperties: false
+        properties:
+          type:
+            const: bool
+          value:
+            oneOf:
+            - type: boolean
+            - items:
+                type: boolean
+              type: array
+      - additionalProperties: false
+        properties:
+          type:
+            const: str
+          value:
+            oneOf:
+            - type: string
+            - items:
+                type: string
+              type: array
+      - additionalProperties: false
+        properties:
+          type:
+            const: b64
+          value:
+            type: string
+      - additionalProperties: false
+        properties:
+          type:
+            const: hex
+          value:
+            type: string
+      - additionalProperties: false
+        properties:
+          type:
+            const: sub_option
+          value:
+            additionalProperties:
+              $ref: '#/components/schemas/Cfg_option'
+            description: encapsulated options keyed by sub-option code
+            type: object
+      required:
+      - type
+      - value
+      type: object
+    Cfg_options:
+      description: an options map. keys are option codes (e.g. "3") or known names (e.g. "routers")
+      properties:
+        values:
+          additionalProperties:
+            $ref: '#/components/schemas/Cfg_option'
+          type: object
+      required:
+      - values
+      type: object
+    Cfg_range:
+      description: a v4 address pool
+      properties:
+        class:
+          description: restrict this range to a matched client class
+          type: string
+        config:
+          $ref: '#/components/schemas/Cfg_config'
+        end:
+          format: ipv4
+          type: string
+        except:
+          items:
+            format: ipv4
+            type: string
+          type: array
+        options:
+          $ref: '#/components/schemas/Cfg_options'
+        policy:
+          description: name of a policy (from `v4.policies`) whose options apply to this range
+          type: string
+        start:
+          format: ipv4
+          type: string
+      required:
+      - start
+      - end
+      - options
+      type: object
+    Cfg_reservation:
+      properties:
+        class:
+          description: restrict this reservation to a matched client class
+          type: string
+        config:
+          $ref: '#/components/schemas/Cfg_config'
+        ip:
+          format: ipv4
+          type: string
+        match:
+          $ref: '#/components/schemas/Cfg_match'
+        options:
+          $ref: '#/components/schemas/Cfg_options'
+        policy:
+          description: name of a policy (from `v4.policies`) whose options apply to this reservation
+          type: string
+      required:
+      - ip
+      - match
+      - options
+      type: object
+    Cfg_tsig_key:
+      properties:
+        algorithm:
+          enum:
+          - hmac-md5
+          - hmac-sha1
+          - hmac-sha256
+          - hmac-sha384
+          - hmac-sha512
+        data:
+          description: base64-encoded key data
+          type: string
+      required:
+      - algorithm
+      - data
+      type: object
+    Cfg_v4:
+      description: DHCPv4 configuration
+      properties:
+        bootp_enable:
+          description: enable BOOTP support, RFC 1497 only (default true)
+          type: boolean
+        cache_threshold:
+          description: percent (0-100) of lease time during which a renew returns the existing lease rather
+            than extending it (default 0)
+          maximum: 100
+          minimum: 0
+          type: integer
+        chaddr_only:
+          description: only use the `chaddr` header field for client identity, ignoring opt 61 (default false)
+          type: boolean
+        client_classes:
+          $ref: '#/components/schemas/Cfg_client_classes'
+        ddns:
+          $ref: '#/components/schemas/Cfg_ddns'
+        flood_protection_threshold:
+          description: 'per-MAC DHCP flood protection: at most `packets` per `secs` (off by default)'
+          properties:
+            packets:
+              minimum: 1
+              type: integer
+            secs:
+              minimum: 1
+              type: integer
+          required:
+          - packets
+          - secs
+          type: object
+        interfaces:
+          description: interfaces to bind; if empty, dora binds 0.0.0.0. Entries may be "name" or "name@ip"
+          items:
+            type: string
+          type: array
+        networks:
+          additionalProperties:
+            $ref: '#/components/schemas/Cfg_v4_network'
+          description: v4 networks keyed by subnet, e.g. "192.168.1.0/24"
+          type: object
+        options:
+          $ref: '#/components/schemas/Cfg_options'
+          description: global v4 options applied to every network/range/reservation unless overridden
+        policies:
+          additionalProperties:
+            $ref: '#/components/schemas/Cfg_options'
+          description: named, reusable option-sets referenced by name via a `policy` key
+          type: object
+        rapid_commit:
+          description: enable v4 rapid commit, RFC 4039 (default false)
+          type: boolean
+      type: object
+    Cfg_v4_network:
+      properties:
+        authoritative:
+          type: boolean
+        file_name:
+          description: replaces the `fname` DHCP header field
+          type: string
+        options:
+          $ref: '#/components/schemas/Cfg_options'
+          description: network-level options applied to every range/reservation in this network
+        ping_check:
+          type: boolean
+        ping_timeout_ms:
+          type: integer
+        policy:
+          description: name of a policy (from `v4.policies`) whose options apply to this network
+          type: string
+        probation_period:
+          type: integer
+        ranges:
+          items:
+            $ref: '#/components/schemas/Cfg_range'
+          type: array
+        reservations:
+          items:
+            $ref: '#/components/schemas/Cfg_reservation'
+          type: array
+        server_id:
+          description: IP dora is reachable on for this network; defaults to the receiving interface IP
+          format: ipv4
+          type: string
+        server_name:
+          description: replaces the `sname` DHCP header field
+          type: string
+      type: object
+    Cfg_v6:
+      description: stateful DHCPv6 server configuration (RFC 8415)
+      properties:
+        client_classes:
+          description: DHCPv6 client classes; matched-class options are merged into responses below explicit
+            config
+          items:
+            $ref: '#/components/schemas/Cfg_v6_client_class'
+          type: array
+        interfaces:
+          items:
+            type: string
+          type: array
+        networks:
+          additionalProperties:
+            $ref: '#/components/schemas/Cfg_v6_net'
+          description: v6 networks keyed by subnet prefix, e.g. "2001:db8:1::/64"
+          type: object
+        options:
+          $ref: '#/components/schemas/Cfg_v6_options'
+          description: global v6 options applied to every network/range/pd_pool unless overridden
+        policies:
+          additionalProperties:
+            $ref: '#/components/schemas/Cfg_v6_options'
+          description: named, reusable option-sets referenced by name via a `policy` key
+          type: object
+        rapid_commit:
+          description: 'honor the Rapid Commit option (opt 14): answer a Solicit carrying it with a committing
+            Reply instead of Advertise (default false)'
+          type: boolean
+        server_id:
+          $ref: '#/components/schemas/Cfg_v6_server_id'
+      required:
+      - networks
+      type: object
+    Cfg_v6_client_class:
+      description: a DHCPv6 client class. `assert` supports the protocol-agnostic subset (option[code], member,
+        substring, concat, hexstring, equality); v4-only header atoms are rejected
+      properties:
+        assert:
+          description: predicate expression evaluated per v6 message
+          type: string
+        name:
+          type: string
+        options:
+          $ref: '#/components/schemas/Cfg_v6_options'
+      required:
+      - name
+      - assert
+      type: object
+    Cfg_v6_net:
+      properties:
+        authoritative:
+          type: boolean
+        config:
+          $ref: '#/components/schemas/Cfg_v6_network_config'
+        interfaces:
+          items:
+            type: string
+          type: array
+        options:
+          $ref: '#/components/schemas/Cfg_v6_options'
+        pd_pools:
+          description: IA_PD prefix delegation pools
+          items:
+            $ref: '#/components/schemas/Cfg_v6_pd_pool'
+          type: array
+        ping_check:
+          type: boolean
+        ping_timeout_ms:
+          type: integer
+        policy:
+          description: name of a policy (from `v6.policies`) whose options apply to this network
+          type: string
+        probation_period:
+          type: integer
+        ranges:
+          description: IA_NA address pools
+          items:
+            $ref: '#/components/schemas/Cfg_v6_range'
+          type: array
+      required:
+      - config
+      type: object
+    Cfg_v6_network_config:
+      description: valid (lease_time) and preferred lifetimes for a v6 scope
+      properties:
+        lease_time:
+          $ref: '#/components/schemas/Cfg_min_max'
+        preferred_time:
+          $ref: '#/components/schemas/Cfg_min_max'
+      required:
+      - lease_time
+      - preferred_time
+      type: object
+    Cfg_v6_option:
+      description: a single DHCPv6 option, tagged by `type` with a matching `value`
+      oneOf:
+      - additionalProperties: false
+        properties:
+          type:
+            const: ip
+          value:
+            oneOf:
+            - format: ipv6
+              type: string
+            - items:
+                format: ipv6
+                type: string
+              type: array
+      - additionalProperties: false
+        properties:
+          type:
+            const: ip_list
+          value:
+            items:
+              format: ipv6
+              type: string
+            type: array
+      - additionalProperties: false
+        properties:
+          type:
+            const: u8
+          value:
+            $ref: '#/components/schemas/Cfg_int_or_int_list'
+      - additionalProperties: false
+        properties:
+          type:
+            const: u16
+          value:
+            $ref: '#/components/schemas/Cfg_int_or_int_list'
+      - additionalProperties: false
+        properties:
+          type:
+            const: u32
+          value:
+            $ref: '#/components/schemas/Cfg_int_or_int_list'
+      - additionalProperties: false
+        properties:
+          type:
+            const: str
+          value:
+            oneOf:
+            - type: string
+            - items:
+                type: string
+              type: array
+      - additionalProperties: false
+        properties:
+          type:
+            const: hex
+          value:
+            type: string
+      - additionalProperties: false
+        properties:
+          type:
+            const: b64
+          value:
+            type: string
+      required:
+      - type
+      - value
+      type: object
+    Cfg_v6_options:
+      properties:
+        values:
+          additionalProperties: false
+          description: v6 option keys are numeric option codes only (no name aliases)
+          patternProperties:
+            ^[0-9]+$:
+              $ref: '#/components/schemas/Cfg_v6_option'
+          type: object
+      required:
+      - values
+      type: object
+    Cfg_v6_pd_pool:
+      description: 'an IA_PD prefix delegation pool: delegate `delegated_len` prefixes carved out of the parent
+        `prefix` (RFC 8415 6.3)'
+      properties:
+        config:
+          $ref: '#/components/schemas/Cfg_v6_network_config'
+        delegated_len:
+          description: length of prefixes delegated to clients; must be greater than the parent prefix length
+            and < 128
+          maximum: 127
+          minimum: 1
+          type: integer
+        except:
+          description: delegated prefixes to never hand out
+          items:
+            type: string
+          type: array
+        options:
+          $ref: '#/components/schemas/Cfg_v6_options'
+        prefix:
+          description: parent prefix to delegate from, e.g. "2001:db8:1::/48"
+          type: string
+      required:
+      - prefix
+      - delegated_len
+      - config
+      type: object
+    Cfg_v6_range:
+      description: an IA_NA address pool (RFC 8415)
+      properties:
+        config:
+          $ref: '#/components/schemas/Cfg_v6_network_config'
+        end:
+          format: ipv6
+          type: string
+        except:
+          items:
+            format: ipv6
+            type: string
+          type: array
+        options:
+          $ref: '#/components/schemas/Cfg_v6_options'
+        start:
+          format: ipv6
+          type: string
+      required:
+      - config
+      - start
+      - end
+      - options
+      type: object
+    Cfg_v6_server_id:
+      description: the server's DUID. `type` selects the DUID form; unrecognized fields are ignored
+      if:
+        properties:
+          type:
+            const: UUID
+      properties:
+        enterprise_id:
+          description: IANA enterprise number for EN
+          type: integer
+        htype:
+          description: hardware type for LL/LLT (default 0 -> Ethernet)
+          type: integer
+        identifier:
+          description: 'LL/LLT: an IPv6/link-layer address; EN/UUID: a hex string. Required for UUID'
+          type: string
+        path:
+          type: string
+        persist:
+          description: persist the generated DUID to `path` (default true)
+          type: boolean
+        time:
+          description: timestamp for LLT (default 0 -> now)
+          type: integer
+        type:
+          enum:
+          - LLT
+          - LL
+          - EN
+          - UUID
+      required:
+      - type
+      then:
+        required:
+        - identifier
+      type: object
+    DhcpConfig:
+      additionalProperties: false
+      description: dora DHCP server configuration schema (v4 + v6)
+      properties:
+        v4:
+          $ref: '#/components/schemas/Cfg_v4'
+        v6:
+          $ref: '#/components/schemas/Cfg_v6'
+      title: dora schema
+      type: object
