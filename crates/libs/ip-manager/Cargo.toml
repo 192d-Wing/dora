@@ -19,11 +19,14 @@ tracing = { workspace = true, features = [
 chrono = "0.4.45"
 moka = { version = "0.12.15", features = ["future"] }
 # TODO: hopefully the rustls feature can go away, the lib requires it
-sqlx = { version = "0.6.3", features = [
+# sqlx 0.7 split the combined runtime+tls feature and made offline mode part of
+# the default `macros` feature. `tls-rustls-ring` keeps the ring backend (now
+# on the patched 0.17 line) instead of pulling in aws-lc-rs.
+sqlx = { version = "0.8", features = [
     "postgres",
-    "runtime-tokio-rustls",
+    "runtime-tokio",
+    "tls-rustls-ring",
     "chrono",
-    "offline",
 ] }
 
 [dev-dependencies]

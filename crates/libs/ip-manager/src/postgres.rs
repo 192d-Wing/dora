@@ -42,9 +42,10 @@ impl PostgresDb {
     /// avoid. Services call this; the migrator (and unit tests) call
     /// [`PostgresDb::migrate`] / [`PostgresDb::new`].
     pub async fn connect(uri: impl AsRef<str>) -> Result<Self, sqlx::Error> {
-        let mut opts = PgConnectOptions::from_str(uri.as_ref())?;
         // log queries at trace level so we don't get a bloated log on `info`
-        opts.log_statements(tracing::log::LevelFilter::Trace);
+        // (sqlx 0.7+: ConnectOptions setters consume and return Self)
+        let opts = PgConnectOptions::from_str(uri.as_ref())?
+            .log_statements(tracing::log::LevelFilter::Trace);
 
         let inner = PgPool::connect_with(opts).await?;
         Ok(Self { inner })
@@ -100,8 +101,8 @@ impl PostgresDb {
         // segment (the part after the last '/', before any query string)
         let test_url = swap_db_name(&base_url, &db_name);
 
-        let mut opts = PgConnectOptions::from_str(&test_url)?;
-        opts.log_statements(tracing::log::LevelFilter::Trace);
+        let opts =
+            PgConnectOptions::from_str(&test_url)?.log_statements(tracing::log::LevelFilter::Trace);
         let inner = PgPool::connect_with(opts).await?;
         sqlx::migrate!("../../../migrations").run(&inner).await?;
         Ok(Self { inner })
@@ -265,7 +266,7 @@ impl Storage for PostgresDb {
                 // TRANSACTION START
                 let mut conn = self.inner.begin().await?;
                 // we only use this IP to find what the next available should be
-                let ip = match util::max_in_range(&mut conn, start_ip, end_ip).await? {
+                let ip = match util::max_in_range(&mut *conn, start_ip, end_ip).await? {
                     Some(State::Leased(cur) | State::Reserved(cur) | State::Probated(cur)) => {
                         let start = cur.ip;
                         let end = *range.end();
@@ -280,7 +281,7 @@ impl Storage for PostgresDb {
                 };
                 if let Some(IpAddr::V4(v4_ip)) = ip {
                     util::insert(
-                        &mut conn,
+                        &mut *conn,
                         u32::from(v4_ip) as i64,
                         u32::from(network) as i64,
                         &id,
@@ -305,7 +306,7 @@ impl Storage for PostgresDb {
                 // find the highest allocated address in the range, then step to the
                 // next available one; if the range is empty, use its start
                 let ip = match util_v6::max_in_range(
-                    &mut conn,
+                    &mut *conn,
                     &util_v6::to_bytes(start),
                     &util_v6::to_bytes(end),
                 )
@@ -319,7 +320,7 @@ impl Storage for PostgresDb {
                 };
                 if let Some(IpAddr::V6(v6_ip)) = ip {
                     util_v6::insert(
-                        &mut conn,
+                        &mut *conn,
                         &util_v6::to_bytes(v6_ip),
                         &util_v6::to_bytes(network),
                         &id,
@@ -589,13 +590,13 @@ impl Storage for PostgresDb {
             IpAddr::V4(ip) => {
                 let ip = u32::from(ip) as i64;
                 let mut conn = self.inner.begin().await?;
-                util::delete(&mut conn, ip).await?;
+                util::delete(&mut *conn, ip).await?;
                 conn.commit().await?;
                 Ok(())
             }
             IpAddr::V6(ip) => {
                 let mut conn = self.inner.begin().await?;
-                util_v6::delete(&mut conn, &util_v6::to_bytes(ip)).await?;
+                util_v6::delete(&mut *conn, &util_v6::to_bytes(ip)).await?;
                 conn.commit().await?;
                 Ok(())
             }
@@ -986,7 +987,7 @@ mod util {
             ip,
             id
         )
-        .fetch_optional(&mut trans)
+        .fetch_optional(&mut *trans)
         .await?
         .map(|cur| ClientInfo {
             ip: IpAddr::V4(Ipv4Addr::from(cur.ip as u32)),
@@ -997,7 +998,7 @@ mod util {
         // only remove the binding if the (ip, id) pair actually matched, so a
         // client cannot release an address leased to someone else
         if cur.is_some() {
-            util::delete(&mut trans, ip).await?;
+            util::delete(&mut *trans, ip).await?;
         }
         trans.commit().await?;
         // instead of deleting:
@@ -1514,7 +1515,7 @@ mod util_v6 {
             addr,
             id
         )
-        .fetch_optional(&mut trans)
+        .fetch_optional(&mut *trans)
         .await?
         .map(|cur| ClientInfo {
             ip: from_bytes(&cur.addr),
@@ -1525,7 +1526,7 @@ mod util_v6 {
         // only remove the binding if the (addr, id) pair actually matched, so a
         // client cannot release an address leased to another client
         if cur.is_some() {
-            delete(&mut trans, addr).await?;
+            delete(&mut *trans, addr).await?;
         }
         trans.commit().await?;
         Ok(cur)
@@ -1835,7 +1836,7 @@ mod util_v6 {
             prefix_len,
             id
         )
-        .fetch_optional(&mut trans)
+        .fetch_optional(&mut *trans)
         .await?
         .map(|cur| ClientInfo {
             ip: from_bytes(&cur.addr),
@@ -1849,7 +1850,7 @@ mod util_v6 {
                 addr,
                 prefix_len
             )
-            .execute(&mut trans)
+            .execute(&mut *trans)
             .await?;
         }
         trans.commit().await?;

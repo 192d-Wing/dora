@@ -1,0 +1,19 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO leases\n                    (ip, client_id, expires_at, network, leased, probation)\n                VALUES\n                    ($1, $2, $3, $4, $5, $6)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Bytea",
+        "Int8",
+        "Int8",
+        "Bool",
+        "Bool"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "8892c0aa56c0a6aaad5f88ad1db61bb623beea82e8cd76bedc28aa80096b27a9"
+}

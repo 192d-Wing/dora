@@ -1,0 +1,20 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO config_candidates (candidate_id, status, document, message, validation, created_at, activated_at) VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT (candidate_id) DO UPDATE SET status = EXCLUDED.status, document = EXCLUDED.document, message = EXCLUDED.message, validation = EXCLUDED.validation, created_at = EXCLUDED.created_at, activated_at = EXCLUDED.activated_at",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "d00b308680fe1c61484860e181ec6d3ba9fc90394fd963d1a60cc98cb084cc30"
+}

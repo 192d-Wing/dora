@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE config_candidates SET status = 'superseded' WHERE status = 'activated'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "04e6e302bbdb584e27a02b1130ff76c7af0e271931c870553d910bf51e0ed40f"
+}

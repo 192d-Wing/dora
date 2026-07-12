@@ -1,0 +1,53 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT * FROM leases WHERE ip = $1 AND client_id = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "ip",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "client_id",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 2,
+        "name": "leased",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 3,
+        "name": "expires_at",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "network",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 5,
+        "name": "probation",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Bytea"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "df8d3b6f2e54d65382e8584439ef466f07cd6cf95ae3523366ffc78142e31422"
+}

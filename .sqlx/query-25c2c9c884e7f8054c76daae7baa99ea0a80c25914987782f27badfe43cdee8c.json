@@ -1,0 +1,82 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT\n                 operation_id  AS \"operation_id!\",\n                 action        AS \"action!\",\n                 status        AS \"status!\",\n                 actor         AS \"actor?\",\n                 input_summary AS \"input_summary?\",\n                 result        AS \"result?\",\n                 error_code    AS \"error_code?\",\n                 error_message AS \"error_message?\",\n                 created_at    AS \"created_at!\",\n                 started_at    AS \"started_at?\",\n                 completed_at  AS \"completed_at?\"\n               FROM operations WHERE operation_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "operation_id!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "action!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "status!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "actor?",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "input_summary?",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "result?",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "error_code?",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "error_message?",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 8,
+        "name": "created_at!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 9,
+        "name": "started_at?",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 10,
+        "name": "completed_at?",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      false,
+      true,
+      true
+    ]
+  },
+  "hash": "25c2c9c884e7f8054c76daae7baa99ea0a80c25914987782f27badfe43cdee8c"
+}

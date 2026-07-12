@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT addr, prefix_len FROM leases_v6\n             WHERE client_id = $1 AND expires_at > $2 AND prefix_len != 128\n             LIMIT 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "addr",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 1,
+        "name": "prefix_len",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "834de3b18119802e7b594d8ef795ef1f9f43caec959b52034643f8ec164ba720"
+}

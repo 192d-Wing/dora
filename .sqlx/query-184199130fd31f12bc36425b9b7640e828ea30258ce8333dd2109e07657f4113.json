@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM runtime_reservations WHERE family = $1 AND ip = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "184199130fd31f12bc36425b9b7640e828ea30258ce8333dd2109e07657f4113"
+}

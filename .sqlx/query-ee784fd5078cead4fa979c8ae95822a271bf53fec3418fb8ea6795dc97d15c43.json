@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM leases_v6 WHERE addr = $1 AND prefix_len = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "ee784fd5078cead4fa979c8ae95822a271bf53fec3418fb8ea6795dc97d15c43"
+}

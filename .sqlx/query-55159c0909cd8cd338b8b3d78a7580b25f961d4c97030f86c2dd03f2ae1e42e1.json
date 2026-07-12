@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE config_candidates SET status = 'activated', activated_at = $2 WHERE candidate_id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "55159c0909cd8cd338b8b3d78a7580b25f961d4c97030f86c2dd03f2ae1e42e1"
+}

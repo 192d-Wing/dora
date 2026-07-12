@@ -1,0 +1,59 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT * FROM leases_v6 WHERE addr = $1 AND prefix_len = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "addr",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 1,
+        "name": "prefix_len",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "client_id",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 3,
+        "name": "leased",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 4,
+        "name": "probation",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 5,
+        "name": "expires_at",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 6,
+        "name": "network",
+        "type_info": "Bytea"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "c602950e1221773aebfd0740e40d27569ae5e5658b35129541cf257a6419f70c"
+}

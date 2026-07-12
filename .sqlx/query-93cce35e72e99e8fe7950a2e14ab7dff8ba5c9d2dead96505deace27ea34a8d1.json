@@ -1,0 +1,56 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT * FROM leases_v6",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "addr",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 1,
+        "name": "prefix_len",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "client_id",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 3,
+        "name": "leased",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 4,
+        "name": "probation",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 5,
+        "name": "expires_at",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 6,
+        "name": "network",
+        "type_info": "Bytea"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "93cce35e72e99e8fe7950a2e14ab7dff8ba5c9d2dead96505deace27ea34a8d1"
+}

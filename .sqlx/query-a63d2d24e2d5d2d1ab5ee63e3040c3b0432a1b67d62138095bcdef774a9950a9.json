@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT COUNT(addr) as \"count_addr!\" FROM leases_v6 WHERE leased = $1 AND probation = $2 AND expires_at > $3",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "count_addr!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Bool",
+        "Bool",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "a63d2d24e2d5d2d1ab5ee63e3040c3b0432a1b67d62138095bcdef774a9950a9"
+}
