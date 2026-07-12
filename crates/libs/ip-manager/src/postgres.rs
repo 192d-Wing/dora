@@ -42,9 +42,10 @@ impl PostgresDb {
     /// avoid. Services call this; the migrator (and unit tests) call
     /// [`PostgresDb::migrate`] / [`PostgresDb::new`].
     pub async fn connect(uri: impl AsRef<str>) -> Result<Self, sqlx::Error> {
-        let mut opts = PgConnectOptions::from_str(uri.as_ref())?;
         // log queries at trace level so we don't get a bloated log on `info`
-        opts.log_statements(tracing::log::LevelFilter::Trace);
+        // (sqlx 0.7+: ConnectOptions setters consume and return Self)
+        let opts = PgConnectOptions::from_str(uri.as_ref())?
+            .log_statements(tracing::log::LevelFilter::Trace);
 
         let inner = PgPool::connect_with(opts).await?;
         Ok(Self { inner })
@@ -100,8 +101,8 @@ impl PostgresDb {
         // segment (the part after the last '/', before any query string)
         let test_url = swap_db_name(&base_url, &db_name);
 
-        let mut opts = PgConnectOptions::from_str(&test_url)?;
-        opts.log_statements(tracing::log::LevelFilter::Trace);
+        let opts = PgConnectOptions::from_str(&test_url)?
+            .log_statements(tracing::log::LevelFilter::Trace);
         let inner = PgPool::connect_with(opts).await?;
         sqlx::migrate!("../../../migrations").run(&inner).await?;
         Ok(Self { inner })

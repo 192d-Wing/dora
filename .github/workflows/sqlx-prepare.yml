@@ -1,0 +1,61 @@
+# TEMPORARY: regenerates the sqlx 0.8 offline query cache (.sqlx/) against a live
+# Postgres, then uploads it as an artifact. Used once during the sqlx 0.6 -> 0.8
+# upgrade because the maintainer's dev box can't run Postgres locally. Delete this
+# workflow once the generated .sqlx/ directory has been committed.
+name: sqlx prepare (temporary)
+
+on:
+  push:
+    branches: [sqlx-0.8-upgrade]
+  workflow_dispatch:
+
+jobs:
+  prepare:
+    name: Generate .sqlx cache
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: dora
+          POSTGRES_PASSWORD: dora
+          POSTGRES_DB: dora
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgres://dora:dora@localhost:5432/dora
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v7
+
+      - name: Install toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install sqlx-cli
+        run: cargo install sqlx-cli --version ^0.8 --no-default-features --features rustls,postgres --locked
+
+      - name: Apply schema (migrations)
+        run: sqlx migrate run --source migrations
+
+      # prepare must run online (do NOT set SQLX_OFFLINE) so the macros validate
+      # against the live schema and write out the query cache.
+      - name: Generate offline query cache
+        run: cargo sqlx prepare --workspace
+
+      - name: Show generated cache
+        run: ls -la .sqlx | head
+
+      - name: Upload .sqlx artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sqlx-cache
+          path: .sqlx/
+          if-no-files-found: error
