@@ -1,0 +1,48 @@
+# Demonstrates DHCPv6 global options and named policies (reusable option-sets).
+#
+# Option precedence, most-specific wins:
+#   range/pd_pool options > network options > referenced policy > global
+v6:
+    server_id:
+        type: LL
+        identifier: fe80::1
+        persist: false
+        path: ./server_id_policies
+    # global options (opt 23, DNS servers) applied everywhere unless overridden
+    options:
+        values:
+            23:
+                type: ip_list
+                value:
+                    - 2001:db8::9
+    # named, reusable option-sets referenced by name via a `policy` key
+    policies:
+        corp:
+            values:
+                23:
+                    type: ip_list
+                    value:
+                        - 2001:db8::53
+                        - 2001:db8::54
+    networks:
+        2001:db8:1::/64:
+            # apply the `corp` policy to this network; opt 23 comes from it,
+            # not from global
+            policy: corp
+            config:
+                lease_time:
+                    default: 3600
+                preferred_time:
+                    default: 3600
+            options:
+                values: {}
+            ranges:
+                - start: 2001:db8:1::100
+                  end: 2001:db8:1::1ff
+                  config:
+                      lease_time:
+                          default: 3600
+                      preferred_time:
+                          default: 3600
+                  options:
+                      values: {}

@@ -139,6 +139,31 @@ fn merge_opts(a: &DhcpOptions, b: DhcpOptions) -> DhcpOptions {
     opts
 }
 
+/// Look up a named policy's options, erroring if the referenced name is unknown.
+/// Returns empty options when no policy is referenced.
+fn policy_opts(
+    policies: &HashMap<String, wire::v6::Options>,
+    name: Option<&str>,
+) -> Result<DhcpOptions> {
+    match name {
+        None => Ok(DhcpOptions::default()),
+        Some(name) => policies
+            .get(name)
+            .map(|o| o.as_ref().clone())
+            .ok_or_else(|| anyhow::anyhow!("unknown policy `{name}` referenced in v6 config")),
+    }
+}
+
+/// Fold broader-scoped option layers into `acc` (most-specific wins): any option
+/// code already present in `acc` shadows the same code from a broader layer.
+/// `broader` is ordered from more- to less-specific.
+fn fold_opts(mut acc: DhcpOptions, broader: &[&DhcpOptions]) -> DhcpOptions {
+    for layer in broader {
+        acc = merge_opts(&acc, (*layer).clone());
+    }
+    acc
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Network {
     interfaces: Option<Vec<NetworkInterface>>,
@@ -550,6 +575,12 @@ impl TryFrom<wire::v6::Config> for Config {
             }
         };
         let global_opts = cfg.options;
+        // global options resolved once, folded into every network/range/pd_pool.
+        let global = global_opts
+            .as_ref()
+            .map(|o| o.as_ref().clone())
+            .unwrap_or_default();
+        let policies = &cfg.policies;
         debug!(?interfaces, ?server_id, "v6 interfaces that will be used");
         let networks = cfg
             .networks
@@ -562,13 +593,28 @@ impl TryFrom<wire::v6::Config> for Config {
                     ping_timeout_ms,
                     config,
                     options,
+                    policy,
                     ranges,
                     pd_pools,
                     interfaces: net_interfaces,
                 } = net;
 
-                // convert address pools (IA_NA) and prefix pools (IA_PD)
-                let ranges: Vec<NetRange> = ranges.into_iter().map(NetRange::from).collect();
+                // network-scoped option context, most- to least-specific:
+                // network options -> network policy -> global.
+                let net_policy = policy_opts(policies, policy.as_deref())?;
+                let net_ctx = fold_opts(options.get(), &[&net_policy, &global]);
+
+                // convert address pools (IA_NA) and prefix pools (IA_PD),
+                // folding each pool's policy and the network context into its opts
+                let ranges: Vec<NetRange> = ranges
+                    .into_iter()
+                    .map(|range| {
+                        let range_policy = policy_opts(policies, range.policy.as_deref())?;
+                        let mut r = NetRange::from(range);
+                        r.opts = fold_opts(r.opts, &[&range_policy, &net_ctx]);
+                        Ok(r)
+                    })
+                    .collect::<Result<_>>()?;
                 for r in &ranges {
                     check_lifetimes(
                         &format!("range {}-{}", r.start(), r.end()),
@@ -578,7 +624,12 @@ impl TryFrom<wire::v6::Config> for Config {
                 }
                 let pd_pools: Vec<PdPool> = pd_pools
                     .into_iter()
-                    .map(PdPool::try_from)
+                    .map(|pool| {
+                        let pool_policy = policy_opts(policies, pool.policy.as_deref())?;
+                        let mut p = PdPool::try_from(pool)?;
+                        p.opts = fold_opts(p.opts, &[&pool_policy, &net_ctx]);
+                        Ok(p)
+                    })
                     .collect::<Result<_>>()?;
 
                 // If any interfaces are explicitly set for the network,
@@ -622,11 +673,8 @@ impl TryFrom<wire::v6::Config> for Config {
                     probation_period: Duration::from_secs(probation_period),
                     authoritative,
                     ping_timeout_ms: Duration::from_millis(ping_timeout_ms),
-                    // merge global with network opts OR just return network options if no global exist
-                    options: match &global_opts {
-                        Some(a) => merge_opts(a.as_ref(), options.get()),
-                        None => options.get(),
-                    },
+                    // network options merged with policy + global (network wins)
+                    options: net_ctx,
                 };
                 Ok((subnet, network))
             })
@@ -658,6 +706,62 @@ mod tests {
     pub static CONFIG_V6_NO_PERSIST_YAML: &str =
         include_str!("../sample/config_v6_no_persist.yaml");
     pub static CONFIG_V6_POOLS_YAML: &str = include_str!("../sample/config_v6_pools.yaml");
+    pub static CONFIG_V6_POLICIES_YAML: &str = include_str!("../sample/config_v6_policies.yaml");
+
+    /// v6 global options and named policies resolve with most-specific-wins
+    /// precedence and fold into both network and range options.
+    #[test]
+    fn test_v6_global_and_policy_opts() {
+        use dora_core::dhcproto::v6::{DhcpOption as O, OptionCode as C};
+        let cfg = Config::new(CONFIG_V6_POLICIES_YAML).unwrap();
+        let v6 = cfg.v6().expect("expected v6 config");
+        let (_subnet, net) = v6.get_first().expect("expected a network");
+
+        // network references policy `corp`; opt 23 (DNS) comes from the policy,
+        // shadowing the global 2001:db8::9
+        assert_eq!(
+            net.opts().get(C::DomainNameServers),
+            Some(&O::DomainNameServers(vec![
+                "2001:db8::53".parse().unwrap(),
+                "2001:db8::54".parse().unwrap(),
+            ]))
+        );
+        // the range inherits the resolved network context (policy DNS)
+        let range = &net.ranges()[0];
+        assert_eq!(
+            range.opts().get(C::DomainNameServers),
+            Some(&O::DomainNameServers(vec![
+                "2001:db8::53".parse().unwrap(),
+                "2001:db8::54".parse().unwrap(),
+            ]))
+        );
+    }
+
+    /// referencing a policy name that isn't defined is a config error
+    #[test]
+    fn test_v6_unknown_policy_errors() {
+        let yaml = r#"
+v6:
+    server_id:
+        type: LL
+        identifier: fe80::1
+        persist: false
+        path: ./server_id_unknown_policy
+    networks:
+        2001:db8:1::/64:
+            policy: nope
+            config:
+                lease_time:
+                    default: 3600
+                preferred_time:
+                    default: 3600
+"#;
+        let err = Config::new(yaml).expect_err("unknown v6 policy must fail");
+        assert!(
+            format!("{err:#}").contains("unknown policy"),
+            "unexpected error: {err:#}"
+        );
+    }
 
     /// parse a v6 config with IA_NA `ranges` and IA_PD `pd_pools` and verify
     /// they are decoded into the parsed `Network`.

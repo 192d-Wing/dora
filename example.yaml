@@ -43,6 +43,29 @@ v4:
     # interfaces:
     #   - enp6s0
     #
+    # Global options (optional). These are applied to every network, range and
+    # reservation as the lowest-priority layer. Any option set at a more specific
+    # level (a referenced `policy`, a network's `options`, or a range/reservation's
+    # `options`) overrides the same option code here.
+    #
+    # options:
+    #     values:
+    #         domain_name_servers:
+    #             type: ip
+    #             value: [9.9.9.9]
+    #
+    # Policies (optional): named, reusable option-sets. Reference one by name with
+    # a `policy:` key on a network, range, or reservation to apply its options.
+    # A policy's options sit above global but below anything set at the level that
+    # references it. See sample/config_v4_policies.yaml for a worked example.
+    #
+    # policies:
+    #     corp:
+    #         values:
+    #             domain_name:
+    #                 type: domain
+    #                 value: corp.example
+    #
     networks:
         192.168.5.0/24:
             # Authoritative:
@@ -307,7 +330,6 @@ v4:
     #
     #   Attaching `my_vendor_class` to a range/reservation will provide the defined opt 43 vendor options.
     client_classes:
-        # only v4 supported at the moment
         v4:
             -
               # class name
@@ -320,6 +342,23 @@ v4:
                         6:
                             type: ip
                             value: [ 1.1.1.1 ]
+        # DHCPv6 client classes. NOTE: the client_classes block is anchored under
+        # the v4 section, but its `v6` list matches DHCPv6 messages. Only the
+        # protocol-agnostic subset of the assert language is supported for v6:
+        # option[code], member(...), substring/concat/hexstring, equality, exists
+        # (v4-only header atoms like pkt4.mac / relay4[..] are rejected). v6
+        # option codes are numeric only. Matched-class options fill in codes not
+        # set by the range/network/policy/global config. See
+        # sample/config_v6_client_classes.yaml for a worked example.
+        #
+        # v6:
+        #     - name: has_vendor
+        #       assert: "option[16].exists"
+        #       options:
+        #             values:
+        #                 23:
+        #                     type: ip_list
+        #                     value: [ 2001:db8::abcd ]
     # DDNS config (see docs/ddns.md for more information)
     # This section is optional, if not included, no DDNS updates will
     # be sent
@@ -365,7 +404,9 @@ v6:
         #enterprise_id: 1 # Optional, set blank or remove to auto-generate enterprise id. For EN, it must be a valid u32 enterprise id
         persist: true # Optional, default value is true. set false to generate a new DUID every time the server is restarted.
         path: ./server_id # optional. default is /var/lib/dora/server_id
-    # global options (optional)
+    # global options (optional): applied to every network/range/pd_pool unless a
+    # more specific level (a referenced `policy`, a network's `options`, or a
+    # range/pd_pool's `options`) sets the same option code.
     options:
         values:
             # dns
@@ -374,6 +415,18 @@ v6:
                 value:
                     - 2001:db8::1
                     - 2001:db8::2
+    # policies (optional): named, reusable v6 option-sets. Reference one by name
+    # with a `policy:` key on a network, range, or pd_pool. A policy's options sit
+    # above global but below anything set at the referencing level. See
+    # sample/config_v6_policies.yaml for a worked example.
+    #
+    # policies:
+    #     corp:
+    #         values:
+    #             23:
+    #                 type: ip_list
+    #                 value:
+    #                     - 2001:db8::53
     # optional
     networks:
         # subnet selection:

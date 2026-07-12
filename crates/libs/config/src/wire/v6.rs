@@ -21,8 +21,14 @@ pub struct Config {
     pub server_id: Option<ServerDuid>,
     pub networks: HashMap<Ipv6Net, Net>,
     // TODO: better defaults than blank? pull information from the system
+    /// global DHCPv6 options: applied to every network/range/pd_pool unless a
+    /// more specific level sets the same option code.
     #[serde(default)]
     pub options: Option<Options>,
+    /// named, reusable option-sets ("policies"). Reference one by name via the
+    /// `policy` key on a network, range, or pd_pool to apply its options.
+    #[serde(default)]
+    pub policies: HashMap<String, Options>,
     /// honor the Rapid Commit option (opt 14): answer a Solicit that carries it
     /// with a committing Reply instead of Advertise. RFC 8415 §18.3.1.
     #[serde(default = "super::default_rapid_commit")]
@@ -34,6 +40,10 @@ pub struct Net {
     pub config: NetworkConfig,
     #[serde(default)]
     pub options: Options,
+    /// name of a policy (see [`Config::policies`]) whose options apply to this
+    /// network. Overridden by `options` set at any level within the network.
+    #[serde(default)]
+    pub policy: Option<String>,
     pub interfaces: Option<Vec<String>>,
     /// address pools used for IA_NA (non-temporary address) assignment.
     /// RFC 8415 stateful DHCPv6.
@@ -68,6 +78,10 @@ pub struct PdPool {
     pub delegated_len: u8,
     #[serde(default)]
     pub options: Options,
+    /// name of a policy (see [`Config::policies`]) whose options apply to this
+    /// pd_pool. Overridden by this pd_pool's own `options`.
+    #[serde(default)]
+    pub policy: Option<String>,
     pub config: NetworkConfig,
     /// delegated prefixes to skip (never hand out)
     #[serde(default)]
@@ -143,6 +157,10 @@ pub struct IpRange {
     #[serde(flatten)]
     pub range: RangeInclusive<Ipv6Addr>,
     pub options: Options,
+    /// name of a policy (see [`Config::policies`]) whose options apply to this
+    /// range. Overridden by this range's own `options`.
+    #[serde(default)]
+    pub policy: Option<String>,
     pub config: NetworkConfig,
     #[serde(default)]
     pub except: Vec<Ipv6Addr>,

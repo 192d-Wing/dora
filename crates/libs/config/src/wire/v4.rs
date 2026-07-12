@@ -77,6 +77,14 @@ pub struct Config {
     pub bootp_enable: bool,
     #[serde(default = "default_rapid_commit")]
     pub rapid_commit: bool,
+    /// global DHCPv4 options: applied to every network/range/reservation unless
+    /// a more specific level sets the same option code.
+    #[serde(default)]
+    pub options: Option<Options>,
+    /// named, reusable option-sets ("policies"). Reference one by name via the
+    /// `policy` key on a network, range, or reservation to apply its options.
+    #[serde(default)]
+    pub policies: HashMap<String, Options>,
     #[serde(default)]
     pub networks: HashMap<Ipv4Net, Net>,
     pub client_classes: Option<ClientClasses>,
@@ -92,6 +100,8 @@ impl Default for Config {
             cache_threshold: default_cache_threshold(),
             bootp_enable: default_bootp_enable(),
             rapid_commit: default_rapid_commit(),
+            options: None,
+            policies: HashMap::new(),
             networks: HashMap::new(),
             client_classes: None,
             ddns: None,
@@ -102,6 +112,15 @@ impl Default for Config {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct Net {
     pub server_id: Option<Ipv4Addr>,
+    /// network-level options: applied to every range/reservation in this network
+    /// unless the range/reservation sets the same option code. Overrides the
+    /// referenced `policy` and global options.
+    #[serde(default)]
+    pub options: Option<Options>,
+    /// name of a policy (see [`Config::policies`]) whose options apply to this
+    /// network. Overridden by `options` set at any level within the network.
+    #[serde(default)]
+    pub policy: Option<String>,
     #[serde(default)]
     pub ranges: Vec<IpRange>,
     #[serde(default)]
@@ -129,6 +148,10 @@ pub struct IpRange {
     #[serde(flatten)]
     pub range: RangeInclusive<Ipv4Addr>,
     pub options: Options,
+    /// name of a policy (see [`Config::policies`]) whose options apply to this
+    /// range. Overridden by this range's own `options`.
+    #[serde(default)]
+    pub policy: Option<String>,
     #[serde(default)]
     pub config: NetworkConfig,
     #[serde(default)]
@@ -169,6 +192,10 @@ impl From<Options> for DhcpOptions {
 pub struct ReservedIp {
     pub ip: Ipv4Addr,
     pub options: Options,
+    /// name of a policy (see [`Config::policies`]) whose options apply to this
+    /// reservation. Overridden by this reservation's own `options`.
+    #[serde(default)]
+    pub policy: Option<String>,
     #[serde(rename = "match")]
     pub condition: Condition,
     #[serde(default)]

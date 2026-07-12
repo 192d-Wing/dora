@@ -35,7 +35,7 @@ use config::{
     v6::{NetRange, Network, PdPool},
 };
 use ip_manager::{IpManager, IpState, Storage};
-use message_type::MsgType;
+use message_type::{MatchedClasses, MsgType};
 use register_derive::Register;
 
 /// how long an offered-but-uncommitted (Advertise) binding is held before it can
@@ -653,7 +653,14 @@ where
         for opt in opts {
             resp.opts_mut().insert(opt);
         }
-        ctx.populate_opts(network.opts());
+        // merge matched v6 client-class options under the network options
+        // (explicit config wins; class options fill in unset codes)
+        let matched = ctx.get_local::<MatchedClasses>().map(|m| m.0.to_owned());
+        let opts = self
+            .cfg
+            .v4()
+            .collect_opts_v6(network.opts(), matched.as_deref());
+        ctx.populate_opts(&opts);
         Ok(Action::Respond)
     }
 }
