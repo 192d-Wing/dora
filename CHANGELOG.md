@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-07-12
+
+### Added
+
+- Type the config document in the management API (`GET/PUT /v1/config`, config
+  candidates). The previously opaque `document` object is now the fully typed
+  `DhcpConfig` schema in the OpenAPI spec, generated from `config_schema.json`,
+  so DHCPv4/v6 **client classes, policies, and global options** (and networks,
+  ranges, reservations, ddns, pd_pools, server_id) are first-class and
+  discoverable via the API.
+- DHCPv4 **runtime (API-managed) reservations** can now carry `options`,
+  `class`, and `lease_time`, matching config reservations; a matched client
+  receives the reservation's options. Stored in a new
+  `runtime_reservations` migration and accepted/returned by the
+  create/update/list-reservation endpoints. (v6 reservations remain
+  address/prefix pins.)
+
 ## [0.4.0] - 2026-07-12
 
 ### Added
@@ -57,6 +74,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Unify all workspace crates to a single version via `[workspace.package]`;
   every crate now sets `version.workspace = true` (0.3.0).
 
-[Unreleased]: https://github.com/192d-Wing/dora/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/192d-Wing/dora/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/192d-Wing/dora/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/192d-Wing/dora/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/192d-Wing/dora/compare/v0.2.0...v0.3.0
