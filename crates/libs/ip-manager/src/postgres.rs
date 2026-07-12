@@ -726,18 +726,25 @@ impl Storage for PostgresDb {
         let prefix = res.prefix.as_deref();
         let network = res.network.as_deref();
         let created_at = util::systime_epoch(res.created_at);
+        let options_json = res.options_json.as_deref();
+        let class = res.class.as_deref();
         sqlx::query!(
             "INSERT INTO runtime_reservations \
-             (family, ip, prefix, network, match_json, created_at) \
-             VALUES ($1, $2, $3, $4, $5, $6) \
+             (family, ip, prefix, network, match_json, options_json, class, lease_time, created_at) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) \
              ON CONFLICT (family, ip) DO UPDATE SET \
              prefix = EXCLUDED.prefix, network = EXCLUDED.network, \
-             match_json = EXCLUDED.match_json, created_at = EXCLUDED.created_at",
+             match_json = EXCLUDED.match_json, options_json = EXCLUDED.options_json, \
+             class = EXCLUDED.class, lease_time = EXCLUDED.lease_time, \
+             created_at = EXCLUDED.created_at",
             res.family,
             res.ip,
             prefix,
             network,
             res.match_json,
+            options_json,
+            class,
+            res.lease_time,
             created_at,
         )
         .execute(&self.inner)
@@ -764,7 +771,8 @@ impl Storage for PostgresDb {
         let row = sqlx::query!(
             r#"SELECT family AS "family!", ip AS "ip!", prefix AS "prefix?",
                       network AS "network?", match_json AS "match_json!",
-                      created_at AS "created_at!"
+                      options_json AS "options_json?", class AS "class?",
+                      lease_time AS "lease_time?", created_at AS "created_at!"
                FROM runtime_reservations WHERE family = $1 AND ip = $2"#,
             family,
             ip,
@@ -777,6 +785,9 @@ impl Storage for PostgresDb {
             prefix: r.prefix,
             network: r.network,
             match_json: r.match_json,
+            options_json: r.options_json,
+            class: r.class,
+            lease_time: r.lease_time,
             created_at: util::to_systime(r.created_at),
         }))
     }
@@ -785,7 +796,8 @@ impl Storage for PostgresDb {
         let rows = sqlx::query!(
             r#"SELECT family AS "family!", ip AS "ip!", prefix AS "prefix?",
                       network AS "network?", match_json AS "match_json!",
-                      created_at AS "created_at!"
+                      options_json AS "options_json?", class AS "class?",
+                      lease_time AS "lease_time?", created_at AS "created_at!"
                FROM runtime_reservations ORDER BY family, ip"#
         )
         .fetch_all(&self.inner)
@@ -798,6 +810,9 @@ impl Storage for PostgresDb {
                 prefix: r.prefix,
                 network: r.network,
                 match_json: r.match_json,
+                options_json: r.options_json,
+                class: r.class,
+                lease_time: r.lease_time,
                 created_at: util::to_systime(r.created_at),
             })
             .collect())

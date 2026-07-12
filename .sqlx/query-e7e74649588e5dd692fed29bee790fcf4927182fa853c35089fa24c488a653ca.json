@@ -1,0 +1,68 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT family AS \"family!\", ip AS \"ip!\", prefix AS \"prefix?\",\n                      network AS \"network?\", match_json AS \"match_json!\",\n                      options_json AS \"options_json?\", class AS \"class?\",\n                      lease_time AS \"lease_time?\", created_at AS \"created_at!\"\n               FROM runtime_reservations ORDER BY family, ip",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "family!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "ip!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "prefix?",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "network?",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "match_json!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "options_json?",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "class?",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "lease_time?",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 8,
+        "name": "created_at!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      true,
+      false,
+      true,
+      true,
+      true,
+      false
+    ]
+  },
+  "hash": "e7e74649588e5dd692fed29bee790fcf4927182fa853c35089fa24c488a653ca"
+}

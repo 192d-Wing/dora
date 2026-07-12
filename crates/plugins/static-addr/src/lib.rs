@@ -255,6 +255,9 @@ mod tests {
                     prefix: None,
                     network: None,
                     match_: ResMatch::V4(Condition::Mac(mac)),
+                    options: Default::default(),
+                    class: None,
+                    lease_time: None,
                 },
                 false,
             )

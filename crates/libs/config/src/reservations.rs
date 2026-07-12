@@ -62,6 +62,13 @@ pub struct RuntimeReservation {
     pub network: Option<String>,
     /// the match predicate
     pub match_: ResMatch,
+    /// DHCPv4 options handed to the matched client (v4 reservations only;
+    /// empty for v6, whose reservations only pin an address/prefix)
+    pub options: Options,
+    /// restrict this reservation to a matched client class (v4 only)
+    pub class: Option<String>,
+    /// lease-time override in seconds (v4 only; `None` uses the range/default)
+    pub lease_time: Option<u32>,
 }
 
 impl RuntimeReservation {
@@ -105,13 +112,22 @@ impl RuntimeReservation {
     }
 
     /// Reconstruct a reservation from its persisted parts (as stored by
-    /// `ip-manager`).
+    /// `ip-manager`). `options_json` is the serialized v4 [`Options`]
+    /// (`{"values": {...}}`); `class` and `lease_time` (seconds) are v4-only
+    /// overrides. All three are ignored for v6 reservations, which only pin an
+    /// address/prefix.
+    // one arg per persisted column; grouping them into a struct would just move
+    // the same fields around for no clarity gain
+    #[allow(clippy::too_many_arguments)]
     pub fn from_parts(
         family: &str,
         ip: &str,
         prefix: Option<&str>,
         network: Option<String>,
         match_json: &str,
+        options_json: Option<&str>,
+        class: Option<String>,
+        lease_time: Option<u32>,
     ) -> Result<Self> {
         let ip: IpAddr = ip
             .parse()
@@ -128,12 +144,58 @@ impl RuntimeReservation {
         let value: serde_json::Value =
             serde_json::from_str(match_json).context("invalid reservation match json")?;
         let match_ = match_from_value(family, &value)?;
+        // options/class/lease only apply to v4 reservations
+        let is_v4 = ip.is_ipv4();
+        let options = match options_json {
+            Some(json) if is_v4 => {
+                serde_json::from_str(json).context("invalid reservation options json")?
+            }
+            _ => Options::default(),
+        };
         Ok(Self {
             ip,
             prefix,
             network,
             match_,
+            options,
+            class: if is_v4 { class } else { None },
+            lease_time: if is_v4 { lease_time } else { None },
         })
+    }
+
+    /// `true` when this reservation carries no options.
+    fn options_empty(&self) -> bool {
+        self.options.as_ref().iter().next().is_none()
+    }
+
+    /// The v4 options serialized to their persisted JSON form (`{"values":
+    /// {...}}`), or `None` when there are no options to store.
+    pub fn options_json(&self) -> Option<String> {
+        if self.options_empty() {
+            None
+        } else {
+            serde_json::to_string(&self.options).ok()
+        }
+    }
+
+    /// The v4 options as a JSON value (`{"values": {...}}`) for API responses,
+    /// or `None` when there are no options.
+    pub fn options_value(&self) -> Option<serde_json::Value> {
+        if self.options_empty() {
+            None
+        } else {
+            serde_json::to_value(&self.options).ok()
+        }
+    }
+
+    /// the configured class restriction, if any
+    pub fn class(&self) -> Option<&str> {
+        self.class.as_deref()
+    }
+
+    /// the lease-time override in seconds, if any
+    pub fn lease_time(&self) -> Option<u32> {
+        self.lease_time
     }
 }
 
@@ -327,14 +389,13 @@ impl Inner {
         for res in self.entries.values() {
             match (&res.match_, res.ip) {
                 (ResMatch::V4(Condition::Mac(mac)), IpAddr::V4(ip)) => {
-                    self.reserved_macs
-                        .insert(*mac, to_v4_reserved(ip, &res.match_));
+                    self.reserved_macs.insert(*mac, to_v4_reserved(ip, res));
                 }
                 (ResMatch::V4(Condition::Options(match_opts)), IpAddr::V4(ip)) => {
                     // single-option match, mirroring config (v4.rs From<Net>)
                     if let Some((code, opt)) = match_opts.values.0.iter().next() {
                         self.reserved_opts
-                            .insert(*code, (opt.clone(), to_v4_reserved(ip, &res.match_)));
+                            .insert(*code, (opt.clone(), to_v4_reserved(ip, res)));
                     }
                 }
                 (ResMatch::V6Duid(duid), IpAddr::V6(ip)) => {
@@ -354,21 +415,34 @@ impl Inner {
 }
 
 /// Build a `config::v4::Reserved` for a runtime v4 reservation so it reuses the
-/// StaticAddr assignment path. The lease/options come from defaults (as a config
-/// reservation with no explicit overrides would).
-fn to_v4_reserved(ip: Ipv4Addr, match_: &ResMatch) -> Reserved {
-    let condition = match match_ {
+/// StaticAddr assignment path, carrying the reservation's options / class /
+/// lease-time override (defaults where unset, as a config reservation would).
+fn to_v4_reserved(ip: Ipv4Addr, res: &RuntimeReservation) -> Reserved {
+    let condition = match &res.match_ {
         ResMatch::V4(cond) => cond.clone(),
         // only called for v4 entries
         ResMatch::V6Duid(_) => unreachable!("v6 match on a v4 reservation"),
     };
+    // a lease-time override pins the lease to that single value (min == max ==
+    // default, so a client-requested time clamps to it), matching a config
+    // reservation that sets only `lease_time.default`.
+    let config = match res.lease_time.and_then(std::num::NonZeroU32::new) {
+        Some(default) => NetworkConfig {
+            lease_time: crate::wire::MinMax {
+                default,
+                min: None,
+                max: None,
+            },
+        },
+        None => NetworkConfig::default(),
+    };
     let wire = ReservedIp {
         ip,
-        options: Options::default(),
+        options: res.options.clone(),
         policy: None,
         condition,
-        config: NetworkConfig::default(),
-        class: None,
+        config,
+        class: res.class.clone(),
     };
     Reserved::from(&wire)
 }
@@ -434,6 +508,9 @@ mod tests {
             prefix: None,
             network: None,
             match_: ResMatch::V4(Condition::Mac(mac)),
+            options: Options::default(),
+            class: None,
+            lease_time: None,
         }
     }
 
@@ -505,6 +582,9 @@ mod tests {
             None,
             Some("2001:db8::/64".to_string()),
             r#"{"duid":"0001000112ab"}"#,
+            None,
+            None,
+            None,
         )
         .expect("valid v6 reservation");
         assert_eq!(res.family(), "v6");
@@ -517,6 +597,64 @@ mod tests {
     }
 
     #[test]
+    fn v4_reservation_carries_options_class_lease() {
+        let res = RuntimeReservation::from_parts(
+            "v4",
+            "192.168.0.50",
+            None,
+            None,
+            r#"{"chaddr":"00:11:22:33:44:55"}"#,
+            Some(r#"{"values":{"6":{"type":"ip","value":["1.2.3.4"]}}}"#),
+            Some("foo".to_string()),
+            Some(1800),
+        )
+        .expect("valid v4 reservation");
+        // accessors + options round-trip through the persisted JSON form
+        assert_eq!(res.class(), Some("foo"));
+        assert_eq!(res.lease_time(), Some(1800));
+        assert!(res.options_json().unwrap().contains("1.2.3.4"));
+
+        let store = RuntimeReservations::new();
+        store.insert(res, false).unwrap();
+        let mac: MacAddr = "00:11:22:33:44:55".parse().unwrap();
+        // class-gated: no match without the class, match with it
+        assert!(
+            store
+                .lookup_v4(Some(mac), &DhcpOptions::new(), None)
+                .is_none()
+        );
+        let reserved = store
+            .lookup_v4(Some(mac), &DhcpOptions::new(), Some(&["foo".to_string()]))
+            .expect("reserved");
+        assert_eq!(reserved.ip().to_string(), "192.168.0.50");
+        assert_eq!(
+            reserved.opts().get(OptionCode::DomainNameServer),
+            Some(&DhcpOption::DomainNameServer(vec![[1, 2, 3, 4].into()]))
+        );
+        assert_eq!(reserved.class(), Some("foo"));
+        assert_eq!(reserved.lease().get_default().as_secs(), 1800);
+    }
+
+    /// v6 reservations ignore v4-only options/class/lease
+    #[test]
+    fn v6_reservation_ignores_v4_attrs() {
+        let res = RuntimeReservation::from_parts(
+            "v6",
+            "2001:db8::9",
+            None,
+            None,
+            r#"{"duid":"0001000112ab"}"#,
+            Some(r#"{"values":{"6":{"type":"ip","value":["1.2.3.4"]}}}"#),
+            Some("foo".to_string()),
+            Some(1800),
+        )
+        .expect("valid v6 reservation");
+        assert_eq!(res.class(), None);
+        assert_eq!(res.lease_time(), None);
+        assert_eq!(res.options_json(), None);
+    }
+
+    #[test]
     fn from_parts_rejects_family_mismatch_and_bad_match() {
         // v4 family with a v6 address
         assert!(
@@ -525,14 +663,26 @@ mod tests {
                 "2001:db8::1",
                 None,
                 None,
-                r#"{"chaddr":"01:02:03:04:05:06"}"#
+                r#"{"chaddr":"01:02:03:04:05:06"}"#,
+                None,
+                None,
+                None,
             )
             .is_err()
         );
         // v6 match missing duid
         assert!(
-            RuntimeReservation::from_parts("v6", "2001:db8::1", None, None, r#"{"mac":"x"}"#)
-                .is_err()
+            RuntimeReservation::from_parts(
+                "v6",
+                "2001:db8::1",
+                None,
+                None,
+                r#"{"mac":"x"}"#,
+                None,
+                None,
+                None,
+            )
+            .is_err()
         );
     }
 }

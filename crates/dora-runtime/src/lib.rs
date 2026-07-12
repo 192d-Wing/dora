@@ -121,6 +121,11 @@ async fn load_reservations(ip_mgr: &IpManager<PostgresDb>, reservations: &Runtim
                         r.prefix.as_deref(),
                         r.network.clone(),
                         &r.match_json,
+                        r.options_json.as_deref(),
+                        r.class.clone(),
+                        // out-of-range (negative / >u32) degrades to the default
+                        // lease rather than a wrapped value
+                        r.lease_time.and_then(|l| u32::try_from(l).ok()),
                     ) {
                         Ok(res) => Some(res),
                         Err(err) => {

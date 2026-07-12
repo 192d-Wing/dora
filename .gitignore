@@ -5,6 +5,7 @@ data/
 *.db*
 .vscode/*.log
 server_id
+.sqlx/
 
 # Env files
 .envrc
