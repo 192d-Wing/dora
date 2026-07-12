@@ -101,8 +101,8 @@ impl PostgresDb {
         // segment (the part after the last '/', before any query string)
         let test_url = swap_db_name(&base_url, &db_name);
 
-        let opts = PgConnectOptions::from_str(&test_url)?
-            .log_statements(tracing::log::LevelFilter::Trace);
+        let opts =
+            PgConnectOptions::from_str(&test_url)?.log_statements(tracing::log::LevelFilter::Trace);
         let inner = PgPool::connect_with(opts).await?;
         sqlx::migrate!("../../../migrations").run(&inner).await?;
         Ok(Self { inner })
