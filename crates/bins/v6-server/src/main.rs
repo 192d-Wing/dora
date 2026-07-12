@@ -54,8 +54,12 @@ async fn start(config: cli::Config) -> Result<()> {
     let shared = bootstrap(&config).await?;
 
     if !shared.dhcp_cfg.has_v6() {
-        warn!("config has no v6 section; nothing for the v6 server to do, exiting");
-        return Ok(());
+        warn!("config has no v6 section; v6 server has nothing to do, idling until shutdown");
+        // Don't exit(0): as a standalone Deployment that reads as a completed
+        // container and gets restarted in a tight CrashLoopBackOff. Park until
+        // Ctrl-C / the shared token is cancelled so the pod stays Running/idle
+        // (matching the old combined process, which stayed alive for v4/api).
+        return shutdown_signal(shared.token.clone()).await;
     }
 
     // keep this process's in-memory mode + reservations converged with changes

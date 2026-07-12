@@ -188,9 +188,17 @@ impl RuntimeReservations {
         Self::default()
     }
 
-    /// Warm the store from persisted reservations (called once on startup).
+    /// Replace the store's contents with `reservations` (used to warm the store
+    /// on startup and to re-sync it from the database).
+    ///
+    /// This is a full replace, not a merge: `entries` is cleared first, so a
+    /// reservation that was deleted from the source (e.g. via the API) is also
+    /// dropped here. Without the clear, a periodic re-sync would only ever add
+    /// rows and never remove deleted ones. `rebuild_indexes` then rebuilds the
+    /// fast-path maps from the new `entries`.
     pub fn load(&self, reservations: impl IntoIterator<Item = RuntimeReservation>) {
         let mut inner = self.inner.write();
+        inner.entries.clear();
         for res in reservations {
             inner
                 .entries
