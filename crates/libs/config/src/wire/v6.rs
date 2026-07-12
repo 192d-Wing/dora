@@ -29,6 +29,10 @@ pub struct Config {
     /// `policy` key on a network, range, or pd_pool to apply its options.
     #[serde(default)]
     pub policies: HashMap<String, Options>,
+    /// DHCPv6 client classes. Matched-class options are merged into responses
+    /// below the explicitly-configured options.
+    #[serde(default)]
+    pub client_classes: Vec<crate::wire::client_classes::ClientClassV6>,
     /// honor the Rapid Commit option (opt 14): answer a Solicit that carries it
     /// with a committing Reply instead of Advertise. RFC 8415 §18.3.1.
     #[serde(default = "super::default_rapid_commit")]

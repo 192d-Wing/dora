@@ -277,7 +277,7 @@
             }
         },
         "client_classes": {
-            "description": "client classification. `v4` classes match DHCPv4 messages; `v6` classes match DHCPv6 messages (protocol-agnostic expression subset only)",
+            "description": "client classification (DHCPv4). v6 classes live under `v6.client_classes`",
             "type": "object",
             "required": ["v4"],
             "properties": {
@@ -295,23 +295,20 @@
                             "options": { "$ref": "#/definitions/options" }
                         }
                     }
-                },
-                "v6": {
-                    "description": "DHCPv6 client classes. `assert` supports the protocol-agnostic subset (option[code], member, substring, concat, hexstring, equality); v4-only header atoms are rejected",
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "required": ["name", "assert"],
-                        "properties": {
-                            "name": { "type": "string" },
-                            "assert": {
-                                "description": "predicate expression evaluated per v6 message",
-                                "type": "string"
-                            },
-                            "options": { "$ref": "#/definitions/v6_options" }
-                        }
-                    }
                 }
+            }
+        },
+        "v6_client_class": {
+            "description": "a DHCPv6 client class. `assert` supports the protocol-agnostic subset (option[code], member, substring, concat, hexstring, equality); v4-only header atoms are rejected",
+            "type": "object",
+            "required": ["name", "assert"],
+            "properties": {
+                "name": { "type": "string" },
+                "assert": {
+                    "description": "predicate expression evaluated per v6 message",
+                    "type": "string"
+                },
+                "options": { "$ref": "#/definitions/v6_options" }
             }
         },
         "ddns_server": {
@@ -599,6 +596,11 @@
                     "description": "named, reusable option-sets referenced by name via a `policy` key",
                     "type": "object",
                     "additionalProperties": { "$ref": "#/definitions/v6_options" }
+                },
+                "client_classes": {
+                    "description": "DHCPv6 client classes; matched-class options are merged into responses below explicit config",
+                    "type": "array",
+                    "items": { "$ref": "#/definitions/v6_client_class" }
                 },
                 "rapid_commit": {
                     "description": "honor the Rapid Commit option (opt 14): answer a Solicit carrying it with a committing Reply instead of Advertise (default false)",

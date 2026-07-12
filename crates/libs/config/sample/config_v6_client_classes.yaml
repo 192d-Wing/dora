@@ -1,40 +1,37 @@
 # Demonstrates DHCPv6 client classes.
 #
-# Client classes live in the shared `client_classes` block (under `v4:`, which is
-# where the block is anchored); the `v6:` list holds v6 classes. Only the
-# protocol-agnostic subset of the assert language is supported for v6:
-# option[code], member(...), substring/concat/hexstring, equality, exists.
+# v6 client classes live under `v6.client_classes`. Only the protocol-agnostic
+# subset of the assert language is supported: option[code], member(...),
+# substring/concat/hexstring, equality, exists (v4-only header atoms like
+# pkt4.mac / relay4[..] are rejected). v6 option codes are numeric only.
 #
 # Matched-class options fill in option codes not already set by the
 # range/network/policy/global config (explicit config wins).
-v4:
-    client_classes:
-        v4: []
-        v6:
-            # match any client that sends a Vendor Class option (16)
-            - name: has-vendor
-              assert: "option[16].exists"
-              options:
-                  values:
-                      # DNS servers (opt 23) handed to matching clients
-                      23:
-                          type: ip_list
-                          value:
-                              - 2001:db8::abcd
-            # classes can depend on other classes via member()
-            - name: vendor-and-known
-              assert: "member('has-vendor')"
-              options:
-                  values:
-                      24:
-                          type: hex
-                          value: "00"
 v6:
     server_id:
         type: LL
         identifier: fe80::1
         persist: false
         path: ./server_id_v6_classes
+    client_classes:
+        # match any client that sends a Vendor Class option (16)
+        - name: has-vendor
+          assert: "option[16].exists"
+          options:
+              values:
+                  # DNS servers (opt 23) handed to matching clients
+                  23:
+                      type: ip_list
+                      value:
+                          - 2001:db8::abcd
+        # classes can depend on other classes via member()
+        - name: vendor-and-known
+          assert: "member('has-vendor')"
+          options:
+              values:
+                  24:
+                      type: hex
+                      value: "00"
     networks:
         2001:db8:1::/64:
             config:

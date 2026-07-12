@@ -10,7 +10,7 @@ use std::{
 use anyhow::{Context, bail};
 use dora_core::{
     anyhow::Result,
-    dhcproto::v6::{DhcpOptions, HType, duid::Duid},
+    dhcproto::v6::{DhcpOptions, HType, Message, duid::Duid},
     pnet::ipnetwork::{IpNetwork, Ipv6Network},
     pnet::{self, datalink::NetworkInterface},
 };
@@ -18,7 +18,9 @@ use ipnet::{Ipv6AddrRange, Ipv6Net};
 use tracing::debug;
 
 use crate::{
-    LeaseTime, PersistIdentifier, generate_random_bytes,
+    LeaseTime, PersistIdentifier,
+    client_classes::ClientClassesV6,
+    generate_random_bytes,
     wire::{self, v6::ServerDuidInfo},
 };
 /// the default path to  server identifier file path
@@ -39,6 +41,8 @@ pub struct Config {
     server_id: Duid,
     /// whether to honor the Rapid Commit option (opt 14)
     rapid_commit: bool,
+    /// v6 client classes (from `v6.client_classes`)
+    client_classes: Option<ClientClassesV6>,
 }
 
 impl Config {
@@ -125,6 +129,32 @@ impl Config {
     /// get the first `Network`
     pub fn get_first(&self) -> Option<(&Ipv6Net, &Network)> {
         self.networks.iter().next()
+    }
+
+    /// evaluate all v6 client classes, returning the names of those that match.
+    /// Returns `None` when no v6 classes are configured (so callers can skip the
+    /// per-packet option-map build on the common no-classes path).
+    pub fn eval_client_classes(&self, req: &Message) -> Option<Result<Vec<String>>> {
+        self.client_classes
+            .as_ref()
+            .map(|classes| classes.eval(req))
+    }
+
+    /// merge matched v6 client-class options under `opts` (explicit config wins):
+    /// class options only fill in codes not already present in `opts`.
+    pub fn collect_opts(
+        &self,
+        opts: &DhcpOptions,
+        matched_classes: Option<&[String]>,
+    ) -> DhcpOptions {
+        match self
+            .client_classes
+            .as_ref()
+            .and_then(|classes| classes.collect_opts(matched_classes))
+        {
+            Some(class_opts) => merge_opts(opts, class_opts),
+            None => opts.clone(),
+        }
     }
 }
 
@@ -680,12 +710,22 @@ impl TryFrom<wire::v6::Config> for Config {
             })
             .collect::<Result<_, anyhow::Error>>()?;
 
+        let client_classes = if cfg.client_classes.is_empty() {
+            None
+        } else {
+            Some(
+                ClientClassesV6::try_from(cfg.client_classes)
+                    .context("unable to parse v6 client_classes")?,
+            )
+        };
+
         Ok(Self {
             interfaces,
             networks,
             opts: global_opts.map(|o| o.get()),
             server_id,
             rapid_commit: cfg.rapid_commit,
+            client_classes,
         })
     }
 }

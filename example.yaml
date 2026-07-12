@@ -330,6 +330,7 @@ v4:
     #
     #   Attaching `my_vendor_class` to a range/reservation will provide the defined opt 43 vendor options.
     client_classes:
+        # only v4 lives here; v6 client classes live under `v6.client_classes`
         v4:
             -
               # class name
@@ -342,23 +343,6 @@ v4:
                         6:
                             type: ip
                             value: [ 1.1.1.1 ]
-        # DHCPv6 client classes. NOTE: the client_classes block is anchored under
-        # the v4 section, but its `v6` list matches DHCPv6 messages. Only the
-        # protocol-agnostic subset of the assert language is supported for v6:
-        # option[code], member(...), substring/concat/hexstring, equality, exists
-        # (v4-only header atoms like pkt4.mac / relay4[..] are rejected). v6
-        # option codes are numeric only. Matched-class options fill in codes not
-        # set by the range/network/policy/global config. See
-        # sample/config_v6_client_classes.yaml for a worked example.
-        #
-        # v6:
-        #     - name: has_vendor
-        #       assert: "option[16].exists"
-        #       options:
-        #             values:
-        #                 23:
-        #                     type: ip_list
-        #                     value: [ 2001:db8::abcd ]
     # DDNS config (see docs/ddns.md for more information)
     # This section is optional, if not included, no DDNS updates will
     # be sent
@@ -427,6 +411,21 @@ v6:
     #                 type: ip_list
     #                 value:
     #                     - 2001:db8::53
+    # DHCPv6 client classes (optional). Only the protocol-agnostic subset of the
+    # assert language is supported: option[code], member(...),
+    # substring/concat/hexstring, equality, exists (v4-only header atoms like
+    # pkt4.mac / relay4[..] are rejected). v6 option codes are numeric only.
+    # Matched-class options fill in codes not set by the range/network/policy/
+    # global config. See sample/config_v6_client_classes.yaml for a worked example.
+    #
+    # client_classes:
+    #     - name: has_vendor
+    #       assert: "option[16].exists"
+    #       options:
+    #             values:
+    #                 23:
+    #                     type: ip_list
+    #                     value: [ 2001:db8::abcd ]
     # optional
     networks:
         # subnet selection:

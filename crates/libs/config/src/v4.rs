@@ -153,30 +153,6 @@ impl Config {
     pub fn classes(&self) -> Option<&ClientClasses> {
         self.client_classes.as_ref()
     }
-    /// eval all v6 client classes, returning the names of those that match.
-    /// Returns `None` when no v6 classes are configured (so callers can skip the
-    /// per-packet option-map build on the common no-classes path).
-    pub fn eval_client_classes_v6(
-        &self,
-        req: &dhcproto::v6::Message,
-    ) -> Option<Result<Vec<String>>> {
-        self.client_classes
-            .as_ref()
-            .filter(|c| c.has_v6())
-            .map(|classes| classes.eval_v6(req))
-    }
-    /// merge matched v6 client-class options under `opts` (explicit config wins):
-    /// class options only fill in codes not already present in `opts`.
-    pub fn collect_opts_v6(
-        &self,
-        opts: &dhcproto::v6::DhcpOptions,
-        matched_classes: Option<&[String]>,
-    ) -> dhcproto::v6::DhcpOptions {
-        self.client_classes
-            .as_ref()
-            .map(|classes| merge_opts_v6(opts.clone(), classes.collect_opts_v6(matched_classes)))
-            .unwrap_or_else(|| opts.clone())
-    }
     /// Returns:
     ///     - `server_id` of `Network` belonging to `ip`
     ///     - OR interface at index `iface`
@@ -760,24 +736,6 @@ fn merge_opts(mut a: DhcpOptions, b: Option<DhcpOptions>) -> DhcpOptions {
             for (code, opt) in b.into_iter() {
                 if a.get(code).is_none() {
                     a.insert(opt);
-                }
-            }
-            a
-        }
-    }
-}
-
-/// merge `b` into `a`, favoring `a` where there are duplicates (v6 variant)
-fn merge_opts_v6(
-    mut a: dhcproto::v6::DhcpOptions,
-    b: Option<dhcproto::v6::DhcpOptions>,
-) -> dhcproto::v6::DhcpOptions {
-    match b {
-        None => a,
-        Some(b) => {
-            for opt in b.iter() {
-                if a.get(opt.into()).is_none() {
-                    a.insert(opt.clone());
                 }
             }
             a

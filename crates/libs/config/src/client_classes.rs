@@ -21,22 +21,11 @@ pub struct ClientClasses {
     pub(crate) classes: HashMap<String, ClientClass>,
     pub(crate) original_order: Vec<String>,
     pub(crate) topo_order: Vec<String>,
-    /// DHCPv6 classes, indexed and ordered independently of the v4 ones
-    pub(crate) v6_classes: HashMap<String, ClientClassV6>,
-    pub(crate) v6_original_order: Vec<String>,
-    pub(crate) v6_topo_order: Vec<String>,
 }
 
 impl ClientClasses {
     pub fn find(&self, name: &str) -> Option<&ClientClass> {
         self.classes.get(name)
-    }
-    pub fn find_v6(&self, name: &str) -> Option<&ClientClassV6> {
-        self.v6_classes.get(name)
-    }
-    /// whether any v6 client classes are configured
-    pub fn has_v6(&self) -> bool {
-        !self.v6_classes.is_empty()
     }
 }
 
@@ -46,6 +35,21 @@ pub struct ClientClass {
     // TODO: client classes assertion won't work with sub-options right now
     pub(crate) assert: Expr,
     pub(crate) options: v4::DhcpOptions,
+}
+
+/// DHCPv6 client classes (from the `v6.client_classes` section). Matched, ranked
+/// and merged independently of the v4 classes.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ClientClassesV6 {
+    pub(crate) classes: HashMap<String, ClientClassV6>,
+    pub(crate) original_order: Vec<String>,
+    pub(crate) topo_order: Vec<String>,
+}
+
+impl ClientClassesV6 {
+    pub fn find(&self, name: &str) -> Option<&ClientClassV6> {
+        self.classes.get(name)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -79,17 +83,28 @@ impl TryFrom<wire::client_classes::ClientClasses> for ClientClasses {
             );
         }
 
-        // v6 classes, built the same way but stored & ordered separately
-        let v6_original_order = cfg.v6.iter().map(|c| c.name.clone()).collect();
-        let mut v6_dep_tree = DependencyTree::new();
-        let mut v6_classes = HashMap::new();
-        for class in cfg.v6.into_iter() {
+        Ok(Self {
+            classes,
+            original_order,
+            topo_order: dep_tree.topological_sort()?,
+        })
+    }
+}
+
+impl TryFrom<Vec<wire::client_classes::ClientClassV6>> for ClientClassesV6 {
+    type Error = anyhow::Error;
+
+    fn try_from(cfg: Vec<wire::client_classes::ClientClassV6>) -> Result<Self, Self::Error> {
+        let original_order = cfg.iter().map(|c| c.name.clone()).collect();
+        let mut dep_tree = DependencyTree::new();
+        let mut classes = HashMap::new();
+        for class in cfg.into_iter() {
             let assert = ast::parse(&class.assert)
                 .with_context(|| format!("failed to parse v6 client class {}", class.name))?;
             let deps = client_classification::get_class_dependencies(&assert);
             let name = class.name.clone();
-            v6_dep_tree.add(name.clone(), name, deps);
-            v6_classes.insert(
+            dep_tree.add(name.clone(), name, deps);
+            classes.insert(
                 class.name.clone(),
                 ClientClassV6 {
                     name: class.name,
@@ -103,9 +118,6 @@ impl TryFrom<wire::client_classes::ClientClasses> for ClientClasses {
             classes,
             original_order,
             topo_order: dep_tree.topological_sort()?,
-            v6_classes,
-            v6_original_order,
-            v6_topo_order: v6_dep_tree.topological_sort()?,
         })
     }
 }
@@ -178,10 +190,12 @@ impl ClientClasses {
                 merge_opts(&class.options, ret)
             })
     }
+}
 
+impl ClientClassesV6 {
     /// evaluate all v6 client classes, returning the names of those that match.
     /// Every message is a member of `ALL`.
-    pub fn eval_v6(&self, req: &dhcproto::v6::Message) -> Result<Vec<String>> {
+    pub fn eval(&self, req: &dhcproto::v6::Message) -> Result<Vec<String>> {
         let opts = to_v6_unknown_opts(req)?;
         let mut member = HashSet::new();
         member.insert(client_classification::ALL_CLASS.to_owned());
@@ -191,8 +205,8 @@ impl ClientClasses {
             member,
         };
         // eval in topological order so `member(..)` dependencies are resolved
-        for name in &self.v6_topo_order {
-            let class = self.v6_classes.get(name).context("v6 class not found")?;
+        for name in &self.topo_order {
+            let class = self.classes.get(name).context("v6 class not found")?;
             if class.eval(&args) {
                 args.member.insert(class.name.to_owned());
             }
@@ -202,12 +216,12 @@ impl ClientClasses {
 
     /// merge the options of all matched v6 classes, precedence following the
     /// original config order (earlier == higher priority).
-    pub fn collect_opts_v6(&self, matched_classes: Option<&[String]>) -> Option<v6::DhcpOptions> {
-        self.v6_original_order
+    pub fn collect_opts(&self, matched_classes: Option<&[String]>) -> Option<v6::DhcpOptions> {
+        self.original_order
             .iter()
             .filter(|name| matched_classes.map(|m| m.contains(name)).unwrap_or(false))
             .fold(None, |ret, name| {
-                let class = self.find_v6(name)?;
+                let class = self.find(name)?;
                 merge_opts_v6(&class.options, ret)
             })
     }
@@ -321,19 +335,16 @@ mod tests {
             DhcpOption as O, Message, MessageType, OptionCode as C, VendorClass,
         };
 
-        let wire: wire::client_classes::ClientClasses = serde_json::from_str(
-            r#"{
-                "v4": [],
-                "v6": [
-                    {"name":"has-vendor","assert":"option[16].exists",
-                     "options":{"values":{"23":{"type":"ip_list","value":["2001:db8::abcd"]}}}},
-                    {"name":"dep","assert":"member('has-vendor')",
-                     "options":{"values":{"24":{"type":"hex","value":"00"}}}}
-                ]
-            }"#,
+        let wire: Vec<wire::client_classes::ClientClassV6> = serde_json::from_str(
+            r#"[
+                {"name":"has-vendor","assert":"option[16].exists",
+                 "options":{"values":{"23":{"type":"ip_list","value":["2001:db8::abcd"]}}}},
+                {"name":"dep","assert":"member('has-vendor')",
+                 "options":{"values":{"24":{"type":"hex","value":"00"}}}}
+            ]"#,
         )
         .unwrap();
-        let classes = ClientClasses::try_from(wire).unwrap();
+        let classes = ClientClassesV6::try_from(wire).unwrap();
 
         // a message carrying a Vendor Class option (16) matches `has-vendor`,
         // and `dep` matches transitively via member()
@@ -342,19 +353,19 @@ mod tests {
             num: 42,
             data: vec![b"docsis".to_vec()],
         }));
-        let matched = classes.eval_v6(&msg).unwrap();
+        let matched = classes.eval(&msg).unwrap();
         assert!(matched.contains(&"has-vendor".to_owned()));
         assert!(matched.contains(&"dep".to_owned()));
         assert!(matched.contains(&"ALL".to_owned()));
 
         // collected options: opt 23 (from has-vendor) and opt 24 (from dep)
-        let opts = classes.collect_opts_v6(Some(&matched)).unwrap();
+        let opts = classes.collect_opts(Some(&matched)).unwrap();
         assert!(opts.get(C::DomainNameServers).is_some());
         assert!(opts.get(C::from(24u16)).is_some());
 
         // a message without a Vendor Class option matches neither
         let plain = Message::new(MessageType::Solicit);
-        let matched = classes.eval_v6(&plain).unwrap();
+        let matched = classes.eval(&plain).unwrap();
         assert!(!matched.contains(&"has-vendor".to_owned()));
         assert!(!matched.contains(&"dep".to_owned()));
         assert!(matched.contains(&"ALL".to_owned()));
@@ -365,18 +376,13 @@ mod tests {
         use dora_core::dhcproto::v6::{Message, MessageType};
         // a v4-only header atom is unsupported in v6: the expression fails to
         // evaluate to a bool, so the class simply doesn't match (logged error).
-        let wire: wire::client_classes::ClientClasses = serde_json::from_str(
-            r#"{
-                "v4": [],
-                "v6": [{"name":"bad","assert":"pkt4.mac == 0x001122334455",
-                        "options":{"values":{}}}]
-            }"#,
+        let wire: Vec<wire::client_classes::ClientClassV6> = serde_json::from_str(
+            r#"[{"name":"bad","assert":"pkt4.mac == 0x001122334455",
+                 "options":{"values":{}}}]"#,
         )
         .unwrap();
-        let classes = ClientClasses::try_from(wire).unwrap();
-        let matched = classes
-            .eval_v6(&Message::new(MessageType::Solicit))
-            .unwrap();
+        let classes = ClientClassesV6::try_from(wire).unwrap();
+        let matched = classes.eval(&Message::new(MessageType::Solicit)).unwrap();
         assert!(!matched.iter().any(|c| c == "bad"));
         assert!(matched.contains(&"ALL".to_owned()));
     }

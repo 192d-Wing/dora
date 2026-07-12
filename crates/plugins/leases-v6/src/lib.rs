@@ -658,8 +658,8 @@ where
         let matched = ctx.get_local::<MatchedClasses>().map(|m| m.0.to_owned());
         let opts = self
             .cfg
-            .v4()
-            .collect_opts_v6(network.opts(), matched.as_deref());
+            .v6()
+            .collect_opts(network.opts(), matched.as_deref());
         ctx.populate_opts(&opts);
         Ok(Action::Respond)
     }

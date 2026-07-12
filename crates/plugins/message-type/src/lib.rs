@@ -504,7 +504,7 @@ impl Plugin<v6::Message> for MsgType {
         // so leases-v6 (and the INFORMATION-REQUEST path below) can merge their
         // options. Done before `req` is bound so it doesn't hold a borrow of ctx
         // across the following `set_local`.
-        let matched_v6 = match self.cfg.v4().eval_client_classes_v6(ctx.msg()) {
+        let matched_v6 = match self.cfg.v6().eval_client_classes(ctx.msg()) {
             Some(Ok(classes)) => Some(classes),
             Some(Err(err)) => {
                 warn!(?err, "error evaluating v6 client classes");
@@ -603,7 +603,7 @@ impl Plugin<v6::Message> for MsgType {
             MessageType::InformationRequest => {
                 if let Some(opts) = self.cfg.v6().get_opts(meta.ifindex) {
                     // matched-class options fill in codes not set by config opts
-                    let opts = self.cfg.v4().collect_opts_v6(opts, matched_v6.as_deref());
+                    let opts = self.cfg.v6().collect_opts(opts, matched_v6.as_deref());
                     ctx.set_resp_msg(resp);
                     ctx.populate_opts(&opts);
                     return Ok(Action::Respond);
