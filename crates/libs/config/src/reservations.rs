@@ -163,13 +163,28 @@ impl RuntimeReservation {
         })
     }
 
+    /// `true` when this reservation carries no options.
+    fn options_empty(&self) -> bool {
+        self.options.as_ref().iter().next().is_none()
+    }
+
     /// The v4 options serialized to their persisted JSON form (`{"values":
     /// {...}}`), or `None` when there are no options to store.
     pub fn options_json(&self) -> Option<String> {
-        if self.options.as_ref().iter().next().is_none() {
+        if self.options_empty() {
             None
         } else {
             serde_json::to_string(&self.options).ok()
+        }
+    }
+
+    /// The v4 options as a JSON value (`{"values": {...}}`) for API responses,
+    /// or `None` when there are no options.
+    pub fn options_value(&self) -> Option<serde_json::Value> {
+        if self.options_empty() {
+            None
+        } else {
+            serde_json::to_value(&self.options).ok()
         }
     }
 
@@ -408,8 +423,9 @@ fn to_v4_reserved(ip: Ipv4Addr, res: &RuntimeReservation) -> Reserved {
         // only called for v4 entries
         ResMatch::V6Duid(_) => unreachable!("v6 match on a v4 reservation"),
     };
-    // a lease-time override sets the reservation's default lease; min/max are
-    // left open so a client-requested time still clamps to the single value.
+    // a lease-time override pins the lease to that single value (min == max ==
+    // default, so a client-requested time clamps to it), matching a config
+    // reservation that sets only `lease_time.default`.
     let config = match res.lease_time.and_then(std::num::NonZeroU32::new) {
         Some(default) => NetworkConfig {
             lease_time: crate::wire::MinMax {

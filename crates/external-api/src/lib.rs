@@ -1082,15 +1082,36 @@ mod handlers {
         let match_val = obj.get("match").ok_or_else(|| {
             crate::models::ServerError::bad_request("reservation.match is required")
         })?;
-        // v4-only per-reservation attributes (ignored for v6). `options` is the
-        // config-style `{"values": {...}}` object; serialize it back to a string
-        // for `from_parts`, which parses it into the typed options.
+        // options / class / lease_time are v4-only. Reject them on v6 rather than
+        // silently dropping them, so a caller isn't misled into thinking a v6
+        // reservation carries options.
+        let has_v4_attrs = obj.get("options").is_some()
+            || obj.get("class").is_some()
+            || obj.get("lease_time").is_some();
+        if req.family == "v6" && has_v4_attrs {
+            return Err(crate::models::ServerError::bad_request(
+                "options, class, and lease_time are not supported on v6 reservations",
+            ));
+        }
+        // `options` is the config-style `{"values": {...}}` object; serialize it
+        // back to a string for `from_parts`, which parses it into typed options.
         let options_json = obj.get("options").map(|v| v.to_string());
         let class = obj.get("class").and_then(|v| v.as_str()).map(String::from);
-        let lease_time = obj
-            .get("lease_time")
-            .and_then(|v| v.as_u64())
-            .and_then(|n| u32::try_from(n).ok());
+        // a lease_time override must be a positive value that fits in u32
+        // (seconds); reject 0 / out-of-range instead of falling back to default.
+        let lease_time = match obj.get("lease_time") {
+            None => None,
+            Some(v) => Some(
+                v.as_u64()
+                    .and_then(|n| u32::try_from(n).ok())
+                    .filter(|&n| n > 0)
+                    .ok_or_else(|| {
+                        crate::models::ServerError::bad_request(
+                            "lease_time must be a positive integer number of seconds (1..=4294967295)",
+                        )
+                    })?,
+            ),
+        };
         RuntimeReservation::from_parts(
             &req.family,
             ip,
@@ -1660,9 +1681,7 @@ mod handlers {
                     network: res.network.clone(),
                     source: "runtime".to_string(),
                     match_on: cond.clone(),
-                    options: res
-                        .options_json()
-                        .and_then(|s| serde_json::from_str(&s).ok()),
+                    options: res.options_value(),
                     class: res.class().map(String::from),
                     lease_time: res.lease_time(),
                 });
@@ -4581,6 +4600,52 @@ v4:
         assert_eq!(item["lease_time"], 1800);
         assert_eq!(item["options"]["values"]["6"]["value"][0], "1.2.3.4");
 
+        token.cancel();
+        Ok(())
+    }
+
+    // a zero / out-of-range lease_time is rejected, not silently defaulted.
+    #[tokio::test]
+    async fn test_create_reservation_rejects_bad_lease_time() -> anyhow::Result<()> {
+        let (addr, token) = spawn_test_api(Health::Good).await?;
+        let client = reqwest::Client::new();
+        for bad in [serde_json::json!(0), serde_json::json!(5_000_000_000u64)] {
+            let resp = client
+                .post(format!("http://{addr}/v1/actions/create-reservation"))
+                .json(&serde_json::json!({
+                    "family": "v4",
+                    "reservation": {
+                        "ip": "192.168.9.30",
+                        "match": { "chaddr": "01:02:03:04:05:30" },
+                        "lease_time": bad
+                    }
+                }))
+                .send()
+                .await?;
+            assert_eq!(resp.status(), reqwest::StatusCode::BAD_REQUEST);
+        }
+        token.cancel();
+        Ok(())
+    }
+
+    // v4-only attributes on a v6 reservation are rejected rather than dropped.
+    #[tokio::test]
+    async fn test_create_v6_reservation_rejects_v4_attrs() -> anyhow::Result<()> {
+        let (addr, token) = spawn_test_api(Health::Good).await?;
+        let client = reqwest::Client::new();
+        let resp = client
+            .post(format!("http://{addr}/v1/actions/create-reservation"))
+            .json(&serde_json::json!({
+                "family": "v6",
+                "reservation": {
+                    "ip": "2001:db8::30",
+                    "match": { "duid": "0001000112ab" },
+                    "class": "voip"
+                }
+            }))
+            .send()
+            .await?;
+        assert_eq!(resp.status(), reqwest::StatusCode::BAD_REQUEST);
         token.cancel();
         Ok(())
     }
