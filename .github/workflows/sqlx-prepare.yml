@@ -58,4 +58,5 @@ jobs:
         with:
           name: sqlx-cache
           path: .sqlx/
+          include-hidden-files: true # .sqlx is a dot-dir; v4 excludes these by default
           if-no-files-found: error
