@@ -21,8 +21,10 @@
     ],
     "yaml.schemas": {
         "./config_schema.json": [
-            "**/*.yml",
-            "**/*.yaml"
+            "example.yml",
+            "example.yaml",
+            "config.yml",
+            "config.yaml"
         ]
     }
 }
