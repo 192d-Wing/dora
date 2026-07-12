@@ -121,6 +121,9 @@ async fn load_reservations(ip_mgr: &IpManager<PostgresDb>, reservations: &Runtim
                         r.prefix.as_deref(),
                         r.network.clone(),
                         &r.match_json,
+                        r.options_json.as_deref(),
+                        r.class.clone(),
+                        r.lease_time.map(|l| l as u32),
                     ) {
                         Ok(res) => Some(res),
                         Err(err) => {

@@ -265,6 +265,12 @@ pub struct RuntimeReservationRecord {
     pub prefix: Option<String>,
     pub network: Option<String>,
     pub match_json: String,
+    /// serialized v4 options (`{"values": {...}}`), v4 reservations only
+    pub options_json: Option<String>,
+    /// client-class restriction, v4 reservations only
+    pub class: Option<String>,
+    /// lease-time override in seconds, v4 reservations only
+    pub lease_time: Option<i64>,
     pub created_at: SystemTime,
 }
 

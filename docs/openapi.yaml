@@ -1068,6 +1068,19 @@ components:
         match:
           type: object
           additionalProperties: true
+        options:
+          description: >
+            Options handed to the matched client, same shape as config
+            reservation options. Accepted on create/update and returned for
+            runtime reservations.
+          $ref: "#/components/schemas/Cfg_options"
+        class:
+          description: restrict this reservation to a matched client class
+          type: string
+        lease_time:
+          description: lease-time override in seconds
+          type: integer
+          minimum: 1
       additionalProperties: false
     V6Reservation:
       type: object

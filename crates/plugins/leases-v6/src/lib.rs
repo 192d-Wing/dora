@@ -1027,6 +1027,9 @@ mod tests {
                     prefix: None,
                     network: None,
                     match_: ResMatch::V6Duid(duid.clone()),
+                    options: Default::default(),
+                    class: None,
+                    lease_time: None,
                 },
                 false,
             )

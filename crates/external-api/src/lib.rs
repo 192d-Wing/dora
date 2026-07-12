@@ -999,6 +999,9 @@ mod handlers {
             prefix: res.prefix_string(),
             network: res.network.clone(),
             match_json: res.match_json(),
+            options_json: res.options_json(),
+            class: res.class().map(String::from),
+            lease_time: res.lease_time().map(|l| l as i64),
             created_at: SystemTime::now(),
         };
         if let Err(err) = ip_mgr.upsert_reservation(&record).await {
@@ -1079,8 +1082,26 @@ mod handlers {
         let match_val = obj.get("match").ok_or_else(|| {
             crate::models::ServerError::bad_request("reservation.match is required")
         })?;
-        RuntimeReservation::from_parts(&req.family, ip, prefix, network, &match_val.to_string())
-            .map_err(|e| crate::models::ServerError::bad_request(e.to_string()))
+        // v4-only per-reservation attributes (ignored for v6). `options` is the
+        // config-style `{"values": {...}}` object; serialize it back to a string
+        // for `from_parts`, which parses it into the typed options.
+        let options_json = obj.get("options").map(|v| v.to_string());
+        let class = obj.get("class").and_then(|v| v.as_str()).map(String::from);
+        let lease_time = obj
+            .get("lease_time")
+            .and_then(|v| v.as_u64())
+            .and_then(|n| u32::try_from(n).ok());
+        RuntimeReservation::from_parts(
+            &req.family,
+            ip,
+            prefix,
+            network,
+            &match_val.to_string(),
+            options_json.as_deref(),
+            class,
+            lease_time,
+        )
+        .map_err(|e| crate::models::ServerError::bad_request(e.to_string()))
     }
 
     /// Map a store conflict error to the right HTTP status.
@@ -1639,6 +1660,11 @@ mod handlers {
                     network: res.network.clone(),
                     source: "runtime".to_string(),
                     match_on: cond.clone(),
+                    options: res
+                        .options_json()
+                        .and_then(|s| serde_json::from_str(&s).ok()),
+                    class: res.class().map(String::from),
+                    lease_time: res.lease_time(),
                 });
             }
         }
@@ -1654,6 +1680,10 @@ mod handlers {
                     network: Some(network.clone()),
                     source: "config".to_string(),
                     match_on: res.condition().clone(),
+                    // config reservations are fully described via GET /v1/config
+                    options: None,
+                    class: None,
+                    lease_time: None,
                 });
             }
         }
@@ -3425,6 +3455,15 @@ pub mod models {
         /// The match predicate (chaddr or options).
         #[serde(rename = "match")]
         pub match_on: Condition,
+        /// Options handed to the matched client (runtime reservations only).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub options: Option<serde_json::Value>,
+        /// Client-class restriction (runtime reservations only).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub class: Option<String>,
+        /// Lease-time override in seconds (runtime reservations only).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub lease_time: Option<u32>,
     }
 
     /// DHCPv6 reservation list response.
@@ -4502,6 +4541,45 @@ v4:
         assert_eq!(list["items"][0]["ip"], "192.168.9.9");
         assert_eq!(list["items"][0]["source"], "runtime");
         assert_eq!(list["items"][0]["match"]["chaddr"], "01:02:03:04:05:06");
+
+        token.cancel();
+        Ok(())
+    }
+
+    // a v4 reservation with options / class / lease_time round-trips through
+    // create -> DB -> list.
+    #[tokio::test]
+    async fn test_create_v4_reservation_with_options() -> anyhow::Result<()> {
+        let (addr, token) = spawn_test_api(Health::Good).await?;
+        let client = reqwest::Client::new();
+
+        let created = client
+            .post(format!("http://{addr}/v1/actions/create-reservation"))
+            .json(&serde_json::json!({
+                "family": "v4",
+                "reservation": {
+                    "ip": "192.168.9.20",
+                    "match": { "chaddr": "01:02:03:04:05:20" },
+                    "options": { "values": { "6": { "type": "ip", "value": ["1.2.3.4"] } } },
+                    "class": "voip",
+                    "lease_time": 1800
+                }
+            }))
+            .send()
+            .await?;
+        assert_eq!(created.status(), reqwest::StatusCode::OK);
+
+        let list: serde_json::Value =
+            reqwest::get(format!("http://{addr}/v1/reservations/v4?ip=192.168.9.20"))
+                .await?
+                .json()
+                .await?;
+        let item = &list["items"][0];
+        assert_eq!(item["ip"], "192.168.9.20");
+        assert_eq!(item["source"], "runtime");
+        assert_eq!(item["class"], "voip");
+        assert_eq!(item["lease_time"], 1800);
+        assert_eq!(item["options"]["values"]["6"]["value"][0], "1.2.3.4");
 
         token.cancel();
         Ok(())
