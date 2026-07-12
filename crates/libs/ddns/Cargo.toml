@@ -18,7 +18,7 @@ thiserror = { workspace = true }
 # `#[tracing::instrument]` in this crate expands to absolute `::tracing::` paths,
 # so tracing must be a direct dependency (the dora_core re-export isn't enough).
 tracing = { workspace = true }
-ring = "0.16.20"
+ring = "0.17.14"
 hex = "0.4"
 rand = { workspace = true }
 
