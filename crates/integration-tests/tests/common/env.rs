@@ -45,28 +45,46 @@ impl DhcpServerEnv {
             .expect("failed to create test database");
         let db_url = pg_url_for(&db_name);
 
-        create_test_net_namespace(netns);
-        create_test_veth_nics(netns, srv_ip, veth_cli, veth_srv);
-        Self {
-            daemons: start_services(config, netns, &db_url),
+        // Build the env NOW — before creating the netns/veth, migrating, spawning
+        // the services, or waiting for readiness — so it owns every resource from
+        // the earliest point. If any step below panics (a service dies at startup,
+        // readiness times out, migrate fails), unwinding drops `env` and its Drop
+        // tears down the netns/veth/DB and kills the daemons. Constructing Self
+        // only after readiness would leak all of that on the failure path.
+        let mut server = Self {
+            daemons: Vec::new(),
             db_name,
             netns: netns.to_owned(),
             veth_cli: veth_cli.to_owned(),
             // veth_srv: veth_srv.to_owned(),
             // srv_ip: srv_ip.to_owned(),
-        }
+        };
+
+        create_test_net_namespace(netns);
+        create_test_veth_nics(netns, srv_ip, veth_cli, veth_srv);
+        // schema first — the services assume it exists.
+        run_migrate(netns, &db_url);
+        server.daemons = spawn_services(config, netns, &db_url);
+        wait_ready(netns, &mut server.daemons);
+        server
     }
 }
 
 impl Drop for DhcpServerEnv {
     fn drop(&mut self) {
+        // Each daemon is a `sudo` wrapper, so killing it reaps sudo but leaves the
+        // real dora child orphaned (SIGKILL to sudo isn't forwarded). Kill + reap
+        // the wrappers, then kill the orphaned dora processes by their unique
+        // per-test DB name (present in each dora process's `-d` argument). The
+        // netns is network-only, so the host `pkill` sees them. Best-effort.
         for daemon in &mut self.daemons {
             stop_dhcp_server(daemon);
         }
+        run_cmd_ignore_failure(&format!("{SUDO} pkill -TERM -f {}", self.db_name));
         remove_test_veth_nics(&self.veth_cli);
         remove_test_net_namespace(&self.netns);
-        // best-effort: the daemon is dead, so its connection is gone; WITH (FORCE)
-        // in drop_test_database evicts any that lingers.
+        // the daemons are dead, so their connections are gone; WITH (FORCE) in
+        // drop_test_database evicts any that lingers.
         if let Err(err) = block_on(ip_manager::postgres::drop_test_database(&self.db_name)) {
             eprintln!("failed to drop test database {}: {err:?}", self.db_name);
         }
@@ -174,14 +192,12 @@ fn run_migrate(netns: &str, db_url: &str) {
     assert!(status.success(), "dora-migrate failed: {status:?}");
 }
 
-/// Bring up the services for a test: migrate the DB, then start `dora-api` (for
-/// the health endpoint the readiness probe hits) and `dora-v4`, both inside the
-/// namespace against the shared database. Returns the child processes so the
-/// harness can kill them on drop.
-fn start_services(config: &str, netns: &str, db_url: &str) -> Vec<Child> {
-    // schema first — the services assume it exists.
-    run_migrate(netns, db_url);
-
+/// Spawn the services for a test — `dora-api` (for the health endpoint the
+/// readiness probe hits) and `dora-v4` — both inside the namespace against the
+/// shared database. Spawn-only: the caller is responsible for readiness. Kept
+/// separate from readiness so `DhcpServerEnv::start` can register the children
+/// with Drop before waiting on them (see the note in `start`).
+fn spawn_services(config: &str, netns: &str, db_url: &str) -> Vec<Child> {
     let config_path = format!("{}/tests/test_configs/{config}", env!("CARGO_MANIFEST_DIR"));
 
     let spawn = |bin: &str, extra: &[&str]| -> Child {
@@ -202,25 +218,21 @@ fn start_services(config: &str, netns: &str, db_url: &str) -> Vec<Child> {
     };
 
     // the API provides the readiness signal; the v4 server serves the datapath.
-    let mut children = vec![
+    vec![
         spawn(&bin_path("dora-api"), &[]),
         spawn(&bin_path("dora-v4"), &["--v4-addr", "0.0.0.0:9900"]),
-    ];
+    ]
+}
 
+/// Block until the services are ready to serve, or bail via panic if one dies.
+fn wait_ready(netns: &str, children: &mut [Child]) {
     // Wait until the API is serving before the test sends. Both services connect
     // to Postgres at startup, so readiness is not instant and a fixed sleep is
     // fragile under CI load. Poll the API health endpoint (it binds
     // 127.0.0.1:3333 inside the namespace). Bounded so a service that never comes
     // up still falls through to the liveness check below.
-    let assert_alive = |children: &mut [Child]| {
-        for child in children {
-            if let Ok(Some(ret)) = child.try_wait() {
-                panic!("a dora service exited before becoming ready: {ret:?}");
-            }
-        }
-    };
     for _ in 0..40 {
-        assert_alive(&mut children);
+        assert_alive(children);
         let ready = netns_command(
             netns,
             "curl",
@@ -236,16 +248,24 @@ fn start_services(config: &str, netns: &str, db_url: &str) -> Vec<Child> {
         }
         thread::sleep(std::time::Duration::from_millis(250));
     }
-    assert_alive(&mut children);
+    assert_alive(children);
 
     // The API's health only proves the API process is up. dora-v4 is a SEPARATE
     // process and may not have bound its UDP socket yet, so gate on the v4
     // listener too before the test starts sending (otherwise the first DISCOVER
     // races the bind). Falls through after the bound so the client's own retry
     // loop still covers a very late bind.
-    wait_for_udp_port(netns, 9900, &mut children);
+    wait_for_udp_port(netns, 9900, children);
+}
 
-    children
+/// Panic if any service has already exited (used as a liveness gate during the
+/// readiness wait).
+fn assert_alive(children: &mut [Child]) {
+    for child in children {
+        if let Ok(Some(ret)) = child.try_wait() {
+            panic!("a dora service exited before becoming ready: {ret:?}");
+        }
+    }
 }
 
 /// Poll until a UDP socket is listening on `port` inside the namespace (via
@@ -253,11 +273,7 @@ fn start_services(config: &str, netns: &str, db_url: &str) -> Vec<Child> {
 fn wait_for_udp_port(netns: &str, port: u16, children: &mut [Child]) {
     let needle = format!(":{port}");
     for _ in 0..40 {
-        for child in children.iter_mut() {
-            if let Ok(Some(ret)) = child.try_wait() {
-                panic!("a dora service exited before becoming ready: {ret:?}");
-            }
-        }
+        assert_alive(children);
         if let Ok(out) = netns_command(netns, "ss", &["-H", "-u", "-l", "-n"]).output()
             && String::from_utf8_lossy(&out.stdout)
                 .lines()
@@ -267,10 +283,20 @@ fn wait_for_udp_port(netns: &str, port: u16, children: &mut [Child]) {
         }
         thread::sleep(std::time::Duration::from_millis(250));
     }
+    // Not observed listening: either the port genuinely never bound, or `ss` is
+    // unavailable in the namespace. Don't fail (the client's retry loop still
+    // covers a late bind), but make it visible instead of a silent "ready".
+    eprintln!(
+        "warning: UDP :{port} not observed listening in netns {netns} within the readiness \
+         window; proceeding (client retries may still cover a late bind)"
+    );
 }
 
 fn stop_dhcp_server(daemon: &mut Child) {
-    daemon.kill().expect("Failed to stop DHCP server")
+    // best-effort: the process may already be gone. kill() then wait() to reap
+    // the `sudo` wrapper (avoids a zombie); never panic from Drop.
+    let _ = daemon.kill();
+    let _ = daemon.wait();
 }
 
 fn run_cmd(cmd: &str) -> String {
