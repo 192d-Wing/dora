@@ -2,6 +2,9 @@
 
 set -e
 
+# The image bakes DORA_BIN to the single service binary it ships (dora-v4 /
+# dora-v6 / dora-api / dora-migrate); fall back to a sane default if unset.
+: "${DORA_BIN:=/usr/local/bin/dora-service}"
 
 # Prefer `docker run --init` / `podman --init`, which obsoletes dumb-init. Only
 # fall back to dumb-init if it is actually installed -- the hardened UBI base
@@ -10,6 +13,34 @@ if [ $$ -eq 1 ] && command -v dumb-init >/dev/null 2>&1; then
     run="exec dumb-init --"
 else
     run="exec"
+fi
+
+# Only the DHCP servers use the data-dir / interface-wait dance below. The API
+# and the migrator take their config/DB from flags or env and need no config
+# file or interface. A v4/v6 image (or an unset DORA_SERVICE, for backward
+# compatibility) falls through to that dance.
+case "${DORA_SERVICE:-}" in
+    v4 | v6 | "")
+        : # fall through
+        ;;
+    *)
+        # api / migrate: run the service for no args or flag args (`-c ...`,
+        # `--dora-log ...`), but keep the passthrough escape hatch so an explicit
+        # command still runs — e.g. `docker run usg-dora-api sh` for debugging.
+        if [ "$#" -eq 0 ] || [ "${1#-}" != "$1" ]; then
+            $run "$DORA_BIN" "$@"
+        else
+            $run "$@"
+        fi
+        ;;
+esac
+
+# Flag-style args (a leading '-', e.g. `-c /etc/dora/config.yaml --v4-addr ...`)
+# are options for the service binary — the way the Kubernetes manifests invoke
+# each service. Forward them straight to $DORA_BIN and skip the docker-run
+# interface-wait dance below (which only applies to a bare interface-name arg).
+if [ "$#" -gt 0 ] && [ "${1#-}" != "$1" ]; then
+    $run "$DORA_BIN" "$@"
 fi
 
 # Single argument to command line is interface name
@@ -74,7 +105,7 @@ if [ -n "$IFACE" ]; then
         esac
     fi
 
-    exec /usr/local/bin/dora
+    exec "$DORA_BIN"
 else
     # Run another binary
     if [ $$ -eq 1 ] && command -v dumb-init >/dev/null 2>&1; then

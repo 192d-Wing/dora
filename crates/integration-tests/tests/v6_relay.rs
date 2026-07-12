@@ -22,6 +22,7 @@ use dora_core::dhcproto::{
         Status,
     },
 };
+use integration_tests::{bin_path, block_on};
 
 /// a running `dora` server bound to loopback, killed and cleaned up on drop
 struct DoraV6 {
@@ -42,7 +43,17 @@ impl DoraV6 {
             "{}/tests/test_configs/v6_relay.yaml",
             env!("CARGO_MANIFEST_DIR")
         );
-        let child = Command::new(env!("CARGO_BIN_EXE_dora"))
+        // The v6 server no longer migrates on startup, so apply the schema first
+        // with the dedicated migrator (loopback here, no namespace needed).
+        let migrate = Command::new(bin_path("dora-migrate"))
+            .args(["-d", &db_url, "--dora-log", "warn"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .expect("failed to run dora-migrate");
+        assert!(migrate.success(), "dora-migrate failed: {migrate:?}");
+        let child = Command::new(bin_path("dora-v6"))
             .args([
                 "-c",
                 &config,
@@ -60,7 +71,7 @@ impl DoraV6 {
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
-            .expect("failed to start dora");
+            .expect("failed to start dora-v6");
         // give it a moment to bind; the exchange helper also retries
         thread::sleep(Duration::from_millis(500));
         Self { child, db_name }
@@ -75,15 +86,6 @@ impl Drop for DoraV6 {
             eprintln!("failed to drop test database {}: {err:?}", self.db_name);
         }
     }
-}
-
-/// Run a future to completion on a throwaway current-thread runtime.
-fn block_on<F: std::future::Future>(fut: F) -> F::Output {
-    tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("failed to build test runtime")
-        .block_on(fut)
 }
 
 /// Build dora's connection URL by swapping the database-name segment of the

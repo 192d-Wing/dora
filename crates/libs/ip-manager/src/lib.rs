@@ -232,6 +232,13 @@ pub trait Storage: Send + Sync + 'static {
         candidate_id: &str,
         activated_at: SystemTime,
     ) -> Result<(), Self::Error>;
+
+    // ---- server mode --------------------------------------------------------
+    /// read the persisted cluster server mode (`None` if the row is absent),
+    /// as its snake_case string form (`normal` / `maintenance` / `drain` / …)
+    async fn get_server_mode(&self) -> Result<Option<String>, Self::Error>;
+    /// persist the cluster server mode (its snake_case string form)
+    async fn set_server_mode(&self, mode: &str) -> Result<(), Self::Error>;
 }
 
 /// A persisted staged config candidate (one row of `config_candidates`).
@@ -714,6 +721,16 @@ where
         &self,
     ) -> Result<Vec<RuntimeReservationRecord>, IpError<T::Error>> {
         Ok(self.store.list_reservations().await?)
+    }
+
+    /// read the persisted cluster server mode (`None` if unset)
+    pub async fn get_server_mode(&self) -> Result<Option<String>, IpError<T::Error>> {
+        Ok(self.store.get_server_mode().await?)
+    }
+
+    /// persist the cluster server mode (its snake_case string form)
+    pub async fn set_server_mode(&self, mode: &str) -> Result<(), IpError<T::Error>> {
+        Ok(self.store.set_server_mode(mode).await?)
     }
 
     /// insert or replace a config candidate

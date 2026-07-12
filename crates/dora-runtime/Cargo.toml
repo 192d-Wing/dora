@@ -1,0 +1,19 @@
+[package]
+name = "dora-runtime"
+version = "0.2.0"
+edition = "2024"
+license = "MPL-2.0"
+
+# Shared bootstrap for the split dora services (dora-v4, dora-v6, dora-api). Holds
+# the role-agnostic startup: tokio runtime construction, DB connect + reservation
+# warm-load, shared mode/token, and the shutdown-signal helpers. Each service
+# binary wires only its own role on top of this.
+
+[dependencies]
+dora-core = { path = "../dora-core" }
+config = { path = "../libs/config" }
+ip-manager = { path = "../libs/ip-manager" }
+anyhow = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+dotenv = "0.15.0"

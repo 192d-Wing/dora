@@ -50,6 +50,28 @@ impl ServerMode {
         }
     }
 
+    /// The mode's stable snake_case string form, as persisted in `server_state`
+    /// and reported by the API (matches the serde representation).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ServerMode::Normal => "normal",
+            ServerMode::Maintenance => "maintenance",
+            ServerMode::Drain => "drain",
+            ServerMode::ShuttingDown => "shutting_down",
+        }
+    }
+
+    /// Parse a persisted mode string; any unknown value falls back to `Normal`
+    /// (mirrors [`ServerMode::from_u8`]'s lenience).
+    pub fn from_db_str(s: &str) -> Self {
+        match s {
+            "maintenance" => ServerMode::Maintenance,
+            "drain" => ServerMode::Drain,
+            "shutting_down" => ServerMode::ShuttingDown,
+            _ => ServerMode::Normal,
+        }
+    }
+
     /// Whether this mode suppresses brand-new lease acquisition — v4 `DISCOVER`
     /// and v6 `SOLICIT`. True for every non-normal mode.
     pub fn suppresses_new_leases(self) -> bool {

@@ -10,18 +10,29 @@ resources:
   - dora-config.yaml
   - db-secret.yaml
   - db.yaml
+  - migrate-job.yaml
   - v4.yaml
   - v6.yaml
   - api.yaml
   - cilium-lb-ipam.yaml
   - cilium-bgp.yaml
 
-# Every dora workload runs this image. Defaults to the GHCR image published by
-# the release workflow; override per environment (e.g. an Iron Bank mirror) with
-#   cd deploy/overlays/k8s && kustomize edit set image usg-dora=<registry>/usg-dora:<tag>
+# Each dora service runs its own single-binary image. Defaults to the GHCR images
+# published by the release workflow; override per environment (e.g. an Iron Bank
+# mirror) with, for each name:
+#   cd deploy/overlays/k8s && kustomize edit set image usg-dora-v4=<registry>/usg-dora-v4:<tag>
 images:
-  - name: usg-dora
-    newName: ghcr.io/192d-wing/usg-dora
+  - name: usg-dora-v4
+    newName: ghcr.io/192d-wing/usg-dora-v4
+    newTag: latest
+  - name: usg-dora-v6
+    newName: ghcr.io/192d-wing/usg-dora-v6
+    newTag: latest
+  - name: usg-dora-api
+    newName: ghcr.io/192d-wing/usg-dora-api
+    newTag: latest
+  - name: usg-dora-migrate
+    newName: ghcr.io/192d-wing/usg-dora-migrate
     newTag: latest
 
 # The three VIPs are defined once in the dora-vips ConfigMap and copied from

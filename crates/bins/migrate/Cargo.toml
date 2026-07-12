@@ -1,0 +1,15 @@
+[package]
+name = "migrate"
+version = "0.2.0"
+edition = "2024"
+license = "MPL-2.0"
+
+[[bin]]
+name = "dora-migrate"
+path = "src/main.rs"
+
+[dependencies]
+dora-core = { path = "../../dora-core" }
+ip-manager = { path = "../../libs/ip-manager" }
+anyhow = { workspace = true }
+dotenv = "0.15.0"

@@ -49,7 +49,7 @@ Bring the DHCPv6 side from **stateless-only** (Information-Request / Reply, RFC
 
 | Component | Today | File |
 | --- | --- | --- |
-| v6 server + plugin chain | Boots; registers only `MsgType` | [crates/bin/src/main.rs:95-105](../crates/bin/src/main.rs#L95-L105) |
+| v6 server + plugin chain | Boots; registers only `MsgType` | [crates/bins/v6-server/src/main.rs](../crates/bins/v6-server/src/main.rs) |
 | v6 message handling | `InformationRequest` only; stateful → `NoResponse` | [crates/plugins/message-type/src/lib.rs:445-467](../crates/plugins/message-type/src/lib.rs#L445-L467) |
 | v6 config | Interfaces, DUID/server-id, per-network options, valid/preferred times | [crates/libs/config/src/v6.rs](../crates/libs/config/src/v6.rs) |
 | v6 pools | **Missing** — `wire::v6::IpRange` defined but never wired into `Network` | [crates/libs/config/src/wire/v6.rs:112-121](../crates/libs/config/src/wire/v6.rs#L112-L121) |
@@ -172,7 +172,7 @@ Each phase is independently reviewable and leaves the tree building & green.
 
 ### Phase 6 — Integration, metrics, docs
 
-- v6 integration-test harness mirroring [crates/bin/tests](../crates/bin/tests)
+- v6 integration-test harness mirroring [crates/integration-tests/tests](../crates/integration-tests/tests)
   (Solicit→Reply, Renew, Release, Rapid Commit, IA_PD).
 - Wire the already-defined v6 metrics counters
   ([crates/dora-core/src/server/context.rs:773-846](../crates/dora-core/src/server/context.rs#L773-L846)).

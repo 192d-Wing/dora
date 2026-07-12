@@ -698,6 +698,9 @@ mod handlers {
             ServerMode::Normal
         };
         mode.set(target);
+        // Persist so the (separate-process) DHCP servers converge to this mode;
+        // in-memory `mode.set` only affects this API process.
+        ip_mgr.set_server_mode(target.as_str()).await?;
         let result = serde_json::json!({ "mode": target });
         record_sync_action(
             &ip_mgr,
@@ -735,6 +738,8 @@ mod handlers {
         reject_if_shutting_down(&mode)?;
         let req: DrainRequest = parse_optional_body(&body)?;
         mode.set(ServerMode::Drain);
+        // Persist so the (separate-process) DHCP servers converge to drain.
+        ip_mgr.set_server_mode(ServerMode::Drain.as_str()).await?;
         let result = serde_json::json!({ "mode": ServerMode::Drain });
         record_sync_action(
             &ip_mgr,
@@ -799,6 +804,14 @@ mod handlers {
         // enter shutting-down mode now so the datapath drains new leases during
         // the grace period
         mode.set(ServerMode::ShuttingDown);
+        // The DHCP datapaths are separate processes that read the mode from the
+        // database. ShuttingDown is terminal and non-recoverable (there is no
+        // un-shutdown path), so persisting it would wedge the datapaths — and a
+        // restarted API — permanently. Persist Drain instead: it suppresses NEW
+        // leases cluster-wide while existing clients keep renewing (the graceful
+        // behavior), and it is recoverable via maintenance-mode/drain. This API
+        // process keeps its local ShuttingDown for its own terminal guard/exit.
+        ip_mgr.set_server_mode(ServerMode::Drain.as_str()).await?;
 
         // finish out of band: mark running, wait the grace period, mark succeeded,
         // then cancel the shared token (stops the DHCP servers and this API)
