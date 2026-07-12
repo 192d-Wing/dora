@@ -4649,7 +4649,7 @@ v4:
     /// Generate a self-signed server cert (with a 127.0.0.1 IP SAN), a CA, and a
     /// client cert signed by that CA.
     fn gen_pki() -> TestPki {
-        use rcgen::{BasicConstraints, CertificateParams, IsCa, KeyPair, SanType};
+        use rcgen::{BasicConstraints, CertificateParams, IsCa, Issuer, KeyPair, SanType};
 
         let mut server_params = CertificateParams::new(vec![]).unwrap();
         server_params.subject_alt_names = vec![SanType::IpAddress("127.0.0.1".parse().unwrap())];
@@ -4663,8 +4663,10 @@ v4:
 
         let client_params = CertificateParams::new(vec![]).unwrap();
         let client_key = KeyPair::generate().unwrap();
+        // rcgen 0.14: signing now goes through an owned `Issuer` (params + key)
+        let ca_issuer = Issuer::new(ca_params, ca_key);
         let client_cert = client_params
-            .signed_by(&client_key, &ca_cert, &ca_key)
+            .signed_by(&client_key, &ca_issuer)
             .unwrap();
 
         TestPki {

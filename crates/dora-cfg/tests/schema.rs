@@ -112,7 +112,7 @@ fn all_sample_configs_match_schema() {
                 "{}: {} (at {})",
                 sample.file_name().unwrap().to_string_lossy(),
                 e,
-                e.instance_path
+                e.instance_path()
             ));
         }
     }
