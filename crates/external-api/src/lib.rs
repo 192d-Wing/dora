@@ -4665,9 +4665,7 @@ v4:
         let client_key = KeyPair::generate().unwrap();
         // rcgen 0.14: signing now goes through an owned `Issuer` (params + key)
         let ca_issuer = Issuer::new(ca_params, ca_key);
-        let client_cert = client_params
-            .signed_by(&client_key, &ca_issuer)
-            .unwrap();
+        let client_cert = client_params.signed_by(&client_key, &ca_issuer).unwrap();
 
         TestPki {
             server_cert: server_cert.pem(),
