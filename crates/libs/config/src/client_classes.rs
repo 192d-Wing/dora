@@ -99,8 +99,14 @@ impl TryFrom<Vec<wire::client_classes::ClientClassV6>> for ClientClassesV6 {
         let mut dep_tree = DependencyTree::new();
         let mut classes = HashMap::new();
         for class in cfg.into_iter() {
-            let assert = ast::parse(&class.assert)
-                .with_context(|| format!("failed to parse v6 client class {}", class.name))?;
+            let assert = ast::parse(&class.assert).with_context(|| {
+                format!(
+                    "failed to parse v6 client class `{}` (v6 asserts support \
+                     option[0-255], member, substring, concat, hexstring and equality; \
+                     option codes above 255 and v4-only atoms like pkt4.* are not available)",
+                    class.name
+                )
+            })?;
             let deps = client_classification::get_class_dependencies(&assert);
             let name = class.name.clone();
             dep_tree.add(name.clone(), name, deps);
@@ -385,6 +391,23 @@ mod tests {
         let matched = classes.eval(&Message::new(MessageType::Solicit)).unwrap();
         assert!(!matched.iter().any(|c| c == "bad"));
         assert!(matched.contains(&"ALL".to_owned()));
+    }
+
+    #[test]
+    fn v6_option_code_over_255_gives_helpful_error() {
+        // v6 option codes are u16 but the grammar only accepts u8, so option
+        // codes > 255 can't be addressed. The parse error should point the user
+        // at the supported subset rather than surfacing a bare int-parse error.
+        let wire: Vec<wire::client_classes::ClientClassV6> = serde_json::from_str(
+            r#"[{"name":"big","assert":"option[256].exists","options":{"values":{}}}]"#,
+        )
+        .unwrap();
+        let err = ClientClassesV6::try_from(wire).expect_err("option[256] must fail to parse");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("option[0-255]") && msg.contains("big"),
+            "unexpected error: {msg}"
+        );
     }
 
     #[test]

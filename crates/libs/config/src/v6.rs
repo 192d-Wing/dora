@@ -630,21 +630,15 @@ impl TryFrom<wire::v6::Config> for Config {
                 } = net;
 
                 // network-scoped option context, most- to least-specific:
-                // network options -> network policy -> global.
+                // network options -> network policy -> global. This is what v6
+                // responses actually draw from (`network.opts()`); per-range and
+                // per-pd_pool options are not applied on the v6 response path, so
+                // there is nothing to fold into them.
                 let net_policy = policy_opts(policies, policy.as_deref())?;
                 let net_ctx = fold_opts(options.get(), &[&net_policy, &global]);
 
-                // convert address pools (IA_NA) and prefix pools (IA_PD),
-                // folding each pool's policy and the network context into its opts
-                let ranges: Vec<NetRange> = ranges
-                    .into_iter()
-                    .map(|range| {
-                        let range_policy = policy_opts(policies, range.policy.as_deref())?;
-                        let mut r = NetRange::from(range);
-                        r.opts = fold_opts(r.opts, &[&range_policy, &net_ctx]);
-                        Ok(r)
-                    })
-                    .collect::<Result<_>>()?;
+                // convert address pools (IA_NA) and prefix pools (IA_PD)
+                let ranges: Vec<NetRange> = ranges.into_iter().map(NetRange::from).collect();
                 for r in &ranges {
                     check_lifetimes(
                         &format!("range {}-{}", r.start(), r.end()),
@@ -654,12 +648,7 @@ impl TryFrom<wire::v6::Config> for Config {
                 }
                 let pd_pools: Vec<PdPool> = pd_pools
                     .into_iter()
-                    .map(|pool| {
-                        let pool_policy = policy_opts(policies, pool.policy.as_deref())?;
-                        let mut p = PdPool::try_from(pool)?;
-                        p.opts = fold_opts(p.opts, &[&pool_policy, &net_ctx]);
-                        Ok(p)
-                    })
+                    .map(PdPool::try_from)
                     .collect::<Result<_>>()?;
 
                 // If any interfaces are explicitly set for the network,
@@ -749,7 +738,7 @@ mod tests {
     pub static CONFIG_V6_POLICIES_YAML: &str = include_str!("../sample/config_v6_policies.yaml");
 
     /// v6 global options and named policies resolve with most-specific-wins
-    /// precedence and fold into both network and range options.
+    /// precedence into the network options that responses draw from.
     #[test]
     fn test_v6_global_and_policy_opts() {
         use dora_core::dhcproto::v6::{DhcpOption as O, OptionCode as C};
@@ -766,14 +755,45 @@ mod tests {
                 "2001:db8::54".parse().unwrap(),
             ]))
         );
-        // the range inherits the resolved network context (policy DNS)
-        let range = &net.ranges()[0];
+    }
+
+    /// when the same option code is set both globally and on a network, the
+    /// network's own value wins (most-specific-wins). This guards the v6
+    /// precedence change noted in the CHANGELOG (previously global won).
+    #[test]
+    fn test_v6_network_overrides_global_opts() {
+        use dora_core::dhcproto::v6::{DhcpOption as O, OptionCode as C};
+        let yaml = r#"
+v6:
+    server_id:
+        type: LL
+        identifier: fe80::1
+        persist: false
+        path: ./server_id_net_over_global
+    options:
+        values:
+            23:
+                type: ip_list
+                value: [2001:db8::1]
+    networks:
+        2001:db8:1::/64:
+            config:
+                lease_time:
+                    default: 3600
+                preferred_time:
+                    default: 3600
+            options:
+                values:
+                    23:
+                        type: ip_list
+                        value: [2001:db8::2]
+"#;
+        let cfg = Config::new(yaml).unwrap();
+        let (_subnet, net) = cfg.v6().unwrap().get_first().unwrap();
+        // network's opt 23 wins over the global opt 23
         assert_eq!(
-            range.opts().get(C::DomainNameServers),
-            Some(&O::DomainNameServers(vec![
-                "2001:db8::53".parse().unwrap(),
-                "2001:db8::54".parse().unwrap(),
-            ]))
+            net.opts().get(C::DomainNameServers),
+            Some(&O::DomainNameServers(vec!["2001:db8::2".parse().unwrap()]))
         );
     }
 

@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- DHCPv4/v6 **global options** (`v4.options` / `v6.options`) and named,
+  reusable **policies** (`v4.policies` / `v6.policies`) referenced by a `policy`
+  key on a network (and, for v4, on ranges/reservations). Precedence is
+  most-specific-wins: range/reservation > network > policy > global.
+- DHCPv6 **client classes** (`v6.client_classes`) supporting the
+  protocol-agnostic expression subset (`option[code]`, `member`, `substring`,
+  `concat`, `hexstring`, equality); matched-class options are merged into
+  responses below explicitly-configured options.
+
+### Changed
+
+- **DHCPv6 option precedence (behavior change):** when the same option code is
+  set both globally (`v6.options`) and on a network (`networks.<subnet>.options`),
+  the **network** value now wins. Previously the global value overrode the
+  network value. Review any v6 config that sets the same code at both levels.
+
 ## [0.3.0] - 2026-07-12
 
 ### Security

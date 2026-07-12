@@ -500,10 +500,39 @@ impl Plugin<v6::Message> for MsgType {
             ctx.set_global(global_unicast);
         }
 
-        // evaluate v6 client classes once, up front, and stash the matched names
-        // so leases-v6 (and the INFORMATION-REQUEST path below) can merge their
-        // options. Done before `req` is bound so it doesn't hold a borrow of ctx
-        // across the following `set_local`.
+        // `msg_type` is Copy, so take it without holding a borrow of ctx.
+        let msg_type = ctx.msg().msg_type();
+
+        // Honor the server mode first (mirrors the v4 path): drain / maintenance
+        // / shutting-down suppress new lease acquisition; maintenance
+        // additionally suppresses renewals. SOLICIT and the REQUEST that
+        // completes it are new acquisition; RENEW / REBIND are renewals. Other
+        // message types (RELEASE, DECLINE, CONFIRM, INFORMATION-REQUEST) are
+        // always processed. Doing this before client-class evaluation lets
+        // suppressed messages skip that per-packet work.
+        let mode = self.mode.get();
+        match msg_type {
+            MessageType::Solicit | MessageType::Request if mode.suppresses_new_leases() => {
+                debug!(
+                    ?mode,
+                    "server mode suppresses new leases; dropping SOLICIT/REQUEST"
+                );
+                return Ok(Action::NoResponse);
+            }
+            MessageType::Renew | MessageType::Rebind if mode.suppresses_renewals() => {
+                debug!(
+                    ?mode,
+                    "server mode suppresses renewals; dropping RENEW/REBIND"
+                );
+                return Ok(Action::NoResponse);
+            }
+            _ => {}
+        }
+
+        // evaluate v6 client classes once (only for messages we'll actually
+        // process) and stash the matched names so leases-v6 and the
+        // INFORMATION-REQUEST path can merge their options. Done before `req` is
+        // bound so it doesn't hold a borrow of ctx across `set_local`.
         let matched_v6 = match self.cfg.v6().eval_client_classes(ctx.msg()) {
             Some(Ok(classes)) => Some(classes),
             Some(Err(err)) => {
@@ -525,7 +554,6 @@ impl Plugin<v6::Message> for MsgType {
         }
 
         let req = ctx.msg();
-        let msg_type = req.msg_type();
         // honor Rapid Commit only if the client asked and we are configured for it
         let rapid_commit =
             req.opts().get(v6::OptionCode::RapidCommit).is_some() && self.cfg.v6().rapid_commit();
@@ -537,32 +565,6 @@ impl Plugin<v6::Message> for MsgType {
             src_addr = %ctx.src_addr(),
             req = %ctx.msg(),
         );
-
-        // let network = self.cfg.v6().get_network(meta.ifindex);
-
-        // Honor the server mode (mirrors the v4 path): drain / maintenance /
-        // shutting-down suppress new lease acquisition; maintenance additionally
-        // suppresses renewals. SOLICIT and the REQUEST that completes it are new
-        // acquisition; RENEW / REBIND are renewals. Other message types (RELEASE,
-        // DECLINE, CONFIRM, INFORMATION-REQUEST) are always processed.
-        let mode = self.mode.get();
-        match msg_type {
-            MessageType::Solicit | MessageType::Request if mode.suppresses_new_leases() => {
-                debug!(
-                    ?mode,
-                    "server mode suppresses new leases; dropping SOLICIT/REQUEST"
-                );
-                return Ok(Action::NoResponse);
-            }
-            MessageType::Renew | MessageType::Rebind if mode.suppresses_renewals() => {
-                debug!(
-                    ?mode,
-                    "server mode suppresses renewals; dropping RENEW/REBIND"
-                );
-                return Ok(Action::NoResponse);
-            }
-            _ => {}
-        }
 
         // create initial response with reply type
         let mut resp = v6::Message::new_with_id(MessageType::Reply, req.xid());

@@ -21,12 +21,12 @@ pub struct Config {
     pub server_id: Option<ServerDuid>,
     pub networks: HashMap<Ipv6Net, Net>,
     // TODO: better defaults than blank? pull information from the system
-    /// global DHCPv6 options: applied to every network/range/pd_pool unless a
-    /// more specific level sets the same option code.
+    /// global DHCPv6 options: applied to every network unless the network (or
+    /// its referenced `policy`) sets the same option code.
     #[serde(default)]
     pub options: Option<Options>,
     /// named, reusable option-sets ("policies"). Reference one by name via the
-    /// `policy` key on a network, range, or pd_pool to apply its options.
+    /// `policy` key on a network to apply its options.
     #[serde(default)]
     pub policies: HashMap<String, Options>,
     /// DHCPv6 client classes. Matched-class options are merged into responses
@@ -82,10 +82,6 @@ pub struct PdPool {
     pub delegated_len: u8,
     #[serde(default)]
     pub options: Options,
-    /// name of a policy (see [`Config::policies`]) whose options apply to this
-    /// pd_pool. Overridden by this pd_pool's own `options`.
-    #[serde(default)]
-    pub policy: Option<String>,
     pub config: NetworkConfig,
     /// delegated prefixes to skip (never hand out)
     #[serde(default)]
@@ -161,10 +157,6 @@ pub struct IpRange {
     #[serde(flatten)]
     pub range: RangeInclusive<Ipv6Addr>,
     pub options: Options,
-    /// name of a policy (see [`Config::policies`]) whose options apply to this
-    /// range. Overridden by this range's own `options`.
-    #[serde(default)]
-    pub policy: Option<String>,
     pub config: NetworkConfig,
     #[serde(default)]
     pub except: Vec<Ipv6Addr>,

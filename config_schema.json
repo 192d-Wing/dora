@@ -475,10 +475,6 @@
                 "start": { "type": "string", "format": "ipv6" },
                 "end": { "type": "string", "format": "ipv6" },
                 "options": { "$ref": "#/definitions/v6_options" },
-                "policy": {
-                    "description": "name of a policy (from `v6.policies`) whose options apply to this range",
-                    "type": "string"
-                },
                 "except": {
                     "type": "array",
                     "items": { "type": "string", "format": "ipv6" }
@@ -502,10 +498,6 @@
                 },
                 "config": { "$ref": "#/definitions/v6_network_config" },
                 "options": { "$ref": "#/definitions/v6_options" },
-                "policy": {
-                    "description": "name of a policy (from `v6.policies`) whose options apply to this pd_pool",
-                    "type": "string"
-                },
                 "except": {
                     "description": "delegated prefixes to never hand out",
                     "type": "array",

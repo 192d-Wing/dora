@@ -388,9 +388,9 @@ v6:
         #enterprise_id: 1 # Optional, set blank or remove to auto-generate enterprise id. For EN, it must be a valid u32 enterprise id
         persist: true # Optional, default value is true. set false to generate a new DUID every time the server is restarted.
         path: ./server_id # optional. default is /var/lib/dora/server_id
-    # global options (optional): applied to every network/range/pd_pool unless a
-    # more specific level (a referenced `policy`, a network's `options`, or a
-    # range/pd_pool's `options`) sets the same option code.
+    # global options (optional): applied to every network unless the network
+    # (or its referenced `policy`) sets the same option code. NOTE: per-range and
+    # per-pd_pool options are not applied on the v6 response path.
     options:
         values:
             # dns
@@ -400,9 +400,9 @@ v6:
                     - 2001:db8::1
                     - 2001:db8::2
     # policies (optional): named, reusable v6 option-sets. Reference one by name
-    # with a `policy:` key on a network, range, or pd_pool. A policy's options sit
-    # above global but below anything set at the referencing level. See
-    # sample/config_v6_policies.yaml for a worked example.
+    # with a `policy:` key on a network. A policy's options sit above global but
+    # below the network's own `options`. See sample/config_v6_policies.yaml for a
+    # worked example.
     #
     # policies:
     #     corp:
