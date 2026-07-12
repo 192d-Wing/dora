@@ -12,7 +12,7 @@
 use client_protection::FloodCache;
 use dora_core::{
     dhcproto::{
-        v4::{DhcpOption, DhcpOptions, Message, MessageType, Opcode, OptionCode},
+        v4::{DhcpOption, Message, MessageType, Opcode, OptionCode},
         v6,
     },
     metrics,
@@ -237,9 +237,10 @@ impl Plugin<Message> for MsgType {
                         debug!(
                             "INFORM address not in any configured range; answering with local config"
                         );
+                        // no range to draw from, but global options still apply
                         self.cfg
                             .v4()
-                            .collect_opts(&DhcpOptions::default(), matched.as_deref())
+                            .collect_opts(self.cfg.v4().global_opts(), matched.as_deref())
                     }
                 };
                 ctx.populate_opts(&opts);
@@ -499,27 +500,16 @@ impl Plugin<v6::Message> for MsgType {
             ctx.set_global(global_unicast);
         }
 
-        let req = ctx.msg();
-        let msg_type = req.msg_type();
-        // honor Rapid Commit only if the client asked and we are configured for it
-        let rapid_commit =
-            req.opts().get(v6::OptionCode::RapidCommit).is_some() && self.cfg.v6().rapid_commit();
+        // `msg_type` is Copy, so take it without holding a borrow of ctx.
+        let msg_type = ctx.msg().msg_type();
 
-        debug!(
-            ?msg_type,
-            ?interface,
-            global = ?ctx.global(),
-            src_addr = %ctx.src_addr(),
-            req = %ctx.msg(),
-        );
-
-        // let network = self.cfg.v6().get_network(meta.ifindex);
-
-        // Honor the server mode (mirrors the v4 path): drain / maintenance /
-        // shutting-down suppress new lease acquisition; maintenance additionally
-        // suppresses renewals. SOLICIT and the REQUEST that completes it are new
-        // acquisition; RENEW / REBIND are renewals. Other message types (RELEASE,
-        // DECLINE, CONFIRM, INFORMATION-REQUEST) are always processed.
+        // Honor the server mode first (mirrors the v4 path): drain / maintenance
+        // / shutting-down suppress new lease acquisition; maintenance
+        // additionally suppresses renewals. SOLICIT and the REQUEST that
+        // completes it are new acquisition; RENEW / REBIND are renewals. Other
+        // message types (RELEASE, DECLINE, CONFIRM, INFORMATION-REQUEST) are
+        // always processed. Doing this before client-class evaluation lets
+        // suppressed messages skip that per-packet work.
         let mode = self.mode.get();
         match msg_type {
             MessageType::Solicit | MessageType::Request if mode.suppresses_new_leases() => {
@@ -538,6 +528,43 @@ impl Plugin<v6::Message> for MsgType {
             }
             _ => {}
         }
+
+        // evaluate v6 client classes once (only for messages we'll actually
+        // process) and stash the matched names so leases-v6 and the
+        // INFORMATION-REQUEST path can merge their options. Done before `req` is
+        // bound so it doesn't hold a borrow of ctx across `set_local`.
+        let matched_v6 = match self.cfg.v6().eval_client_classes(ctx.msg()) {
+            Some(Ok(classes)) => Some(classes),
+            Some(Err(err)) => {
+                warn!(?err, "error evaluating v6 client classes");
+                None
+            }
+            None => None,
+        };
+        if let Some(classes) = &matched_v6 {
+            // a DROP class silences the client entirely
+            if classes
+                .iter()
+                .any(|c| c == client_classes::client_classification::DROP_CLASS)
+            {
+                debug!("v6 DROP class matched");
+                return Ok(Action::NoResponse);
+            }
+            ctx.set_local(MatchedClasses(classes.clone()));
+        }
+
+        let req = ctx.msg();
+        // honor Rapid Commit only if the client asked and we are configured for it
+        let rapid_commit =
+            req.opts().get(v6::OptionCode::RapidCommit).is_some() && self.cfg.v6().rapid_commit();
+
+        debug!(
+            ?msg_type,
+            ?interface,
+            global = ?ctx.global(),
+            src_addr = %ctx.src_addr(),
+            req = %ctx.msg(),
+        );
 
         // create initial response with reply type
         let mut resp = v6::Message::new_with_id(MessageType::Reply, req.xid());
@@ -577,8 +604,10 @@ impl Plugin<v6::Message> for MsgType {
             }
             MessageType::InformationRequest => {
                 if let Some(opts) = self.cfg.v6().get_opts(meta.ifindex) {
+                    // matched-class options fill in codes not set by config opts
+                    let opts = self.cfg.v6().collect_opts(opts, matched_v6.as_deref());
                     ctx.set_resp_msg(resp);
-                    ctx.populate_opts(opts);
+                    ctx.populate_opts(&opts);
                     return Ok(Action::Respond);
                 }
 

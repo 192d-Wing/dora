@@ -5,7 +5,7 @@ use std::{
     str,
 };
 
-use dhcproto::{Decoder, v4};
+use dhcproto::{Decoder, v4, v6};
 use thiserror::Error;
 
 pub mod ast;
@@ -56,6 +56,8 @@ pub enum EvalErr {
     Utf8Error(#[from] str::Utf8Error),
     #[error("failed to get sub-opt")]
     SubOptionParseFail(#[from] dhcproto::error::DecodeError),
+    #[error("expression atom `{0}` is not supported for v6 client classes")]
+    UnsupportedV6(&'static str),
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -394,6 +396,157 @@ fn eval_bool(lhs: &Expr, rhs: &Expr, args: &Args) -> Result<bool, EvalErr> {
         Val::Int(a) => a == is_int(eval(rhs, args)?)?,
         Val::Empty => is_empty(eval(rhs, args)?).is_ok(),
         Val::Bytes(a) => match eval(rhs, args)? {
+            Val::String(b) => a == b.as_bytes(),
+            Val::Bytes(b) => a == b,
+            err => return Err(EvalErr::ExpectedBytes(err)),
+        },
+    })
+}
+
+/// Arguments for evaluating a client-class expression against a DHCPv6 message.
+///
+/// Only the protocol-agnostic subset of the expression language is supported for
+/// v6: option access (`option[code]`, with `code` a u16 option code), `member`,
+/// substring / concat / split / hexstring / hex, equality and boolean logic. The
+/// v4-only packet-header atoms (`pkt4.*`, `relay4[...]`, ...) evaluate to
+/// [`EvalErr::UnsupportedV6`].
+pub struct ArgsV6<'a> {
+    /// option code -> raw option data (the value section, without code/len)
+    pub opts: HashMap<v6::OptionCode, Vec<u8>>,
+    /// decoded packet Message
+    pub msg: &'a v6::Message,
+    /// all classes that eval'd to true for this packet
+    pub member: HashSet<String>,
+}
+
+/// evaluate the AST against a DHCPv6 message. See [`ArgsV6`] for the supported
+/// subset; v4-only atoms return [`EvalErr::UnsupportedV6`].
+pub fn eval_v6(expr: &Expr, args: &ArgsV6) -> Result<Val, EvalErr> {
+    use Expr as E;
+    Ok(match expr {
+        // literals
+        E::Bool(b) => Val::Bool(*b),
+        E::String(s) => Val::String(s.clone()),
+        E::Int(i) => Val::Int(*i),
+        E::Hex(h) => Val::Bytes(h.to_vec()),
+        E::Ip(ip) => Val::Int(u32::from_be_bytes(ip.octets())),
+        // v6 option access: option codes are u16, the grammar only allows u8, so
+        // v6 classes can address option codes 0-255 (covers the common ones).
+        E::Option(o) => match args.opts.get(&u16::from(*o).into()) {
+            Some(v) => Val::Bytes(v.clone()),
+            None => Val::Empty,
+        },
+        E::Member(s) => Val::Bool(args.member.contains(s)),
+        // prefix / postfix
+        E::Not(rhs) => Val::Bool(!is_bool(eval_v6(rhs, args)?)?),
+        E::Exists(lhs) => Val::Bool(is_empty(eval_v6(lhs, args)?).is_err()),
+        E::ToHex(lhs) => match eval_v6(lhs, args)? {
+            Val::String(s) => Val::Bytes(s.as_bytes().to_vec()),
+            Val::Bytes(b) => Val::Bytes(b),
+            Val::Int(i) => Val::Bytes(i.to_be_bytes().to_vec()),
+            Val::Empty => Val::Empty,
+            err => return Err(EvalErr::ExpectedBytes(err)),
+        },
+        E::ToText(lhs) => match eval_v6(lhs, args)? {
+            Val::String(s) => Val::String(s),
+            Val::Bytes(b) => Val::String(std::str::from_utf8(&b)?.to_owned()),
+            Val::Int(i) => Val::String(i.to_string()),
+            Val::Empty => Val::Empty,
+            err => return Err(EvalErr::ExpectedString(err)),
+        },
+        E::SubOpt(lhs, o) => {
+            let bytes = match eval_v6(lhs, args)? {
+                Val::String(s) => s.as_bytes().to_vec(),
+                Val::Bytes(b) => b,
+                err => return Err(EvalErr::ExpectedBytes(err)),
+            };
+            match parse_sub_opts(&bytes, *o)? {
+                Some(v) => Val::Bytes(v),
+                None => Val::Empty,
+            }
+        }
+        // infix
+        E::And(lhs, rhs) => {
+            Val::Bool(is_bool(eval_v6(lhs, args)?)? && is_bool(eval_v6(rhs, args)?)?)
+        }
+        E::Or(lhs, rhs) => {
+            Val::Bool(is_bool(eval_v6(lhs, args)?)? || is_bool(eval_v6(rhs, args)?)?)
+        }
+        E::Equal(lhs, rhs) => Val::Bool(eval_bool_v6(lhs, rhs, args)?),
+        E::NEqual(lhs, rhs) => Val::Bool(!eval_bool_v6(lhs, rhs, args)?),
+        E::Substring(lhs, start, len) => match eval_v6(lhs, args)? {
+            Val::Bytes(b) => Val::Bytes(slice(b, *start, *len)),
+            Val::String(s) => Val::String(substring(&s, *start, *len)),
+            err => return Err(EvalErr::ExpectedString(err)),
+        },
+        E::Concat(lhs, rhs) => match (eval_v6(lhs, args)?, eval_v6(rhs, args)?) {
+            (Val::String(mut a), Val::String(b)) => {
+                a.push_str(&b);
+                Val::String(a)
+            }
+            (Val::Bytes(mut a), Val::Bytes(mut b)) => {
+                a.append(&mut b);
+                Val::Bytes(a)
+            }
+            (Val::String(mut a), Val::Bytes(b)) => {
+                a.push_str(str::from_utf8(&b)?);
+                Val::String(a)
+            }
+            (Val::Bytes(mut a), Val::String(b)) => {
+                a.extend_from_slice(b.as_bytes());
+                Val::Bytes(a)
+            }
+            (a, _b) => return Err(EvalErr::ExpectedString(a)),
+        },
+        E::Split(lhs, del, n) => match (eval_v6(lhs, args)?, eval_v6(del, args)?) {
+            (Val::String(a), Val::String(del)) => split(a, &del, *n),
+            (Val::String(a), Val::Bytes(b)) => split(a, str::from_utf8(&b)?, *n),
+            (a, _b) => return Err(EvalErr::ExpectedString(a)),
+        },
+        E::IfElse(expr, a, b) => {
+            if is_bool(eval_v6(expr, args)?)? {
+                eval_v6(a, args)?
+            } else {
+                eval_v6(b, args)?
+            }
+        }
+        E::Hexstring(expr, sep) => Val::String(
+            hex::encode(is_bytes(eval_v6(expr, args)?)?)
+                .as_bytes()
+                .chunks_exact(2)
+                .map(std::str::from_utf8)
+                .collect::<Result<Vec<_>, _>>()?
+                .join(sep),
+        ),
+        // v4-only packet header / relay atoms are not available in v6
+        E::Iface => return Err(EvalErr::UnsupportedV6("pkt4.iface")),
+        E::Src => return Err(EvalErr::UnsupportedV6("pkt4.src")),
+        E::Dst => return Err(EvalErr::UnsupportedV6("pkt4.dst")),
+        E::Len => return Err(EvalErr::UnsupportedV6("pkt4.len")),
+        E::Mac => return Err(EvalErr::UnsupportedV6("pkt4.mac")),
+        E::Hlen => return Err(EvalErr::UnsupportedV6("pkt4.hlen")),
+        E::HType => return Err(EvalErr::UnsupportedV6("pkt4.htype")),
+        E::CiAddr => return Err(EvalErr::UnsupportedV6("pkt4.ciaddr")),
+        E::GiAddr => return Err(EvalErr::UnsupportedV6("pkt4.giaddr")),
+        E::YiAddr => return Err(EvalErr::UnsupportedV6("pkt4.yiaddr")),
+        E::SiAddr => return Err(EvalErr::UnsupportedV6("pkt4.siaddr")),
+        E::MsgType => return Err(EvalErr::UnsupportedV6("pkt4.msgtype")),
+        E::TransId => return Err(EvalErr::UnsupportedV6("pkt4.transid")),
+        E::Relay(_) => return Err(EvalErr::UnsupportedV6("relay4")),
+    })
+}
+
+fn eval_bool_v6(lhs: &Expr, rhs: &Expr, args: &ArgsV6) -> Result<bool, EvalErr> {
+    Ok(match eval_v6(lhs, args)? {
+        Val::String(a) => match eval_v6(rhs, args)? {
+            Val::String(b) => a == b,
+            Val::Bytes(b) => a.as_bytes() == b,
+            err => return Err(EvalErr::ExpectedString(err)),
+        },
+        Val::Bool(a) => a == is_bool(eval_v6(rhs, args)?)?,
+        Val::Int(a) => a == is_int(eval_v6(rhs, args)?)?,
+        Val::Empty => is_empty(eval_v6(rhs, args)?).is_ok(),
+        Val::Bytes(a) => match eval_v6(rhs, args)? {
             Val::String(b) => a == b.as_bytes(),
             Val::Bytes(b) => a == b,
             err => return Err(EvalErr::ExpectedBytes(err)),

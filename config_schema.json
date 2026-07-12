@@ -190,6 +190,10 @@
                 "end": { "type": "string", "format": "ipv4" },
                 "config": { "$ref": "#/definitions/config" },
                 "options": { "$ref": "#/definitions/options" },
+                "policy": {
+                    "description": "name of a policy (from `v4.policies`) whose options apply to this range",
+                    "type": "string"
+                },
                 "except": {
                     "type": "array",
                     "items": { "type": "string", "format": "ipv4" }
@@ -223,6 +227,10 @@
                 "ip": { "type": "string", "format": "ipv4" },
                 "config": { "$ref": "#/definitions/config" },
                 "options": { "$ref": "#/definitions/options" },
+                "policy": {
+                    "description": "name of a policy (from `v4.policies`) whose options apply to this reservation",
+                    "type": "string"
+                },
                 "match": { "$ref": "#/definitions/match" },
                 "class": {
                     "description": "restrict this reservation to a matched client class",
@@ -250,6 +258,14 @@
                 "ping_timeout_ms": { "type": "integer" },
                 "authoritative": { "type": "boolean" },
                 "probation_period": { "type": "integer" },
+                "options": {
+                    "description": "network-level options applied to every range/reservation in this network",
+                    "$ref": "#/definitions/options"
+                },
+                "policy": {
+                    "description": "name of a policy (from `v4.policies`) whose options apply to this network",
+                    "type": "string"
+                },
                 "ranges": {
                     "type": "array",
                     "items": { "$ref": "#/definitions/range" }
@@ -261,7 +277,7 @@
             }
         },
         "client_classes": {
-            "description": "client classification (v4 only)",
+            "description": "client classification (DHCPv4). v6 classes live under `v6.client_classes`",
             "type": "object",
             "required": ["v4"],
             "properties": {
@@ -280,6 +296,19 @@
                         }
                     }
                 }
+            }
+        },
+        "v6_client_class": {
+            "description": "a DHCPv6 client class. `assert` supports the protocol-agnostic subset (option[code], member, substring, concat, hexstring, equality); v4-only header atoms are rejected",
+            "type": "object",
+            "required": ["name", "assert"],
+            "properties": {
+                "name": { "type": "string" },
+                "assert": {
+                    "description": "predicate expression evaluated per v6 message",
+                    "type": "string"
+                },
+                "options": { "$ref": "#/definitions/v6_options" }
             }
         },
         "ddns_server": {
@@ -517,6 +546,10 @@
             "properties": {
                 "config": { "$ref": "#/definitions/v6_network_config" },
                 "options": { "$ref": "#/definitions/v6_options" },
+                "policy": {
+                    "description": "name of a policy (from `v6.policies`) whose options apply to this network",
+                    "type": "string"
+                },
                 "interfaces": {
                     "type": "array",
                     "items": { "type": "string" }
@@ -547,7 +580,20 @@
                     "items": { "type": "string" }
                 },
                 "server_id": { "$ref": "#/definitions/v6_server_id" },
-                "options": { "$ref": "#/definitions/v6_options" },
+                "options": {
+                    "description": "global v6 options applied to every network/range/pd_pool unless overridden",
+                    "$ref": "#/definitions/v6_options"
+                },
+                "policies": {
+                    "description": "named, reusable option-sets referenced by name via a `policy` key",
+                    "type": "object",
+                    "additionalProperties": { "$ref": "#/definitions/v6_options" }
+                },
+                "client_classes": {
+                    "description": "DHCPv6 client classes; matched-class options are merged into responses below explicit config",
+                    "type": "array",
+                    "items": { "$ref": "#/definitions/v6_client_class" }
+                },
                 "rapid_commit": {
                     "description": "honor the Rapid Commit option (opt 14): answer a Solicit carrying it with a committing Reply instead of Advertise (default false)",
                     "type": "boolean"
@@ -594,6 +640,15 @@
                     "description": "interfaces to bind; if empty, dora binds 0.0.0.0. Entries may be \"name\" or \"name@ip\"",
                     "type": "array",
                     "items": { "type": "string" }
+                },
+                "options": {
+                    "description": "global v4 options applied to every network/range/reservation unless overridden",
+                    "$ref": "#/definitions/options"
+                },
+                "policies": {
+                    "description": "named, reusable option-sets referenced by name via a `policy` key",
+                    "type": "object",
+                    "additionalProperties": { "$ref": "#/definitions/options" }
                 },
                 "networks": {
                     "description": "v4 networks keyed by subnet, e.g. \"192.168.1.0/24\"",

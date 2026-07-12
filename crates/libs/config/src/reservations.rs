@@ -365,6 +365,7 @@ fn to_v4_reserved(ip: Ipv4Addr, match_: &ResMatch) -> Reserved {
     let wire = ReservedIp {
         ip,
         options: Options::default(),
+        policy: None,
         condition,
         config: NetworkConfig::default(),
         class: None,

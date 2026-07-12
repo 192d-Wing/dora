@@ -21,8 +21,18 @@ pub struct Config {
     pub server_id: Option<ServerDuid>,
     pub networks: HashMap<Ipv6Net, Net>,
     // TODO: better defaults than blank? pull information from the system
+    /// global DHCPv6 options: applied to every network unless the network (or
+    /// its referenced `policy`) sets the same option code.
     #[serde(default)]
     pub options: Option<Options>,
+    /// named, reusable option-sets ("policies"). Reference one by name via the
+    /// `policy` key on a network to apply its options.
+    #[serde(default)]
+    pub policies: HashMap<String, Options>,
+    /// DHCPv6 client classes. Matched-class options are merged into responses
+    /// below the explicitly-configured options.
+    #[serde(default)]
+    pub client_classes: Vec<crate::wire::client_classes::ClientClassV6>,
     /// honor the Rapid Commit option (opt 14): answer a Solicit that carries it
     /// with a committing Reply instead of Advertise. RFC 8415 §18.3.1.
     #[serde(default = "super::default_rapid_commit")]
@@ -34,6 +44,10 @@ pub struct Net {
     pub config: NetworkConfig,
     #[serde(default)]
     pub options: Options,
+    /// name of a policy (see [`Config::policies`]) whose options apply to this
+    /// network. Overridden by `options` set at any level within the network.
+    #[serde(default)]
+    pub policy: Option<String>,
     pub interfaces: Option<Vec<String>>,
     /// address pools used for IA_NA (non-temporary address) assignment.
     /// RFC 8415 stateful DHCPv6.

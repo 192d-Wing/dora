@@ -10,7 +10,7 @@ use std::{
 use anyhow::{Context, bail};
 use dora_core::{
     anyhow::Result,
-    dhcproto::v6::{DhcpOptions, HType, duid::Duid},
+    dhcproto::v6::{DhcpOptions, HType, Message, duid::Duid},
     pnet::ipnetwork::{IpNetwork, Ipv6Network},
     pnet::{self, datalink::NetworkInterface},
 };
@@ -18,7 +18,9 @@ use ipnet::{Ipv6AddrRange, Ipv6Net};
 use tracing::debug;
 
 use crate::{
-    LeaseTime, PersistIdentifier, generate_random_bytes,
+    LeaseTime, PersistIdentifier,
+    client_classes::ClientClassesV6,
+    generate_random_bytes,
     wire::{self, v6::ServerDuidInfo},
 };
 /// the default path to  server identifier file path
@@ -39,6 +41,8 @@ pub struct Config {
     server_id: Duid,
     /// whether to honor the Rapid Commit option (opt 14)
     rapid_commit: bool,
+    /// v6 client classes (from `v6.client_classes`)
+    client_classes: Option<ClientClassesV6>,
 }
 
 impl Config {
@@ -126,6 +130,32 @@ impl Config {
     pub fn get_first(&self) -> Option<(&Ipv6Net, &Network)> {
         self.networks.iter().next()
     }
+
+    /// evaluate all v6 client classes, returning the names of those that match.
+    /// Returns `None` when no v6 classes are configured (so callers can skip the
+    /// per-packet option-map build on the common no-classes path).
+    pub fn eval_client_classes(&self, req: &Message) -> Option<Result<Vec<String>>> {
+        self.client_classes
+            .as_ref()
+            .map(|classes| classes.eval(req))
+    }
+
+    /// merge matched v6 client-class options under `opts` (explicit config wins):
+    /// class options only fill in codes not already present in `opts`.
+    pub fn collect_opts(
+        &self,
+        opts: &DhcpOptions,
+        matched_classes: Option<&[String]>,
+    ) -> DhcpOptions {
+        match self
+            .client_classes
+            .as_ref()
+            .and_then(|classes| classes.collect_opts(matched_classes))
+        {
+            Some(class_opts) => merge_opts(opts, class_opts),
+            None => opts.clone(),
+        }
+    }
 }
 
 /// merge `b` into `a`, favoring `a` where there are duplicates
@@ -137,6 +167,31 @@ fn merge_opts(a: &DhcpOptions, b: DhcpOptions) -> DhcpOptions {
         }
     }
     opts
+}
+
+/// Look up a named policy's options, erroring if the referenced name is unknown.
+/// Returns empty options when no policy is referenced.
+fn policy_opts(
+    policies: &HashMap<String, wire::v6::Options>,
+    name: Option<&str>,
+) -> Result<DhcpOptions> {
+    match name {
+        None => Ok(DhcpOptions::default()),
+        Some(name) => policies
+            .get(name)
+            .map(|o| o.as_ref().clone())
+            .ok_or_else(|| anyhow::anyhow!("unknown policy `{name}` referenced in v6 config")),
+    }
+}
+
+/// Fold broader-scoped option layers into `acc` (most-specific wins): any option
+/// code already present in `acc` shadows the same code from a broader layer.
+/// `broader` is ordered from more- to less-specific.
+fn fold_opts(mut acc: DhcpOptions, broader: &[&DhcpOptions]) -> DhcpOptions {
+    for layer in broader {
+        acc = merge_opts(&acc, (*layer).clone());
+    }
+    acc
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -550,6 +605,12 @@ impl TryFrom<wire::v6::Config> for Config {
             }
         };
         let global_opts = cfg.options;
+        // global options resolved once, folded into every network/range/pd_pool.
+        let global = global_opts
+            .as_ref()
+            .map(|o| o.as_ref().clone())
+            .unwrap_or_default();
+        let policies = &cfg.policies;
         debug!(?interfaces, ?server_id, "v6 interfaces that will be used");
         let networks = cfg
             .networks
@@ -562,10 +623,19 @@ impl TryFrom<wire::v6::Config> for Config {
                     ping_timeout_ms,
                     config,
                     options,
+                    policy,
                     ranges,
                     pd_pools,
                     interfaces: net_interfaces,
                 } = net;
+
+                // network-scoped option context, most- to least-specific:
+                // network options -> network policy -> global. This is what v6
+                // responses actually draw from (`network.opts()`); per-range and
+                // per-pd_pool options are not applied on the v6 response path, so
+                // there is nothing to fold into them.
+                let net_policy = policy_opts(policies, policy.as_deref())?;
+                let net_ctx = fold_opts(options.get(), &[&net_policy, &global]);
 
                 // convert address pools (IA_NA) and prefix pools (IA_PD)
                 let ranges: Vec<NetRange> = ranges.into_iter().map(NetRange::from).collect();
@@ -622,15 +692,21 @@ impl TryFrom<wire::v6::Config> for Config {
                     probation_period: Duration::from_secs(probation_period),
                     authoritative,
                     ping_timeout_ms: Duration::from_millis(ping_timeout_ms),
-                    // merge global with network opts OR just return network options if no global exist
-                    options: match &global_opts {
-                        Some(a) => merge_opts(a.as_ref(), options.get()),
-                        None => options.get(),
-                    },
+                    // network options merged with policy + global (network wins)
+                    options: net_ctx,
                 };
                 Ok((subnet, network))
             })
             .collect::<Result<_, anyhow::Error>>()?;
+
+        let client_classes = if cfg.client_classes.is_empty() {
+            None
+        } else {
+            Some(
+                ClientClassesV6::try_from(cfg.client_classes)
+                    .context("unable to parse v6 client_classes")?,
+            )
+        };
 
         Ok(Self {
             interfaces,
@@ -638,6 +714,7 @@ impl TryFrom<wire::v6::Config> for Config {
             opts: global_opts.map(|o| o.get()),
             server_id,
             rapid_commit: cfg.rapid_commit,
+            client_classes,
         })
     }
 }
@@ -658,6 +735,93 @@ mod tests {
     pub static CONFIG_V6_NO_PERSIST_YAML: &str =
         include_str!("../sample/config_v6_no_persist.yaml");
     pub static CONFIG_V6_POOLS_YAML: &str = include_str!("../sample/config_v6_pools.yaml");
+    pub static CONFIG_V6_POLICIES_YAML: &str = include_str!("../sample/config_v6_policies.yaml");
+
+    /// v6 global options and named policies resolve with most-specific-wins
+    /// precedence into the network options that responses draw from.
+    #[test]
+    fn test_v6_global_and_policy_opts() {
+        use dora_core::dhcproto::v6::{DhcpOption as O, OptionCode as C};
+        let cfg = Config::new(CONFIG_V6_POLICIES_YAML).unwrap();
+        let v6 = cfg.v6().expect("expected v6 config");
+        let (_subnet, net) = v6.get_first().expect("expected a network");
+
+        // network references policy `corp`; opt 23 (DNS) comes from the policy,
+        // shadowing the global 2001:db8::9
+        assert_eq!(
+            net.opts().get(C::DomainNameServers),
+            Some(&O::DomainNameServers(vec![
+                "2001:db8::53".parse().unwrap(),
+                "2001:db8::54".parse().unwrap(),
+            ]))
+        );
+    }
+
+    /// when the same option code is set both globally and on a network, the
+    /// network's own value wins (most-specific-wins). This guards the v6
+    /// precedence change noted in the CHANGELOG (previously global won).
+    #[test]
+    fn test_v6_network_overrides_global_opts() {
+        use dora_core::dhcproto::v6::{DhcpOption as O, OptionCode as C};
+        let yaml = r#"
+v6:
+    server_id:
+        type: LL
+        identifier: fe80::1
+        persist: false
+        path: ./server_id_net_over_global
+    options:
+        values:
+            23:
+                type: ip_list
+                value: [2001:db8::1]
+    networks:
+        2001:db8:1::/64:
+            config:
+                lease_time:
+                    default: 3600
+                preferred_time:
+                    default: 3600
+            options:
+                values:
+                    23:
+                        type: ip_list
+                        value: [2001:db8::2]
+"#;
+        let cfg = Config::new(yaml).unwrap();
+        let (_subnet, net) = cfg.v6().unwrap().get_first().unwrap();
+        // network's opt 23 wins over the global opt 23
+        assert_eq!(
+            net.opts().get(C::DomainNameServers),
+            Some(&O::DomainNameServers(vec!["2001:db8::2".parse().unwrap()]))
+        );
+    }
+
+    /// referencing a policy name that isn't defined is a config error
+    #[test]
+    fn test_v6_unknown_policy_errors() {
+        let yaml = r#"
+v6:
+    server_id:
+        type: LL
+        identifier: fe80::1
+        persist: false
+        path: ./server_id_unknown_policy
+    networks:
+        2001:db8:1::/64:
+            policy: nope
+            config:
+                lease_time:
+                    default: 3600
+                preferred_time:
+                    default: 3600
+"#;
+        let err = Config::new(yaml).expect_err("unknown v6 policy must fail");
+        assert!(
+            format!("{err:#}").contains("unknown policy"),
+            "unexpected error: {err:#}"
+        );
+    }
 
     /// parse a v6 config with IA_NA `ranges` and IA_PD `pd_pools` and verify
     /// they are decoded into the parsed `Network`.

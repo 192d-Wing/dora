@@ -1,0 +1,74 @@
+# Demonstrates DHCPv4 global options and named policies (reusable option-sets).
+#
+# Option precedence, most-specific wins:
+#   range/reservation options > network options > referenced policy > global
+v4:
+    # global options: applied to every network/range/reservation unless a more
+    # specific level sets the same option code.
+    options:
+        values:
+            domain_name_servers:
+                type: ip
+                value: [9.9.9.9]
+            domain_name:
+                type: domain
+                value: global.example
+    # named, reusable option-sets. Reference one by name with a `policy` key.
+    policies:
+        corp:
+            values:
+                domain_name:
+                    type: domain
+                    value: corp.example
+                domain_name_servers:
+                    type: ip
+                    value: [10.0.0.53, 10.0.0.54]
+    networks:
+        10.0.0.0/24:
+            server_id: 10.0.0.1
+            # apply the `corp` policy to this whole network
+            policy: corp
+            # network-level options override the policy and global
+            options:
+                values:
+                    routers:
+                        type: ip
+                        value: [10.0.0.1]
+            ranges:
+                # inherits routers (network), domain_name/domain_name_servers
+                # (corp policy), nothing from global (policy already sets both)
+                - start: 10.0.0.100
+                  end: 10.0.0.200
+                  config:
+                      lease_time:
+                          default: 3600
+                  options:
+                      values:
+                          subnet_mask:
+                              type: ip
+                              value: 255.255.255.0
+                # a range that overrides the policy's dns with its own
+                - start: 10.0.0.201
+                  end: 10.0.0.250
+                  config:
+                      lease_time:
+                          default: 3600
+                  options:
+                      values:
+                          domain_name_servers:
+                              type: ip
+                              value: [10.0.0.99]
+        10.0.1.0/24:
+            server_id: 10.0.1.1
+            # no policy/options: ranges here fall through to global options
+            ranges:
+                - start: 10.0.1.100
+                  end: 10.0.1.200
+                  config:
+                      lease_time:
+                          default: 3600
+                  options:
+                      values:
+                          routers:
+                              type: ip
+                              value: [10.0.1.1]

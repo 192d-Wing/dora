@@ -45,6 +45,11 @@ pub struct Config {
     cache_threshold: Option<u32>,
     /// used to make a selection on which network or subnet to use
     networks: HashMap<Ipv4Net, Network>,
+    /// global options, applied as the lowest-priority layer to every response.
+    /// Already folded into each range/reservation's `opts`; kept here so paths
+    /// that answer without a range (e.g. INFORM outside any pool) can still
+    /// include them.
+    global_opts: DhcpOptions,
     v6: Option<crate::v6::Config>,
     client_classes: Option<ClientClasses>,
     ddns: Option<Ddns>,
@@ -58,22 +63,27 @@ impl TryFrom<wire::Config> for Config {
         let interfaces = crate::v4_find_interfaces(v4.interfaces.as_deref())?;
 
         debug!(?interfaces, "using v4 interfaces");
+        // resolve global options and named policies once so they can be folded
+        // into every network/range/reservation below.
+        let global_opts = v4.options.clone().map(|o| o.get()).unwrap_or_default();
+        let policies = &v4.policies;
         // transform wire::v4::Config into a more optimized format
         let networks = v4
             .networks
             .into_iter()
             .map(|(subnet, net)| {
-                let mut network: Network = net.into();
+                let mut network = build_network(net, policies, &global_opts)?;
                 network.set_subnet(subnet);
                 // set total addr space for metrics
                 dora_core::metrics::TOTAL_AVAILABLE_ADDRS.set(network.total_addrs() as i64);
-                (subnet, network)
+                Ok((subnet, network))
             })
-            .collect();
+            .collect::<Result<_>>()?;
 
         Ok(Self {
             interfaces,
             networks,
+            global_opts,
             chaddr_only: v4.chaddr_only,
             bootp_enable: v4.bootp_enable,
             rapid_commit: v4.rapid_commit,
@@ -113,6 +123,11 @@ impl TryFrom<wire::Config> for Config {
 impl Config {
     pub fn ddns(&self) -> Option<&Ddns> {
         self.ddns.as_ref()
+    }
+    /// global DHCPv4 options. Already merged into every range/reservation's
+    /// options; exposed for response paths that have no range to draw from.
+    pub fn global_opts(&self) -> &DhcpOptions {
+        &self.global_opts
     }
     pub fn v6(&self) -> Option<&crate::v6::Config> {
         self.v6.as_ref()
@@ -268,57 +283,112 @@ impl Config {
     }
 }
 
-impl From<wire::v4::Net> for Network {
-    fn from(net: wire::v4::Net) -> Self {
-        let wire::v4::Net {
-            ranges,
-            reservations,
-            ping_check,
-            probation_period,
-            authoritative,
-            server_id,
-            ping_timeout_ms,
-            server_name,
-            file_name,
-        } = net;
-
-        let ranges = ranges.into_iter().map(|range| range.into()).collect();
-        let reserved_macs = reservations
-            .iter()
-            .filter_map(|res| match &res.condition {
-                wire::v4::Condition::Mac(mac) => Some((*mac, res.into())),
-                _ => None,
-            })
-            .collect();
-        let reserved_opts = reservations
-            .iter()
-            .filter_map(|res| match &res.condition {
-                wire::v4::Condition::Options(match_opts) => {
-                    // TODO: we only support matching on a single option currently.
-                    // A reservation can match on chaddr OR a single option value.
-                    match match_opts.values.0.iter().next() {
-                        Some((code, opt)) => Some((*code, (opt.clone(), res.into()))),
-                        _ => None,
-                    }
-                }
-                _ => None,
-            })
-            .collect();
-
-        Network {
-            server_id,
-            subnet: Default::default(), // This will be set in the calling function
-            ping_check,
-            probation_period: Duration::from_secs(probation_period),
-            ranges,
-            reserved_macs,
-            reserved_opts,
-            authoritative,
-            ping_timeout_ms: Duration::from_millis(ping_timeout_ms),
-            server_name,
-            file_name,
-        }
+/// Look up a named policy's options, erroring if the referenced name is unknown.
+/// Returns empty options when no policy is referenced.
+fn policy_opts(
+    policies: &HashMap<String, wire::v4::Options>,
+    name: Option<&str>,
+) -> Result<DhcpOptions> {
+    match name {
+        None => Ok(DhcpOptions::default()),
+        Some(name) => policies
+            .get(name)
+            .map(|o| o.as_ref().clone())
+            .ok_or_else(|| anyhow::anyhow!("unknown policy `{name}` referenced in v4 config")),
     }
+}
+
+/// Fold broader-scoped option layers into `acc` (most-specific wins): any option
+/// code already present in `acc` shadows the same code from a broader layer.
+/// `broader` is ordered from more- to less-specific.
+fn fold_opts(mut acc: DhcpOptions, broader: &[&DhcpOptions]) -> DhcpOptions {
+    for layer in broader {
+        acc = merge_opts(acc, Some((*layer).clone()));
+    }
+    acc
+}
+
+/// Build a [`Network`], resolving the option-inheritance chain
+/// (range/reservation > network > policy > global) for every range and
+/// reservation it contains.
+fn build_network(
+    net: wire::v4::Net,
+    policies: &HashMap<String, wire::v4::Options>,
+    global: &DhcpOptions,
+) -> Result<Network> {
+    let wire::v4::Net {
+        options,
+        policy,
+        ranges,
+        reservations,
+        ping_check,
+        probation_period,
+        authoritative,
+        server_id,
+        ping_timeout_ms,
+        server_name,
+        file_name,
+    } = net;
+
+    // network-scoped context, from most- to least-specific:
+    // network options -> network policy -> global.
+    let net_own = options.map(|o| o.get()).unwrap_or_default();
+    let net_policy = policy_opts(policies, policy.as_deref())?;
+    let net_ctx = fold_opts(net_own, &[&net_policy, global]);
+
+    let ranges = ranges
+        .into_iter()
+        .map(|range| {
+            let range_policy = policy_opts(policies, range.policy.as_deref())?;
+            let mut r: NetRange = range.into();
+            r.opts = fold_opts(r.opts, &[&range_policy, &net_ctx]);
+            Ok(r)
+        })
+        .collect::<Result<_>>()?;
+
+    let build_reserved = |res: &wire::v4::ReservedIp| -> Result<Reserved> {
+        let res_policy = policy_opts(policies, res.policy.as_deref())?;
+        let mut r = Reserved::from(res);
+        r.opts = fold_opts(r.opts, &[&res_policy, &net_ctx]);
+        Ok(r)
+    };
+    let reserved_macs = reservations
+        .iter()
+        .filter_map(|res| match &res.condition {
+            wire::v4::Condition::Mac(mac) => Some(build_reserved(res).map(|r| (*mac, r))),
+            _ => None,
+        })
+        .collect::<Result<_>>()?;
+    let reserved_opts = reservations
+        .iter()
+        .filter_map(|res| match &res.condition {
+            wire::v4::Condition::Options(match_opts) => {
+                // TODO: we only support matching on a single option currently.
+                // A reservation can match on chaddr OR a single option value.
+                match match_opts.values.0.iter().next() {
+                    Some((code, opt)) => {
+                        Some(build_reserved(res).map(|r| (*code, (opt.clone(), r))))
+                    }
+                    _ => None,
+                }
+            }
+            _ => None,
+        })
+        .collect::<Result<_>>()?;
+
+    Ok(Network {
+        server_id,
+        subnet: Default::default(), // This will be set in the calling function
+        ping_check,
+        probation_period: Duration::from_secs(probation_period),
+        ranges,
+        reserved_macs,
+        reserved_opts,
+        authoritative,
+        ping_timeout_ms: Duration::from_millis(ping_timeout_ms),
+        server_name,
+        file_name,
+    })
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -713,6 +783,7 @@ mod tests {
     pub static SAMPLE_YAML: &str = include_str!("../sample/config.yaml");
     pub static V4_JSON: &str = include_str!("../sample/config_v4.json");
     pub static CIRC_YAML: &str = include_str!("../sample/circular_deps.yaml");
+    pub static POLICIES_YAML: &str = include_str!("../sample/config_v4_policies.yaml");
 
     // test we can decode from wire
     #[test]
@@ -741,6 +812,95 @@ mod tests {
             Some(&v4::DhcpOption::Router(vec![Ipv4Addr::from([
                 192, 168, 1, 1
             ])]))
+        );
+    }
+
+    #[test]
+    fn test_global_and_policy_opts() {
+        use dora_core::dhcproto::v4::{DhcpOption as O, OptionCode as C};
+        let cfg = Config::new(POLICIES_YAML).unwrap();
+
+        // network 10.0.0.0/24 references policy `corp` and sets network `routers`.
+        // first range only sets subnet_mask, so it inherits the rest.
+        let r = cfg
+            .range([10, 0, 0, 1], [10, 0, 0, 120], None)
+            .expect("range 10.0.0.100-200");
+        // own option
+        assert_eq!(
+            r.opts().get(C::SubnetMask),
+            Some(&O::SubnetMask([255, 255, 255, 0].into()))
+        );
+        // network-level option
+        assert_eq!(
+            r.opts().get(C::Router),
+            Some(&O::Router(vec![[10, 0, 0, 1].into()]))
+        );
+        // from the `corp` policy (overrides global dns), not global 9.9.9.9
+        assert_eq!(
+            r.opts().get(C::DomainNameServer),
+            Some(&O::DomainNameServer(vec![
+                [10, 0, 0, 53].into(),
+                [10, 0, 0, 54].into()
+            ]))
+        );
+        // domain_name comes from the policy too (present)
+        assert!(r.opts().get(C::DomainName).is_some());
+
+        // second range overrides dns with its own value
+        let r2 = cfg
+            .range([10, 0, 0, 1], [10, 0, 0, 220], None)
+            .expect("range 10.0.0.201-250");
+        assert_eq!(
+            r2.opts().get(C::DomainNameServer),
+            Some(&O::DomainNameServer(vec![[10, 0, 0, 99].into()]))
+        );
+        // still inherits network routers
+        assert_eq!(
+            r2.opts().get(C::Router),
+            Some(&O::Router(vec![[10, 0, 0, 1].into()]))
+        );
+
+        // network 10.0.1.0/24 has no policy/options: falls through to global dns
+        let r3 = cfg
+            .range([10, 0, 1, 1], [10, 0, 1, 120], None)
+            .expect("range 10.0.1.100-200");
+        assert_eq!(
+            r3.opts().get(C::DomainNameServer),
+            Some(&O::DomainNameServer(vec![[9, 9, 9, 9].into()]))
+        );
+        // global domain_name is present here (no more-specific override)
+        assert!(r3.opts().get(C::DomainName).is_some());
+
+        // and the global opts accessor exposes the same globals
+        assert_eq!(
+            cfg.global_opts().get(C::DomainNameServer),
+            Some(&O::DomainNameServer(vec![[9, 9, 9, 9].into()]))
+        );
+    }
+
+    #[test]
+    fn test_unknown_policy_errors() {
+        let yaml = r#"
+v4:
+    policies:
+        known:
+            values: {}
+    networks:
+        10.0.0.0/24:
+            policy: does-not-exist
+            ranges:
+                - start: 10.0.0.100
+                  end: 10.0.0.200
+                  config:
+                      lease_time:
+                          default: 3600
+                  options:
+                      values: {}
+"#;
+        let err = Config::new(yaml).expect_err("unknown policy must fail");
+        assert!(
+            format!("{err:#}").contains("unknown policy"),
+            "unexpected error: {err:#}"
         );
     }
 
