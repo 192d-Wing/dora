@@ -1,0 +1,27 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            UPDATE leases_v6\n            SET client_id = $4, leased = $5, expires_at = $6, probation = FALSE\n            WHERE prefix_len = 128 AND addr IN\n               (\n                   SELECT addr FROM leases_v6\n                   WHERE prefix_len = 128\n                     AND (((expires_at < $1) AND (addr >= $2 AND addr <= $3)) OR (client_id = $4))\n                   ORDER BY addr LIMIT 1\n               )\n            RETURNING addr\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "addr",
+        "type_info": "Bytea"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Bytea",
+        "Bytea",
+        "Bytea",
+        "Bool",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "1bc3e3c924635a9f5122ce34d34ec681e1b98fdd66224d20f683841b9bfeaa01"
+}

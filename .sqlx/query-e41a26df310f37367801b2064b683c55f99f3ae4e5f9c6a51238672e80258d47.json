@@ -1,0 +1,20 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO leases_v6\n                (addr, prefix_len, client_id, expires_at, network, leased, probation)\n               VALUES ($1, $2, $3, $4, $5, $6, $7)\n               ON CONFLICT (addr, prefix_len) DO UPDATE SET\n                 client_id = EXCLUDED.client_id, expires_at = EXCLUDED.expires_at,\n                 network = EXCLUDED.network, leased = EXCLUDED.leased,\n                 probation = EXCLUDED.probation",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Int8",
+        "Bytea",
+        "Int8",
+        "Bytea",
+        "Bool",
+        "Bool"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "e41a26df310f37367801b2064b683c55f99f3ae4e5f9c6a51238672e80258d47"
+}

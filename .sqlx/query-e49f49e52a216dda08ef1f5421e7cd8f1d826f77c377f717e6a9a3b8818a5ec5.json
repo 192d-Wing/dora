@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            UPDATE leases\n            SET\n                leased = $4, expires_at = $5, probation = $6, client_id = $7\n            WHERE ip in\n               (\n                    SELECT ip\n                    FROM leases\n                    WHERE\n                        ((expires_at > $1) AND (client_id = $2) AND (ip = $3))\n                    ORDER BY ip LIMIT 1\n                )\n            RETURNING ip\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "ip",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Bytea",
+        "Int8",
+        "Bool",
+        "Int8",
+        "Bool",
+        "Bytea"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "e49f49e52a216dda08ef1f5421e7cd8f1d826f77c377f717e6a9a3b8818a5ec5"
+}

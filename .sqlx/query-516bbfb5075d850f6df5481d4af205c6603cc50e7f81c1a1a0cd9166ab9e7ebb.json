@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE operations SET action = $2, status = $3, actor = $4, input_summary = $5, result = $6, error_code = $7, error_message = $8, started_at = $9, completed_at = $10 WHERE operation_id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "516bbfb5075d850f6df5481d4af205c6603cc50e7f81c1a1a0cd9166ab9e7ebb"
+}

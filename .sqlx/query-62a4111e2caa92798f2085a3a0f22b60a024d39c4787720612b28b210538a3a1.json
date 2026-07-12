@@ -1,0 +1,19 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO leases_v6\n                (addr, prefix_len, client_id, expires_at, network, leased, probation)\n               VALUES ($1, 128, $2, $3, $4, $5, $6)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Bytea",
+        "Int8",
+        "Bytea",
+        "Bool",
+        "Bool"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "62a4111e2caa92798f2085a3a0f22b60a024d39c4787720612b28b210538a3a1"
+}

@@ -1,0 +1,50 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT family AS \"family!\", ip AS \"ip!\", prefix AS \"prefix?\",\n                      network AS \"network?\", match_json AS \"match_json!\",\n                      created_at AS \"created_at!\"\n               FROM runtime_reservations ORDER BY family, ip",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "family!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "ip!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "prefix?",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "network?",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "match_json!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "created_at!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "6ccf197503ba50b8938a172cd5efd2bd650390e5f4f02f71371879f22d7dce49"
+}
