@@ -1,6 +1,6 @@
 [package]
 name = "register_derive"
-version = "0.1.0"
+version.workspace = true
 authors = ["Bluecat Networks <support@bluecatnetworks.com>"]
 edition = "2024"
 license = "MPL-2.0"

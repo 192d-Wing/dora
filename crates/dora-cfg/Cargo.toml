@@ -1,6 +1,6 @@
 [package]
 name = "dora-cfg"
-version = "0.1.0"
+version.workspace = true
 edition = "2024"
 description = "dora is a DHCP server written from the ground up in Rust"
 license = "MPL-2.0"

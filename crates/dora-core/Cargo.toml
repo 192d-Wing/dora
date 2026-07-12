@@ -1,6 +1,6 @@
 [package]
 name = "dora-core"
-version = "0.1.0"
+version.workspace = true
 edition = "2024"
 authors = ["BlueCat Networks <support@bluecatnetworks.com>"]
 description = "dora is a DHCP server written from the ground up in Rust"

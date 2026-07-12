@@ -19,6 +19,10 @@ members = [
 resolver = "2"
 # default-members = ["bin"]
 
+# Shared across all workspace crates; each crate sets `version.workspace = true`.
+[workspace.package]
+version = "0.3.0"
+
 [workspace.dependencies]
 # hickory 0.26 to match usg-dhcproto (its Name type must be the same hickory
 # version dora's ddns code uses).

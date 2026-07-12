@@ -34,6 +34,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `crossbeam-channel`
 - Replace the sqlx `sqlx-data.json` offline query cache with the `.sqlx/`
   directory produced by `cargo sqlx prepare`.
+- Unify all workspace crates to a single version via `[workspace.package]`;
+  every crate now sets `version.workspace = true` (0.3.0).
 
 [Unreleased]: https://github.com/192d-Wing/dora/compare/v0.3.0...HEAD
 [0.3.0]: https://github.com/192d-Wing/dora/compare/v0.2.0...v0.3.0

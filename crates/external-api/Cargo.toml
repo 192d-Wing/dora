@@ -1,6 +1,6 @@
 [package]
 name = "external-api"
-version = "0.1.0"
+version.workspace = true
 authors = ["BlueCat Networks <support@bluecatnetworks.com>"]
 edition = "2024"
 license = "MPL-2.0"
