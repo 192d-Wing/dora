@@ -353,11 +353,11 @@ fn api_router<S: Storage>(
                 .post(handlers::create_config_candidate::<S>),
         )
         .route(
-            "/v1/config/candidates/:candidate_id",
+            "/v1/config/candidates/{candidate_id}",
             routing::get(handlers::get_config_candidate::<S>),
         )
         .route(
-            "/v1/operations/:operation_id",
+            "/v1/operations/{operation_id}",
             routing::get(handlers::get_operation::<S>),
         )
         .route(
