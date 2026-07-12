@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-07-12
+
+### Changed
+
+- Client-class options now take priority over range/network/policy/global
+  options. Previously range options won; now matched client-class options
+  override the same option codes from any config scope.
+
 ## [0.5.0] - 2026-07-12
 
 ### Added
