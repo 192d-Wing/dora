@@ -26,9 +26,12 @@ overlays.
 Each service is its **own single-binary image**. They share one Postgres
 (`usg-dora-db`) via `DATABASE_URL`, which is how the separate v4/v6/api pods
 share lease state, runtime reservations, operation/audit records, and config
-candidates. The services do **not** migrate on startup: the `usg-dora-migrate`
-`Job` applies the schema once (idempotently) before the servers roll out, so
-multiple services/replicas never race on migrations.
+candidates. The services do **not** migrate on startup. The schema is applied by
+`dora-migrate` (idempotent, advisory-locked): each service Deployment runs it as
+an **initContainer** so the schema is ordered ahead of that pod, and the
+standalone `usg-dora-migrate` `Job` is an explicit pre-rollout migration. (A Job
+and the Deployments applied together have no ordering, so the initContainers are
+what actually guarantee schema-before-serve.)
 
 ## Networking (Cilium)
 

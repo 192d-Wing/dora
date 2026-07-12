@@ -17,12 +17,22 @@ fi
 
 # Only the DHCP servers use the data-dir / interface-wait dance below. The API
 # and the migrator take their config/DB from flags or env and need no config
-# file or interface, so run them directly with whatever args were given (this
-# also makes a bare, no-arg `docker run usg-dora-migrate` work). A v4/v6 image
-# (or an unset DORA_SERVICE, for backward compatibility) falls through.
+# file or interface. A v4/v6 image (or an unset DORA_SERVICE, for backward
+# compatibility) falls through to that dance.
 case "${DORA_SERVICE:-}" in
-    v4 | v6 | "") : ;;
-    *) $run "$DORA_BIN" "$@" ;;
+    v4 | v6 | "")
+        : # fall through
+        ;;
+    *)
+        # api / migrate: run the service for no args or flag args (`-c ...`,
+        # `--dora-log ...`), but keep the passthrough escape hatch so an explicit
+        # command still runs — e.g. `docker run usg-dora-api sh` for debugging.
+        if [ "$#" -eq 0 ] || [ "${1#-}" != "$1" ]; then
+            $run "$DORA_BIN" "$@"
+        else
+            $run "$@"
+        fi
+        ;;
 esac
 
 # Flag-style args (a leading '-', e.g. `-c /etc/dora/config.yaml --v4-addr ...`)

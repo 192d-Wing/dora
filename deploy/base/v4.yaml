@@ -33,6 +33,29 @@ spec:
                   matchLabels:
                     app.kubernetes.io/name: usg-dora-v4-server
                 topologyKey: kubernetes.io/hostname
+      # Ensure the DB schema exists before the server starts (the services no
+      # longer migrate on startup). dora-migrate is idempotent and takes a
+      # Postgres advisory lock, so running it from every pod — and alongside the
+      # standalone migrate Job — is safe. This gives a per-pod happens-before that
+      # the Job alone does not (nothing orders the Job ahead of the Deployments).
+      initContainers:
+        - name: migrate
+          image: usg-dora-migrate:latest
+          args:
+            - "--dora-log"
+            - "info"
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: dora-db
+                  key: DATABASE_URL
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+            limits:
+              memory: 128Mi
       containers:
         - name: dora
           image: usg-dora-v4:latest

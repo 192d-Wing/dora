@@ -4,13 +4,15 @@
 # In the split deployment the services connect WITHOUT migrating on startup, so
 # the schema is owned here. This Job applies any pending migrations against the
 # shared Postgres and exits; it is idempotent, so re-running against an
-# up-to-date database is a no-op. Run it before rolling out (or upgrading) the
-# v4 / v6 / api services.
+# up-to-date database is a no-op. This standalone Job is an explicit pre-rollout
+# migration; each service Deployment ALSO runs dora-migrate as an initContainer,
+# which is what actually orders the schema ahead of that pod (a Job and the
+# Deployments applied together have no ordering between them).
 #
 # `dora-migrate` reads the connection string from the DATABASE_URL env var (the
-# `-d/--database-url` flag's env fallback); the `--dora-log` arg is a flag so the
-# entrypoint forwards it straight to the binary instead of taking the DHCP
-# interface-wait path.
+# env fallback of the `-d` flag — there is no `--database-url` long form); the
+# `--dora-log` arg is a flag so the entrypoint forwards it straight to the binary
+# instead of taking the DHCP interface-wait path.
 apiVersion: batch/v1
 kind: Job
 metadata:
