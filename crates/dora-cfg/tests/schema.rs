@@ -83,9 +83,9 @@ fn all_sample_configs_match_schema() {
     let schema_json: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(root.join("config_schema.json")).unwrap())
             .expect("config_schema.json is valid JSON");
-    let schema = jsonschema::JSONSchema::options()
+    let schema = jsonschema::options()
         .with_draft(jsonschema::Draft::Draft7)
-        .compile(&schema_json)
+        .build(&schema_json)
         .expect("config_schema.json compiles as a Draft7 schema");
 
     // every real-world / sample config we ship should validate against the schema.
@@ -107,15 +107,13 @@ fn all_sample_configs_match_schema() {
     let mut failures = Vec::new();
     for sample in &samples {
         let doc = load_config(sample);
-        if let Err(errors) = schema.validate(&doc) {
-            for e in errors {
-                failures.push(format!(
-                    "{}: {} (at {})",
-                    sample.file_name().unwrap().to_string_lossy(),
-                    e,
-                    e.instance_path
-                ));
-            }
+        for e in schema.iter_errors(&doc) {
+            failures.push(format!(
+                "{}: {} (at {})",
+                sample.file_name().unwrap().to_string_lossy(),
+                e,
+                e.instance_path
+            ));
         }
     }
     assert!(

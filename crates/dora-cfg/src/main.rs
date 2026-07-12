@@ -56,20 +56,18 @@ fn parse_schema(args: &Args) -> Result<()> {
             &std::fs::read_to_string(schema).context("failed to find schema")?,
         )?;
         let input = parse_wire::<serde_json::Value>(args)?;
-        let validator = jsonschema::JSONSchema::options()
+        let validator = jsonschema::options()
             .with_draft(jsonschema::Draft::Draft7)
-            .compile(&parsed)
+            .build(&parsed)
             .expect("failed to compile schema"); // can't use ? static lifetime on error
         // TODO: jsonschema crate has garbage error types!
-        return match validator.validate(&input) {
-            Err(errs) => {
-                errs.for_each(|err| eprintln!("{err}"));
-                Err(anyhow::anyhow!("failed to validate schema"))
-            }
-            _ => {
-                println!("json schema validated");
-                Ok(())
-            }
+        let mut errors = validator.iter_errors(&input).peekable();
+        return if errors.peek().is_some() {
+            errors.for_each(|err| eprintln!("{err}"));
+            Err(anyhow::anyhow!("failed to validate schema"))
+        } else {
+            println!("json schema validated");
+            Ok(())
         };
     }
     Ok(())
