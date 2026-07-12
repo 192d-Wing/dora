@@ -34,8 +34,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   most-specific-wins: range/reservation > network > policy > global.
 - DHCPv6 **client classes** (`v6.client_classes`) supporting the
   protocol-agnostic expression subset (`option[code]`, `member`, `substring`,
-  `concat`, `hexstring`, equality); matched-class options are merged into
-  responses below explicitly-configured options.
+  `concat`, `hexstring`, equality); matched-class options take priority
+  over explicitly-configured options.
 
 ### Changed
 

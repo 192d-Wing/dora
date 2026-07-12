@@ -254,12 +254,12 @@ v4:
     #    - Dora uses subnet selection logic to determine which top level network
     #       a given message should get its IP from (giaddr/ iaddr and opts like subnet select & relay agent info).
     #    - Dora checks to see if any static IP reservations exist with matching client classes, if so it uses that reservation,
-    #       potentially with option/config data from the client class. Precedence for option data goes to the reservation
-    #       over any client class data.
+    #       potentially with option/config data from the client class. Precedence for option data goes to the client class
+    #       over the reservation data.
     #    - Dora iterates ranges in the network and if any client class is defined for the range, it checks
     #       to see that the packet evaluated a match for that client class-- i.e. the packet’s matching classes
     #       must contain the range’s class if it exists. Range precedence is set by index in the range list.
-    #       Precedence for option data goes to the range over any client class option data.
+    #       Precedence for option data goes to the client class over any range option data.
     #    - If, during iterating through ranges, there are classless ranges, we attempt to assign an IP
     #       from the classless range. If the packet has classes associated with it, it may get
     #       option data from those classes, but it can still have an IP assigned from a classless range.
@@ -415,8 +415,8 @@ v6:
     # assert language is supported: option[code], member(...),
     # substring/concat/hexstring, equality, exists (v4-only header atoms like
     # pkt4.mac / relay4[..] are rejected). v6 option codes are numeric only.
-    # Matched-class options fill in codes not set by the range/network/policy/
-    # global config. See sample/config_v6_client_classes.yaml for a worked example.
+    # Matched-class options take priority over range/network/policy/global config.
+    # See sample/config_v6_client_classes.yaml for a worked example.
     #
     # client_classes:
     #     - name: has_vendor

@@ -5,8 +5,8 @@
 # substring/concat/hexstring, equality, exists (v4-only header atoms like
 # pkt4.mac / relay4[..] are rejected). v6 option codes are numeric only.
 #
-# Matched-class options fill in option codes not already set by the
-# range/network/policy/global config (explicit config wins).
+# Matched-class options take priority over range/network/policy/global config
+# (client-class wins where the same option code is defined in both).
 v6:
     server_id:
         type: LL

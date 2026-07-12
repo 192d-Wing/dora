@@ -140,8 +140,8 @@ impl Config {
             .map(|classes| classes.eval(req))
     }
 
-    /// merge matched v6 client-class options under `opts` (explicit config wins):
-    /// class options only fill in codes not already present in `opts`.
+    /// merge matched v6 client-class options over `opts` (client-class wins):
+    /// class options override codes already present in `opts`.
     pub fn collect_opts(
         &self,
         opts: &DhcpOptions,
@@ -152,13 +152,13 @@ impl Config {
             .as_ref()
             .and_then(|classes| classes.collect_opts(matched_classes))
         {
-            Some(class_opts) => merge_opts(opts, class_opts),
+            Some(class_opts) => merge_opts(&class_opts, opts.clone()),
             None => opts.clone(),
         }
     }
 }
 
-/// merge `b` into `a`, favoring `a` where there are duplicates
+/// merge `b` into `a`, `a` takes priority where there are duplicates
 fn merge_opts(a: &DhcpOptions, b: DhcpOptions) -> DhcpOptions {
     let mut opts = a.clone();
     for opt in b.iter() {

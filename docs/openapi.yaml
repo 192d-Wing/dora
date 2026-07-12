@@ -1754,7 +1754,7 @@ components:
       description: stateful DHCPv6 server configuration (RFC 8415)
       properties:
         client_classes:
-          description: DHCPv6 client classes; matched-class options are merged into responses below explicit
+          description: DHCPv6 client classes; matched-class options take priority over explicit
             config
           items:
             $ref: '#/components/schemas/Cfg_v6_client_class'
