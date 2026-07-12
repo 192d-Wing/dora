@@ -15,7 +15,7 @@ ddns = { path = "../libs/ddns" }
 
 # libs
 anyhow = { workspace = true }
-axum = "0.7.9"
+axum = "0.8.9"
 chrono = "0.4.45"
 hex = "0.4.3"
 tokio = { workspace = true }
@@ -51,4 +51,4 @@ reqwest = { version = "0.12.28", default-features = false, features = [
     "json",
     "rustls-tls",
 ] }
-rcgen = "0.13"
+rcgen = "0.14"
