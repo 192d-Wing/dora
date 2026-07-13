@@ -424,6 +424,22 @@ pub struct Network {
 impl Network {
     pub fn set_subnet(&mut self, subnet: Ipv4Net) -> &mut Self {
         self.subnet = subnet;
+        let mask = DhcpOption::SubnetMask(subnet.netmask());
+        for range in &mut self.ranges {
+            if range.opts.get(OptionCode::SubnetMask).is_none() {
+                range.opts.insert(mask.clone());
+            }
+        }
+        for res in self.reserved_macs.values_mut() {
+            if res.opts.get(OptionCode::SubnetMask).is_none() {
+                res.opts.insert(mask.clone());
+            }
+        }
+        for (_, res) in self.reserved_opts.values_mut() {
+            if res.opts.get(OptionCode::SubnetMask).is_none() {
+                res.opts.insert(mask.clone());
+            }
+        }
         self
     }
     pub fn set_ranges(&mut self, ranges: Vec<NetRange>) -> &mut Self {
