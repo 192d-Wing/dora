@@ -242,11 +242,9 @@ impl Config {
         // in reality, we only need to clone the messages that actually match the param request list
         self.client_classes
             .as_ref()
-            .map(|classes| {
-                match classes.collect_opts(matched_classes) {
-                    Some(class_opts) => merge_opts(class_opts, Some(opts.clone())),
-                    None => opts.clone(),
-                }
+            .map(|classes| match classes.collect_opts(matched_classes) {
+                Some(class_opts) => merge_opts(class_opts, Some(opts.clone())),
+                None => opts.clone(),
             })
             .unwrap_or_else(|| opts.clone())
     }

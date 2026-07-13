@@ -777,17 +777,12 @@ impl MsgContext<v4::Message> {
             if let Some(v) = param_opts.get(OptionCode::Router) {
                 resp.opts_mut().insert(v.clone());
             }
-            if let Some(DhcpOption::SubnetMask(mask)) =
-                param_opts.get(OptionCode::SubnetMask)
-            {
-                resp.opts_mut()
-                    .insert(DhcpOption::SubnetMask(*mask));
+            if let Some(DhcpOption::SubnetMask(mask)) = param_opts.get(OptionCode::SubnetMask) {
+                resp.opts_mut().insert(DhcpOption::SubnetMask(*mask));
                 // If the config/CIDR mask is narrower than the interface
                 // prefix and the interface IP falls outside the resulting
                 // scope, drop the interface-derived router.
-                if interface_match
-                    && param_opts.get(OptionCode::Router).is_none()
-                {
+                if interface_match && param_opts.get(OptionCode::Router).is_none() {
                     if let Some(sub) = subnet_ip {
                         let s = u32::from(sub);
                         let m = u32::from(*mask);
