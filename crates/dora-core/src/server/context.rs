@@ -782,14 +782,15 @@ impl MsgContext<v4::Message> {
                 // If the config/CIDR mask is narrower than the interface
                 // prefix and the interface IP falls outside the resulting
                 // scope, drop the interface-derived router.
-                if interface_match && param_opts.get(OptionCode::Router).is_none() {
-                    if let Some(sub) = subnet_ip {
-                        let s = u32::from(sub);
-                        let m = u32::from(*mask);
-                        let i = u32::from(interface.ip());
-                        if (s & m) != (i & m) {
-                            resp.opts_mut().remove(OptionCode::Router);
-                        }
+                if interface_match
+                    && param_opts.get(OptionCode::Router).is_none()
+                    && let Some(sub) = subnet_ip
+                {
+                    let s = u32::from(sub);
+                    let m = u32::from(*mask);
+                    let i = u32::from(interface.ip());
+                    if (s & m) != (i & m) {
+                        resp.opts_mut().remove(OptionCode::Router);
                     }
                 }
             }
