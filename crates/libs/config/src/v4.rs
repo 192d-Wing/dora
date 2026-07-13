@@ -242,11 +242,9 @@ impl Config {
         // in reality, we only need to clone the messages that actually match the param request list
         self.client_classes
             .as_ref()
-            .map(|classes| {
-                match classes.collect_opts(matched_classes) {
-                    Some(class_opts) => merge_opts(class_opts, Some(opts.clone())),
-                    None => opts.clone(),
-                }
+            .map(|classes| match classes.collect_opts(matched_classes) {
+                Some(class_opts) => merge_opts(class_opts, Some(opts.clone())),
+                None => opts.clone(),
             })
             .unwrap_or_else(|| opts.clone())
     }
@@ -424,10 +422,34 @@ pub struct Network {
 impl Network {
     pub fn set_subnet(&mut self, subnet: Ipv4Net) -> &mut Self {
         self.subnet = subnet;
+        let mask = DhcpOption::SubnetMask(subnet.netmask());
+        for range in &mut self.ranges {
+            if range.opts.get(OptionCode::SubnetMask).is_none() {
+                range.opts.insert(mask.clone());
+            }
+        }
+        for res in self.reserved_macs.values_mut() {
+            if res.opts.get(OptionCode::SubnetMask).is_none() {
+                res.opts.insert(mask.clone());
+            }
+        }
+        for (_, res) in self.reserved_opts.values_mut() {
+            if res.opts.get(OptionCode::SubnetMask).is_none() {
+                res.opts.insert(mask.clone());
+            }
+        }
         self
     }
     pub fn set_ranges(&mut self, ranges: Vec<NetRange>) -> &mut Self {
         self.ranges = ranges;
+        if self.subnet != Ipv4Net::default() {
+            let mask = DhcpOption::SubnetMask(self.subnet.netmask());
+            for range in &mut self.ranges {
+                if range.opts.get(OptionCode::SubnetMask).is_none() {
+                    range.opts.insert(mask.clone());
+                }
+            }
+        }
         self
     }
     pub fn set_ping_check(&mut self, ping_check: bool) -> &mut Self {

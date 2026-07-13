@@ -761,6 +761,7 @@ impl MsgContext<v4::Message> {
             resp.opts_mut().insert(id.clone());
         }
         let mut interface_match = false;
+        let subnet_ip = subnet.as_ref().ok().copied();
         // insert router/netmask
         // if the config provides these also, they will be overwritten
         if let Some(IpNetwork::V4(interface)) = self.interface {
@@ -776,8 +777,22 @@ impl MsgContext<v4::Message> {
             if let Some(v) = param_opts.get(OptionCode::Router) {
                 resp.opts_mut().insert(v.clone());
             }
-            if let Some(v) = param_opts.get(OptionCode::SubnetMask) {
-                resp.opts_mut().insert(v.clone());
+            if let Some(DhcpOption::SubnetMask(mask)) = param_opts.get(OptionCode::SubnetMask) {
+                resp.opts_mut().insert(DhcpOption::SubnetMask(*mask));
+                // If the config/CIDR mask is narrower than the interface
+                // prefix and the interface IP falls outside the resulting
+                // scope, drop the interface-derived router.
+                if interface_match
+                    && param_opts.get(OptionCode::Router).is_none()
+                    && let Some(sub) = subnet_ip
+                {
+                    let s = u32::from(sub);
+                    let m = u32::from(*mask);
+                    let i = u32::from(interface.ip());
+                    if (s & m) != (i & m) {
+                        resp.opts_mut().remove(OptionCode::Router);
+                    }
+                }
             }
         }
 
