@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-07-12
+
+### Fixed
+
+- DHCPv4 option 125 (Vendor-Identifying Vendor-Specific Information) is now
+  served verbatim. Bumped `usg-dhcproto` to 0.19.0, which stores option 125 as
+  opaque bytes instead of parsing it as RFC 3925. Vendor framing that is not
+  RFC-3925-shaped (e.g. TEO phones' 2-byte PEN + 1-byte length) previously
+  failed to parse and was silently dropped, so the option never reached the
+  client.
+
 ## [0.6.0] - 2026-07-12
 
 ### Changed
