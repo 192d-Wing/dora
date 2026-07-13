@@ -444,6 +444,14 @@ impl Network {
     }
     pub fn set_ranges(&mut self, ranges: Vec<NetRange>) -> &mut Self {
         self.ranges = ranges;
+        if self.subnet != Ipv4Net::default() {
+            let mask = DhcpOption::SubnetMask(self.subnet.netmask());
+            for range in &mut self.ranges {
+                if range.opts.get(OptionCode::SubnetMask).is_none() {
+                    range.opts.insert(mask.clone());
+                }
+            }
+        }
         self
     }
     pub fn set_ping_check(&mut self, ping_check: bool) -> &mut Self {
