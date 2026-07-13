@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-07-12
+
+### Fixed
+
+- DHCPv4 option 1 (subnet mask) is now derived from the network key's CIDR
+  prefix (e.g. `10.1.0.0/24` → `255.255.255.0`) and included in OFFER/ACK
+  responses for relayed packets. Previously the mask was only derived from the
+  server's local interface, which is on a different subnet for relayed traffic,
+  so option 1 was absent unless explicitly configured.
+- The interface-derived default router is now dropped from the response when the
+  CIDR-derived subnet mask would make it unreachable (e.g. interface on a /16
+  but DHCP scope is a /24).
+
 ## [0.7.0] - 2026-07-12
 
 ### Fixed
