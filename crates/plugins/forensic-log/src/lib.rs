@@ -1,8 +1,7 @@
 use std::fmt::Write;
 
 use dora_core::{
-    async_trait,
-    chrono,
+    async_trait, chrono,
     dhcproto::{v4, v6},
     handler::PostResponse,
     server::context::MsgContext,
@@ -84,20 +83,12 @@ impl PostResponse<v4::Message> for ForensicLog {
 
         let subnet = ctx.subnet().map(|s| s.to_string()).unwrap_or_default();
         let src_addr = ctx.src_addr().to_string();
-        let dst_addr = ctx
-            .dst_addr()
-            .map(|a| a.to_string())
-            .unwrap_or_default();
-        let interface = ctx
-            .interface()
-            .map(|i| i.to_string())
-            .unwrap_or_default();
+        let dst_addr = ctx.dst_addr().map(|a| a.to_string()).unwrap_or_default();
+        let interface = ctx.interface().map(|i| i.to_string()).unwrap_or_default();
 
         let matched_classes = ctx
             .get_local::<MatchedClasses>()
-            .map(|mc| {
-                mc.0.join(",")
-            })
+            .map(|mc| mc.0.join(","))
             .unwrap_or_default();
 
         let expires_at = ctx
@@ -185,14 +176,8 @@ impl PostResponse<v6::Message> for ForensicLog {
             .unwrap_or_default();
 
         let src_addr = ctx.src_addr().to_string();
-        let dst_addr = ctx
-            .dst_addr()
-            .map(|a| a.to_string())
-            .unwrap_or_default();
-        let interface = ctx
-            .interface()
-            .map(|i| i.to_string())
-            .unwrap_or_default();
+        let dst_addr = ctx.dst_addr().map(|a| a.to_string()).unwrap_or_default();
+        let interface = ctx.interface().map(|i| i.to_string()).unwrap_or_default();
 
         let matched_classes = ctx
             .get_local::<MatchedClasses>()
@@ -207,18 +192,18 @@ impl PostResponse<v6::Message> for ForensicLog {
                 let mut addrs = Vec::new();
                 if let Some(iana_opts) = resp.opts().get_all(OptionCode::IANA) {
                     for opt in iana_opts {
-                        if let DhcpOption::IANA(iana) = opt {
-                            if let Some(ia_addrs) = iana.opts.get_all(OptionCode::IAAddr) {
-                                for addr_opt in ia_addrs {
-                                    if let DhcpOption::IAAddr(ia_addr) = addr_opt {
-                                        addrs.push(format!(
-                                            "{}(iaid={},preferred={},valid={})",
-                                            ia_addr.addr,
-                                            iana.id,
-                                            ia_addr.preferred_life,
-                                            ia_addr.valid_life,
-                                        ));
-                                    }
+                        if let DhcpOption::IANA(iana) = opt
+                            && let Some(ia_addrs) = iana.opts.get_all(OptionCode::IAAddr)
+                        {
+                            for addr_opt in ia_addrs {
+                                if let DhcpOption::IAAddr(ia_addr) = addr_opt {
+                                    addrs.push(format!(
+                                        "{}(iaid={},preferred={},valid={})",
+                                        ia_addr.addr,
+                                        iana.id,
+                                        ia_addr.preferred_life,
+                                        ia_addr.valid_life,
+                                    ));
                                 }
                             }
                         }
@@ -228,19 +213,19 @@ impl PostResponse<v6::Message> for ForensicLog {
                 let mut prefixes = Vec::new();
                 if let Some(iapd_opts) = resp.opts().get_all(OptionCode::IAPD) {
                     for opt in iapd_opts {
-                        if let DhcpOption::IAPD(iapd) = opt {
-                            if let Some(ia_pfxs) = iapd.opts.get_all(OptionCode::IAPrefix) {
-                                for pfx_opt in ia_pfxs {
-                                    if let DhcpOption::IAPrefix(ia_prefix) = pfx_opt {
-                                        prefixes.push(format!(
-                                            "{}/{}(iaid={},preferred={},valid={})",
-                                            ia_prefix.prefix_ip,
-                                            ia_prefix.prefix_len,
-                                            iapd.id,
-                                            ia_prefix.preferred_lifetime,
-                                            ia_prefix.valid_lifetime,
-                                        ));
-                                    }
+                        if let DhcpOption::IAPD(iapd) = opt
+                            && let Some(ia_pfxs) = iapd.opts.get_all(OptionCode::IAPrefix)
+                        {
+                            for pfx_opt in ia_pfxs {
+                                if let DhcpOption::IAPrefix(ia_prefix) = pfx_opt {
+                                    prefixes.push(format!(
+                                        "{}/{}(iaid={},preferred={},valid={})",
+                                        ia_prefix.prefix_ip,
+                                        ia_prefix.prefix_len,
+                                        iapd.id,
+                                        ia_prefix.preferred_lifetime,
+                                        ia_prefix.valid_lifetime,
+                                    ));
                                 }
                             }
                         }

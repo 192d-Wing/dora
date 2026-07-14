@@ -29,17 +29,12 @@ const fn default_true() -> bool {
     true
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ForensicLogFormat {
+    #[default]
     Json,
     Text,
-}
-
-impl Default for ForensicLogFormat {
-    fn default() -> Self {
-        Self::Json
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
