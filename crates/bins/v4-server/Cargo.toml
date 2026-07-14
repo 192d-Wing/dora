@@ -17,6 +17,7 @@ ip-manager = { path = "../../libs/ip-manager" }
 message-type = { path = "../../plugins/message-type" }
 static-addr = { path = "../../plugins/static-addr" }
 leases = { path = "../../plugins/leases" }
+forensic-log = { path = "../../plugins/forensic-log" }
 # external
 anyhow = { workspace = true }
 dotenv = { package = "dotenvy", version = "0.15.7" }

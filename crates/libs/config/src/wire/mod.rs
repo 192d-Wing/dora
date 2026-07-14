@@ -20,6 +20,29 @@ pub struct Config {
     pub v4: v4::Config,
     /// DHCPv6 configuration
     pub v6: Option<v6::Config>,
+    /// Forensic/legal logging configuration. When present, every DHCP
+    /// lease lifecycle event is logged to a structured tracing target.
+    pub forensic_log: Option<ForensicLogConfig>,
+}
+
+const fn default_true() -> bool {
+    true
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ForensicLogFormat {
+    #[default]
+    Json,
+    Text,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub struct ForensicLogConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub format: ForensicLogFormat,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

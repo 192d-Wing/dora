@@ -16,6 +16,7 @@ ip-manager = { path = "../../libs/ip-manager" }
 # plugins the v6 datapath needs
 message-type = { path = "../../plugins/message-type" }
 leases-v6 = { path = "../../plugins/leases-v6" }
+forensic-log = { path = "../../plugins/forensic-log" }
 # external
 anyhow = { workspace = true }
 dotenv = { package = "dotenvy", version = "0.15.7" }

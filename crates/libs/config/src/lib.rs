@@ -22,11 +22,14 @@ use dora_core::pnet::{
     ipnetwork::{IpNetwork, Ipv4Network},
 };
 
+pub use wire::{ForensicLogConfig, ForensicLogFormat};
+
 /// server config
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct DhcpConfig {
     v4: v4::Config,
     path: Option<PathBuf>,
+    forensic_log: Option<ForensicLogConfig>,
 }
 
 impl DhcpConfig {
@@ -41,6 +44,9 @@ impl DhcpConfig {
     }
     pub fn path(&self) -> Option<&Path> {
         self.path.as_deref()
+    }
+    pub fn forensic_log(&self) -> Option<&ForensicLogConfig> {
+        self.forensic_log.as_ref()
     }
 }
 
@@ -65,29 +71,35 @@ impl EnvConfig {
 }
 
 impl DhcpConfig {
+    fn from_wire(wire_cfg: wire::Config, path: Option<PathBuf>) -> Result<Self> {
+        let forensic_log = wire_cfg.forensic_log.clone();
+        let config = v4::Config::try_from(wire_cfg)?;
+        debug!(?config);
+        Ok(Self {
+            v4: config,
+            path,
+            forensic_log,
+        })
+    }
+
     /// attempts to decode the config first as JSON, then YAML, finally erroring if neither work
     pub fn parse<P: AsRef<Path>>(path: P) -> Result<Self> {
         let path = path.as_ref();
-        let config = v4::Config::new(
-            std::fs::read_to_string(path)
-                .with_context(|| format!("failed to find config at {}", &path.display()))?,
-        )?;
-        debug!(?config);
-
-        Ok(Self {
-            v4: config,
-            path: Some(path.to_path_buf()),
-        })
+        let input = std::fs::read_to_string(path)
+            .with_context(|| format!("failed to find config at {}", &path.display()))?;
+        let wire_cfg: wire::Config = serde_json::from_str(&input)
+            .or_else(|_| yaml_serde::from_str(&input))
+            .context("failed to parse config as JSON or YAML")?;
+        Self::from_wire(wire_cfg, Some(path.to_path_buf()))
     }
+
     /// attempts to decode the config first as JSON, then YAML, finally erroring if neither work
     pub fn parse_str<S: AsRef<str>>(s: S) -> Result<Self> {
-        let config = v4::Config::new(s.as_ref())?;
-        debug!(?config);
-
-        Ok(Self {
-            v4: config,
-            path: None,
-        })
+        let input = s.as_ref();
+        let wire_cfg: wire::Config = serde_json::from_str(input)
+            .or_else(|_| yaml_serde::from_str(input))
+            .context("failed to parse config as JSON or YAML")?;
+        Self::from_wire(wire_cfg, None)
     }
 }
 
