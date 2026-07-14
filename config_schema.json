@@ -438,6 +438,45 @@
                 },
                 {
                     "additionalProperties": false,
+                    "description": "DNS wire-format domain name(s) (e.g. option 24 Domain Search List)",
+                    "properties": {
+                        "type": { "const": "domain" },
+                        "value": {
+                            "oneOf": [
+                                { "type": "string" },
+                                { "type": "array", "items": { "type": "string" } }
+                            ]
+                        }
+                    }
+                },
+                {
+                    "additionalProperties": false,
+                    "description": "NTP server IPv6 address(es) (option 56, suboption 1)",
+                    "properties": {
+                        "type": { "const": "ntp_addr" },
+                        "value": {
+                            "oneOf": [
+                                { "type": "string", "format": "ipv6" },
+                                { "type": "array", "items": { "type": "string", "format": "ipv6" } }
+                            ]
+                        }
+                    }
+                },
+                {
+                    "additionalProperties": false,
+                    "description": "NTP server FQDN(s) (option 56, suboption 3)",
+                    "properties": {
+                        "type": { "const": "ntp_fqdn" },
+                        "value": {
+                            "oneOf": [
+                                { "type": "string" },
+                                { "type": "array", "items": { "type": "string" } }
+                            ]
+                        }
+                    }
+                },
+                {
+                    "additionalProperties": false,
                     "properties": {
                         "type": { "const": "hex" },
                         "value": { "type": "string" }

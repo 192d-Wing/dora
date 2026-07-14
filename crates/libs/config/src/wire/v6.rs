@@ -1,7 +1,13 @@
 use base64::Engine;
-use dora_core::dhcproto::{
-    Decodable, Decoder, Encodable, Encoder,
-    v6::{DhcpOption, DhcpOptions, EncodeResult, OptionCode},
+use dora_core::{
+    dhcproto::{
+        Decodable, Decoder, Encodable, Encoder,
+        v6::{DhcpOption, DhcpOptions, EncodeResult, NtpSuboption, OptionCode},
+    },
+    hickory_proto::{
+        rr::Name,
+        serialize::binary::{BinEncodable, BinEncoder, NameEncoding},
+    },
 };
 use ipnet::Ipv6Net;
 use serde::{Deserialize, Deserializer, Serialize, de};
@@ -200,6 +206,13 @@ enum Opt {
     U32(MaybeList<u32>),
     U16(MaybeList<u16>),
     Str(MaybeList<String>),
+    /// DNS wire-format domain names (e.g. option 24 Domain Search List).
+    /// Accepts a single name or list: `"example.com"` or `["a.com", "b.com"]`
+    Domain(MaybeList<String>),
+    /// NTP server as an IPv6 address (option 56, suboption 1).
+    NtpAddr(MaybeList<Ipv6Addr>),
+    /// NTP server as an FQDN (option 56, suboption 3).
+    NtpFqdn(MaybeList<String>),
     B64(String),
     Hex(String),
 }
@@ -278,6 +291,58 @@ fn write_opt(enc: &mut Encoder<'_>, code: u16, opt: Opt) -> anyhow::Result<()> {
         Opt::Str(MaybeList::List(list)) => {
             encode_opt(&list, |n, e| e.write_slice(n.as_bytes()), enc)?;
         }
+        Opt::Domain(MaybeList::Val(domain)) => {
+            let mut buf = Vec::new();
+            let mut name_encoder = BinEncoder::new(&mut buf);
+            name_encoder.set_name_encoding(NameEncoding::Uncompressed);
+            let name = domain.parse::<Name>()?;
+            name.emit(&mut name_encoder)?;
+            enc.write_u16(buf.len() as u16)?;
+            enc.write_slice(&buf)?;
+        }
+        Opt::Domain(MaybeList::List(list)) => {
+            let mut buf = Vec::new();
+            let mut name_encoder = BinEncoder::new(&mut buf);
+            name_encoder.set_name_encoding(NameEncoding::Uncompressed);
+            for name in list {
+                let name = name.parse::<Name>()?;
+                name.emit(&mut name_encoder)?;
+            }
+            enc.write_u16(buf.len() as u16)?;
+            enc.write_slice(&buf)?;
+        }
+        Opt::NtpAddr(MaybeList::Val(ip)) => {
+            let mut buf = Vec::new();
+            NtpSuboption::ServerAddress(ip).encode(&mut Encoder::new(&mut buf))?;
+            enc.write_u16(buf.len() as u16)?;
+            enc.write_slice(&buf)?;
+        }
+        Opt::NtpAddr(MaybeList::List(list)) => {
+            let mut buf = Vec::new();
+            let mut subopt_enc = Encoder::new(&mut buf);
+            for ip in list {
+                NtpSuboption::ServerAddress(ip).encode(&mut subopt_enc)?;
+            }
+            enc.write_u16(buf.len() as u16)?;
+            enc.write_slice(&buf)?;
+        }
+        Opt::NtpFqdn(MaybeList::Val(fqdn)) => {
+            let name = fqdn.parse::<Name>()?;
+            let mut buf = Vec::new();
+            NtpSuboption::FQDN(name).encode(&mut Encoder::new(&mut buf))?;
+            enc.write_u16(buf.len() as u16)?;
+            enc.write_slice(&buf)?;
+        }
+        Opt::NtpFqdn(MaybeList::List(list)) => {
+            let mut buf = Vec::new();
+            let mut subopt_enc = Encoder::new(&mut buf);
+            for fqdn in list {
+                let name = fqdn.parse::<Name>()?;
+                NtpSuboption::FQDN(name).encode(&mut subopt_enc)?;
+            }
+            enc.write_u16(buf.len() as u16)?;
+            enc.write_slice(&buf)?;
+        }
         Opt::B64(s) => {
             let bytes = base64::engine::general_purpose::STANDARD_NO_PAD.decode(s)?;
             enc.write_u16(bytes.len() as u16)?;
@@ -317,6 +382,41 @@ fn decode_opt(opt: &DhcpOption) -> Option<(u16, Opt)> {
         Preference(n) => Some((code.into(), Opt::U8(MaybeList::Val(*n)))),
         ServerUnicast(ip) => Some((code.into(), Opt::Ip(MaybeList::Val(*ip)))),
         DomainNameServers(addrs) => Some((code.into(), Opt::Ip(MaybeList::List(addrs.clone())))),
+        DomainSearchList(names) => Some((
+            code.into(),
+            Opt::Domain(MaybeList::List(
+                names.iter().map(|n| n.to_string()).collect(),
+            )),
+        )),
+        NtpServer(subopts) => {
+            let mut fqdns = Vec::new();
+            let mut addrs = Vec::new();
+            for s in subopts {
+                match s {
+                    NtpSuboption::FQDN(name) => fqdns.push(name.to_string()),
+                    NtpSuboption::ServerAddress(ip) | NtpSuboption::MulticastAddress(ip) => {
+                        addrs.push(*ip)
+                    }
+                }
+            }
+            if !fqdns.is_empty() && addrs.is_empty() {
+                Some((code.into(), Opt::NtpFqdn(MaybeList::List(fqdns))))
+            } else if !addrs.is_empty() && fqdns.is_empty() {
+                Some((code.into(), Opt::NtpAddr(MaybeList::List(addrs))))
+            } else if !subopts.is_empty() {
+                let mut buf = Vec::new();
+                let mut sub_enc = Encoder::new(&mut buf);
+                for s in subopts {
+                    if let Err(err) = s.encode(&mut sub_enc) {
+                        warn!(?err, "failed to encode NTP suboption");
+                        return None;
+                    }
+                }
+                Some((code.into(), Opt::Hex(hex::encode(&buf))))
+            } else {
+                None
+            }
+        }
         Unknown(opt) => Some((code.into(), Opt::Hex(hex::encode(opt.data())))),
         _ => {
             // the data includes the code value, let's slice that off
