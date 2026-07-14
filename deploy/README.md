@@ -7,30 +7,30 @@ separate **site-local** address.
 ## Quick start
 
 ```sh
-# Deploy the windep site (default)
-helm install dora deploy/chart/
+# Deploy the windep site
+helm install dora deploy/chart/ -f deploy/chart/sites/windep/values.yaml
 
-# Deploy with a specific site config
-helm install dora deploy/chart/ --set site=windep
-
-# Deploy with an external config file
+# Deploy with an external config file instead of a bundled site
 helm install dora deploy/chart/ --set-file doraConfig=path/to/config.yaml
 
-# K3s: set the storage class
-helm install dora deploy/chart/ --set db.storageClass=local-path
-
-# Full K8s: set the storage class
-helm install dora deploy/chart/ --set db.storageClass=standard
+# Upgrade
+helm upgrade dora deploy/chart/ -f deploy/chart/sites/windep/values.yaml
 ```
 
 ## Site configs
 
-DHCP configs live in `deploy/chart/sites/<site>-config.yaml`. Set `site:` in
-`values.yaml` (or `--set site=<name>`) to select which config is loaded into the
-`dora-config` ConfigMap. To use a config file outside the chart, pass it with
-`--set-file doraConfig=path/to/config.yaml`.
+Each site is a directory under `deploy/chart/sites/<site>/` containing:
 
-To add a new site, drop a `<site>-config.yaml` into `deploy/chart/sites/`.
+- **`config.yaml`** — the DHCP config (networks, ranges, options)
+- **`values.yaml`** — site-specific Helm values (VIPs, BGP label, storage class, DB password)
+
+The site's `config.yaml` is loaded into the `dora-config` ConfigMap via the
+`site:` value. The site's `values.yaml` is passed with `-f` to override the
+chart defaults.
+
+To add a new site, create a new directory under `deploy/chart/sites/` with both
+files. To use a config file outside the chart, pass it with
+`--set-file doraConfig=path/to/config.yaml`.
 
 ## What you MUST edit
 

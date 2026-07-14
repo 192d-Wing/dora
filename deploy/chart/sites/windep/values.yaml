@@ -1,0 +1,13 @@
+site: windep
+
+vips:
+  ipv4: "203.0.113.10"
+  ipv6: "2001:db8:a11::10"
+  api: "10.201.0.10"
+
+bgp:
+  advertiseLabel: k3s-pod-cidrs
+
+db:
+  password: "CHANGE_ME"
+  storageClass: local-path

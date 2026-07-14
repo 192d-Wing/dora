@@ -30,7 +30,7 @@ postgres://{{ .Values.db.user }}:{{ .Values.db.password }}@usg-dora-db:5432/{{ .
 {{- if .Values.doraConfig -}}
 {{ .Values.doraConfig }}
 {{- else -}}
-{{ .Files.Get (printf "sites/%s-config.yaml" .Values.site) }}
+{{ .Files.Get (printf "sites/%s/config.yaml" .Values.site) }}
 {{- end -}}
 {{- end -}}
 
