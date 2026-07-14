@@ -465,31 +465,35 @@ where
         }
         let timeout = network.ping_timeout();
         let iface = network.iface_index();
-        // computed up front so the async block doesn't need to borrow `network`
-        let probation = SystemTime::now() + network.probation_period();
-        let fut = async {
-            let in_use = match ip {
-                IpAddr::V4(_) => self.addr_in_use(ip, timeout).await.is_ok(),
-                IpAddr::V6(v6) => self.dad_v6(v6, iface, timeout).await,
-            };
-            if in_use {
-                // Hold the in-use address out of rotation for the full probation
-                // period (with the client_id cleared) instead of DELETEing it. A
-                // delete only kept it out for the ping-cache TTL (60s), after
-                // which it became allocatable again -- long before the configured
-                // probation period elapsed. Probating also makes the follow-up
-                // update in `reserve_first` unnecessary.
-                if let Err(err) = self
-                    .store
-                    .update_ip(ip, IpState::Probate, None, probation)
-                    .await
-                {
-                    error!(?err, "error probating in-use ip");
+        // Cache only the DAD probe *result*. The probation write below must run
+        // on every in-use detection -- including ping-cache hits -- so it lives
+        // OUTSIDE `get_with`, whose future runs only on a cache miss. If the
+        // write lived inside, an address already known to be in use (cache hit)
+        // would never be marked occupied, so `reserve_first` would re-pick it
+        // forever (infinite loop).
+        let in_use = self
+            .ping_cache
+            .get_with(ip, async {
+                match ip {
+                    IpAddr::V4(_) => self.addr_in_use(ip, timeout).await.is_ok(),
+                    IpAddr::V6(v6) => self.dad_v6(v6, iface, timeout).await,
                 }
+            })
+            .await;
+        if in_use {
+            // Hold the in-use address out of rotation for the full probation
+            // period (with the client_id cleared) instead of DELETEing it. A
+            // delete only kept it out for the ping-cache TTL (60s), after which
+            // it became allocatable again -- long before the configured probation
+            // period elapsed.
+            let probation = SystemTime::now() + network.probation_period();
+            if let Err(err) = self
+                .store
+                .update_ip(ip, IpState::Probate, None, probation)
+                .await
+            {
+                error!(?err, "error probating in-use ip");
             }
-            in_use
-        };
-        if self.ping_cache.get_with(ip, fut).await {
             Err(IpError::AddrInUse(ip))
         } else {
             Ok(())
