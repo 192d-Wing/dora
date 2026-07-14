@@ -1,0 +1,16 @@
+[package]
+name = "forensic-log"
+version.workspace = true
+edition = "2024"
+license = "MPL-2.0"
+
+[dependencies]
+dora-core = { path = "../../dora-core" }
+message-type = { path = "../message-type" }
+leases = { path = "../leases" }
+
+tracing = { workspace = true }
+
+[dev-dependencies]
+tracing-test = { workspace = true }
+tokio = { workspace = true }

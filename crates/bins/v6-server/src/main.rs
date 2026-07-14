@@ -84,5 +84,10 @@ async fn start(config: cli::Config) -> Result<()> {
         .with_reservations(reservations.clone())
         .register(&mut v6);
 
+    if dhcp_cfg.forensic_log().is_some_and(|f| f.enabled) {
+        info!("forensic logging enabled");
+        v6.postresponse(forensic_log::ForensicLog);
+    }
+
     flatten(tokio::spawn(v6.start(shutdown_signal(token.clone())))).await
 }

@@ -141,6 +141,7 @@ pub mod trace {
     //! tracing configuration
     use anyhow::Result;
     use tracing_subscriber::{
+        Layer,
         filter::EnvFilter,
         fmt::{
             self,
@@ -150,7 +151,7 @@ pub mod trace {
         util::SubscriberInitExt,
     };
 
-    use std::str;
+    use std::{path::Path, str};
 
     use crate::env::parse_var_with_err;
 
@@ -162,6 +163,26 @@ pub mod trace {
     pub struct Config {
         /// formatting to apply to logs
         pub log_frmt: String,
+    }
+
+    fn forensic_layer<S>() -> Option<impl Layer<S>>
+    where
+        S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
+    {
+        let path_str = std::env::var("DORA_FORENSIC_LOG_PATH").ok()?;
+        let path = Path::new(&path_str);
+        let dir = path.parent().unwrap_or(Path::new("."));
+        let filename = path
+            .file_name()
+            .unwrap_or(std::ffi::OsStr::new("forensic.log"));
+        let file_appender = tracing_appender::rolling::daily(dir, filename);
+        let filter = EnvFilter::new("forensic_log=info");
+        Some(
+            fmt::layer()
+                .json()
+                .with_writer(file_appender)
+                .with_filter(filter),
+        )
     }
 
     impl Config {
@@ -179,6 +200,7 @@ pub mod trace {
                     tracing_subscriber::registry()
                         .with(filter)
                         .with(fmt::layer().json())
+                        .with(forensic_layer())
                         .init();
                 }
                 "pretty" => {
@@ -191,12 +213,14 @@ pub mod trace {
                                 )
                                 .fmt_fields(PrettyFields::new()),
                         )
+                        .with(forensic_layer())
                         .init();
                 }
                 _ => {
                     tracing_subscriber::registry()
                         .with(filter)
                         .with(fmt::layer())
+                        .with(forensic_layer())
                         .init();
                 }
             }

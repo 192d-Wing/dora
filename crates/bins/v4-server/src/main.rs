@@ -76,5 +76,10 @@ async fn start(config: cli::Config) -> Result<()> {
         .register(&mut v4);
     Leases::new(Arc::clone(&dhcp_cfg), Arc::clone(&ip_mgr)).register(&mut v4);
 
+    if dhcp_cfg.forensic_log().is_some_and(|f| f.enabled) {
+        info!("forensic logging enabled");
+        v4.postresponse(forensic_log::ForensicLog);
+    }
+
     flatten(tokio::spawn(v4.start(shutdown_signal(token.clone())))).await
 }

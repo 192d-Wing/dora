@@ -703,6 +703,23 @@
     "additionalProperties": false,
     "properties": {
         "v4": { "$ref": "#/definitions/v4" },
-        "v6": { "$ref": "#/definitions/v6" }
+        "v6": { "$ref": "#/definitions/v6" },
+        "forensic_log": {
+            "description": "Forensic/legal logging. Produces compliance-grade audit logs of every DHCP lease lifecycle event. Set DORA_FORENSIC_LOG_PATH to write events to a dedicated file with daily rotation.",
+            "type": "object",
+            "properties": {
+                "enabled": {
+                    "description": "Whether forensic logging is active (default true when this section is present)",
+                    "type": "boolean",
+                    "default": true
+                },
+                "format": {
+                    "description": "Log format: \"json\" (default, machine-parseable) or \"text\" (human-readable)",
+                    "type": "string",
+                    "enum": ["json", "text"],
+                    "default": "json"
+                }
+            }
+        }
     }
 }

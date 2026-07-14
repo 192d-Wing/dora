@@ -1,5 +1,20 @@
 # dora configuration. DHCPv4 settings live under "v4:" and DHCPv6 under "v6:".
 
+# Forensic/legal logging (optional). Produces compliance-grade audit logs of
+# every DHCP lease lifecycle event. Each log entry is self-contained and
+# includes: timestamp, message type, client MAC/DUID, assigned IP, lease
+# duration, relay info, and hostname.
+#
+# Events are emitted to the "forensic_log" tracing target. To write them to a
+# dedicated file with daily rotation, set the DORA_FORENSIC_LOG_PATH environment
+# variable (e.g. DORA_FORENSIC_LOG_PATH=/var/log/dora/forensic.log). When the
+# env var is unset, forensic events go to the main log output.
+#
+# forensic_log:
+#     enabled: true
+#     # Log format: "json" (default, machine-parseable) or "text" (human-readable)
+#     format: json
+
 v4:
     # (default false) Normally, client id is determined by (opt 61) client identifier option,
     # or the DHCP header field `chaddr`. Sometimes, we want to configure
