@@ -533,6 +533,34 @@ impl Storage for PostgresDb {
         }
     }
 
+    async fn claim_pd(
+        &self,
+        prefix: IpAddr,
+        prefix_len: u8,
+        network: IpAddr,
+        id: &[u8],
+        expires_at: SystemTime,
+        state: Option<IpState>,
+    ) -> Result<bool, Self::Error> {
+        match (prefix, network) {
+            (IpAddr::V6(ip), IpAddr::V6(net)) => {
+                util_v6::claim_pd(
+                    &self.inner,
+                    &util_v6::to_bytes(ip),
+                    prefix_len as i64,
+                    &util_v6::to_bytes(net),
+                    id,
+                    util::systime_epoch(expires_at),
+                    util::systime_epoch(SystemTime::now()),
+                    state.map(|s| s.into()),
+                )
+                .await
+            }
+            // IA_PD is v6-only; a mismatched family can never be claimed
+            _ => Ok(false),
+        }
+    }
+
     async fn get_id_pd(&self, id: &[u8]) -> Result<Option<(IpAddr, u8)>, Self::Error> {
         util_v6::find_by_id_pd(&self.inner, id, util::systime_epoch(SystemTime::now())).await
     }
@@ -1010,20 +1038,18 @@ mod util {
             network: IpAddr::V4(Ipv4Addr::from(cur.network as u32)),
             expires_at: to_systime(cur.expires_at),
         });
-        // only remove the binding if the (ip, id) pair actually matched, so a
+        // only release the binding if the (ip, id) pair actually matched, so a
         // client cannot release an address leased to someone else
         if cur.is_some() {
-            util::delete(&mut *trans, ip).await?;
+            // Expire + unassign the row instead of DELETEing it. A deleted row
+            // that sits below the allocator's high-water mark is never revisited
+            // (`insert_max_in_range` only steps upward from MAX), so released
+            // addresses would leak out of the pool until the table was cleared.
+            // Marking it expired (`expires_at = 0`, unowned) makes it
+            // immediately reclaimable by `next_expired` instead.
+            util::update_ip(&mut *trans, ip, None, 0, false, false).await?;
         }
         trans.commit().await?;
-        // instead of deleting:
-        // sqlx::query!(
-        //     "UPDATE leases SET leased = false WHERE ip = $1 AND client_id = $2",
-        //     ip,
-        //     id
-        // )
-        // .fetch_optional(conn)
-        // .await?;
         Ok(cur)
     }
 
@@ -1162,7 +1188,17 @@ mod util {
     {
         // leased = false -> we got a discover but not yet ACK'd
         // leased = true -> we have ACK'd
-        Ok(sqlx::query!(
+        //
+        // The id-match branch is range-bounded (`ip >= $2 AND ip <= $3`) just
+        // like the expired branch: without it, a client that holds a lease in a
+        // DIFFERENT range/network could have that out-of-range row matched,
+        // mutated, and returned here -- the caller would then see it out of range
+        // and release it, destroying the client's other binding.
+        //
+        // Runtime query (not the `query!` macro) so no offline sqlx cache entry
+        // is needed for this modified SQL; matches the pattern used elsewhere in
+        // this file.
+        let ip: Option<i64> = sqlx::query_scalar(
             r#"
             UPDATE leases
             SET
@@ -1172,21 +1208,22 @@ mod util {
                    SELECT ip
                     FROM leases
                     WHERE
-                        ((expires_at < $1) AND (ip >= $2 AND ip <= $3)) OR (client_id = $4)
+                        ((expires_at < $1) AND (ip >= $2 AND ip <= $3))
+                        OR (client_id = $4 AND ip >= $2 AND ip <= $3)
                     ORDER BY ip LIMIT 1
                 )
             RETURNING ip
             "#,
-            now,
-            start_ip,
-            end_ip,
-            id,
-            leased,
-            expires_at,
         )
+        .bind(now)
+        .bind(start_ip)
+        .bind(end_ip)
+        .bind(id)
+        .bind(leased)
+        .bind(expires_at)
         .fetch_optional(conn)
-        .await?
-        .map(|cur| IpAddr::V4(Ipv4Addr::from(cur.ip as u32))))
+        .await?;
+        Ok(ip.map(|ip| IpAddr::V4(Ipv4Addr::from(ip as u32))))
     }
 
     /// updates an entry if the ip & id match and not expired
@@ -1538,10 +1575,13 @@ mod util_v6 {
             network: from_bytes(&cur.network),
             expires_at: to_systime(cur.expires_at),
         });
-        // only remove the binding if the (addr, id) pair actually matched, so a
+        // only release the binding if the (addr, id) pair actually matched, so a
         // client cannot release an address leased to another client
         if cur.is_some() {
-            delete(&mut *trans, addr).await?;
+            // Expire + unassign rather than DELETE, so the address is reclaimed
+            // by `next_expired` instead of leaking below the allocator's
+            // high-water mark (see the v4 `release_ip` note).
+            update_ip(&mut *trans, addr, None, 0, false, false).await?;
         }
         trans.commit().await?;
         Ok(cur)
@@ -1589,7 +1629,11 @@ mod util_v6 {
     where
         E: sqlx::Executor<'a, Database = Postgres>,
     {
-        Ok(sqlx::query!(
+        // The id-match branch is range-bounded (`addr >= $2 AND addr <= $3`)
+        // like the expired branch, so a client's binding in another range can't
+        // be matched/mutated/returned and then released by the caller. Runtime
+        // query (not `query!`) so the modified SQL needs no offline sqlx cache.
+        let addr: Option<Vec<u8>> = sqlx::query_scalar(
             r#"
             UPDATE leases_v6
             SET client_id = $4, leased = $5, expires_at = $6, probation = FALSE
@@ -1597,21 +1641,22 @@ mod util_v6 {
                (
                    SELECT addr FROM leases_v6
                    WHERE prefix_len = 128
-                     AND (((expires_at < $1) AND (addr >= $2 AND addr <= $3)) OR (client_id = $4))
+                     AND (((expires_at < $1) AND (addr >= $2 AND addr <= $3))
+                          OR (client_id = $4 AND addr >= $2 AND addr <= $3))
                    ORDER BY addr LIMIT 1
                )
             RETURNING addr
             "#,
-            now,
-            start,
-            end,
-            id,
-            leased,
-            expires_at,
         )
+        .bind(now)
+        .bind(start)
+        .bind(end)
+        .bind(id)
+        .bind(leased)
+        .bind(expires_at)
         .fetch_optional(conn)
-        .await?
-        .map(|cur| from_bytes(&cur.addr)))
+        .await?;
+        Ok(addr.map(|addr| from_bytes(&addr)))
     }
 
     /// updates an entry if the addr & id match and not expired
@@ -1792,6 +1837,53 @@ mod util_v6 {
         .execute(pool)
         .await?;
         Ok(())
+    }
+
+    /// Atomically claim a delegated prefix for `client_id`, but only if the
+    /// prefix is currently free, expired (`expires_at < now`), or already owned
+    /// by this client. Returns `true` if claimed. The whole check-and-write is a
+    /// single `INSERT … ON CONFLICT DO UPDATE … WHERE … RETURNING` statement:
+    /// Postgres row-locks the conflicting row, so a second concurrent claimer
+    /// re-evaluates the `WHERE` after the first commits and gets no row back
+    /// (blocked) instead of silently overwriting the first winner.
+    ///
+    /// Uses the runtime (unchecked) query builder deliberately — the same
+    /// pattern already used elsewhere in this file — so no offline sqlx cache
+    /// entry is required.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn claim_pd(
+        pool: &PgPool,
+        addr: &[u8],
+        prefix_len: i64,
+        network: &[u8],
+        client_id: &[u8],
+        expires_at: i64,
+        now: i64,
+        state: Option<(bool, bool)>,
+    ) -> Result<bool, sqlx::Error> {
+        let (leased, probation) = state.unwrap_or((false, false));
+        let claimed = sqlx::query(
+            r#"INSERT INTO leases_v6
+                (addr, prefix_len, client_id, expires_at, network, leased, probation)
+               VALUES ($1, $2, $3, $4, $5, $6, $7)
+               ON CONFLICT (addr, prefix_len) DO UPDATE SET
+                 client_id = EXCLUDED.client_id, expires_at = EXCLUDED.expires_at,
+                 network = EXCLUDED.network, leased = EXCLUDED.leased,
+                 probation = EXCLUDED.probation
+               WHERE leases_v6.expires_at < $8 OR leases_v6.client_id = EXCLUDED.client_id
+               RETURNING addr"#,
+        )
+        .bind(addr)
+        .bind(prefix_len)
+        .bind(client_id)
+        .bind(expires_at)
+        .bind(network)
+        .bind(leased)
+        .bind(probation)
+        .bind(now)
+        .fetch_optional(pool)
+        .await?;
+        Ok(claimed.is_some())
     }
 
     /// look up a client's delegated prefix (base + length) by identity. Never
@@ -1989,7 +2081,16 @@ mod v6_tests {
 
         let released = db.release_ip(addr, id).await?;
         assert!(released.is_some(), "release should return prior info");
-        assert!(db.get(addr).await?.is_none(), "entry should be gone");
+        // The row is retained but expired + unowned (reclaimable) rather than
+        // deleted, so released addresses aren't leaked from the allocator.
+        assert!(
+            matches!(db.get(addr).await?, Some(State::Reserved(_))),
+            "released address is retained as reclaimable, not leased/deleted"
+        );
+        assert!(
+            db.get_id_v6(id).await?.is_none(),
+            "released id no longer maps to a live lease"
+        );
         Ok(())
     }
 

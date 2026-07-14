@@ -103,9 +103,18 @@ fn is_empty(val: Val) -> EvalResult<()> {
 fn parse_sub_opts(buf: &[u8], sub_code: u8) -> Result<Option<Vec<u8>>, EvalErr> {
     let mut d = Decoder::new(buf);
     while let Ok(code) = d.read_u8() {
-        let len = d.read_u8()?;
+        // A truncated tail -- a dangling code byte with no length, or a declared
+        // length that runs past the buffer -- is treated as end-of-options
+        // rather than a hard error. A client can craft a relay-agent (opt 82)
+        // payload whose sub-option TLVs don't cleanly tile the buffer; that must
+        // not turn every `relay4`/sub-option lookup in a class expression into an
+        // evaluation error (which would mis-classify the packet). Return "not
+        // present" instead.
+        let Ok(len) = d.read_u8() else { break };
         if len != 0 {
-            let slice = d.read_slice(len as usize)?;
+            let Ok(slice) = d.read_slice(len as usize) else {
+                break;
+            };
             if sub_code == code {
                 return Ok(Some(slice.to_owned()));
             }
@@ -305,9 +314,12 @@ pub fn eval(expr: &Expr, args: &Args) -> Result<Val, EvalErr> {
 
 // expects `n` to start at 1
 fn split(a: String, del: &str, n: usize) -> Val {
+    // n is 1-based; `checked_sub` guards n == 0 (a grammar-valid literal) so the
+    // index can't underflow -- which would panic in debug and wrap to usize::MAX
+    // in release. A 0 (or out-of-range) index yields the empty string.
     Val::String(
-        a.split(del)
-            .nth(n - 1)
+        n.checked_sub(1)
+            .and_then(|i| a.split(del).nth(i))
             .map(ToString::to_string)
             .unwrap_or_default(),
     )
@@ -367,7 +379,8 @@ fn get_pos(s_len: usize, mut start: isize, j: Option<isize>) -> Option<SliceSubs
         }
         Some(mut len) => {
             if len.is_negative() {
-                len = len.abs();
+                // saturating so len == isize::MIN can't panic on abs()
+                len = len.saturating_abs();
                 if len <= start {
                     start -= len;
                 } else {

@@ -15,8 +15,6 @@
 use icmp_ping::{Icmpv4, Icmpv6, Listener, NeighborSolicitor, PingReply};
 
 use async_trait::async_trait;
-use chrono::DateTime;
-use chrono::{SecondsFormat, offset::Utc};
 use thiserror::Error;
 use tracing::{debug, error, info, trace, warn};
 
@@ -125,6 +123,20 @@ pub trait Storage: Send + Sync + 'static {
         expires_at: SystemTime,
         state: Option<IpState>,
     ) -> Result<(), Self::Error>;
+    /// Atomically claim a delegated prefix for `id`, but only when it is free,
+    /// expired, or already owned by `id`. Returns `true` if claimed, `false` if
+    /// a live binding held by a different client blocked it. Unlike
+    /// `get_pd` + `upsert_pd`, this is a single statement, so two concurrent
+    /// claimers cannot both be handed the same prefix.
+    async fn claim_pd(
+        &self,
+        prefix: IpAddr,
+        prefix_len: u8,
+        network: IpAddr,
+        id: &[u8],
+        expires_at: SystemTime,
+        state: Option<IpState>,
+    ) -> Result<bool, Self::Error>;
     /// look up a client's delegated prefix (base + length) by DUID+IAID identity
     async fn get_id_pd(&self, id: &[u8]) -> Result<Option<(IpAddr, u8)>, Self::Error>;
     /// extend an unexpired delegated prefix if the id matches
@@ -453,15 +465,26 @@ where
         }
         let timeout = network.ping_timeout();
         let iface = network.iface_index();
+        // computed up front so the async block doesn't need to borrow `network`
+        let probation = SystemTime::now() + network.probation_period();
         let fut = async {
             let in_use = match ip {
                 IpAddr::V4(_) => self.addr_in_use(ip, timeout).await.is_ok(),
                 IpAddr::V6(v6) => self.dad_v6(v6, iface, timeout).await,
             };
             if in_use {
-                // stop handing this address out
-                if let Err(err) = self.store.delete(ip).await {
-                    error!(?err, "error attempting to delete in-use ip");
+                // Hold the in-use address out of rotation for the full probation
+                // period (with the client_id cleared) instead of DELETEing it. A
+                // delete only kept it out for the ping-cache TTL (60s), after
+                // which it became allocatable again -- long before the configured
+                // probation period elapsed. Probating also makes the follow-up
+                // update in `reserve_first` unnecessary.
+                if let Err(err) = self
+                    .store
+                    .update_ip(ip, IpState::Probate, None, probation)
+                    .await
+                {
+                    error!(?err, "error probating in-use ip");
                 }
             }
             in_use
@@ -604,29 +627,14 @@ where
                 }
             };
             if range.contains(ip) {
-                // ping_check will delete the expired entry if it's in use
+                // ping_check probates the entry (holding it out for the full
+                // probation period) if it's found in use.
                 match self.ping_check(ip, network).await {
                     Ok(()) => return Ok(ip),
-                    // ping success so insert probated IP
                     Err(err) => {
-                        let probation_time = SystemTime::now() + network.probation_period();
-                        info!(
-                            ?err,
-                            probation_time = %DateTime::<Utc>::from(probation_time).to_rfc3339_opts(SecondsFormat::Secs, true),
-                            "ping succeeded. address is in use. marking IP on probation"
-                        );
-                        // update regardless of expiry/id because something is using the IP
-                        if let Err(err) = self
-                            .store
-                            .update_ip(ip, IpState::Probate, None, probation_time)
-                            .await
-                        {
-                            attempts += 1;
-                            error!(?err, "failed to probate IP on ping success");
-                            // not returning error because we must give client an IP
-                        } else {
-                            debug!("IP put on probation, trying next");
-                        }
+                        // already probated inside ping_check; move to the next
+                        // candidate address.
+                        info!(?err, ?ip, "address in use, probated; trying next");
                         continue;
                     }
                 }
@@ -661,22 +669,36 @@ where
         state: Option<IpState>,
     ) -> Result<(), IpError<T::Error>> {
         // TODO: there may be a way to remove this .get also
-        if self.store.get(ip).await?.is_some() {
+        if let Some(existing) = self.store.get(ip).await? {
+            // Recycling a DIFFERENT client's expired row: DAD-probe before
+            // handing it over, matching the fresh-insert path below. We must NOT
+            // probe when the row is the client's own (id matches) or unexpired --
+            // the client may already have the address plumbed and answer its own
+            // probe, which would false-positive and needlessly NAK a renewal.
+            let recycling_other = {
+                let info = existing.as_ref();
+                info.expires_at() < SystemTime::now() && info.id() != Some(id)
+            };
             return if self.store.update_expired(ip, state, id, expires_at).await? {
                 debug!(
                     ?ip,
                     ?id,
                     "set reserved, found ip/id for this client or expired"
                 );
+                if recycling_other {
+                    // probates the address (via ping_check) if it's in use
+                    self.ping_check(ip, network).await?;
+                }
                 Ok(())
             } else {
                 debug!("IP not updated, couldn't find ip/id or in use");
                 Err(IpError::AddrInUse(ip))
             };
         };
-        // if the entry doesn't exist yet & ping fails, insert it
+        // brand-new entry: insert speculatively, then DAD-probe. If the address
+        // answers, ping_check probates the row (and this returns AddrInUse via
+        // `?`); otherwise the insert stands as the client's reservation.
         self.store.insert(ip, subnet, id, expires_at, state).await?;
-        // not marking for probation because request IP can be sent at any time
         self.ping_check(ip, network).await?;
 
         Ok(())
@@ -874,20 +896,16 @@ where
             return Ok(Some((base, len)));
         }
 
-        let now = SystemTime::now();
         for base in pool.iter_prefixes().take(MAX_PD_SCAN) {
-            let claimable = match self.store.get_pd(IpAddr::V6(base), dlen).await? {
-                None => true,
-                // reuse if the existing binding is expired or already this client's
-                Some(existing) => {
-                    let info = existing.as_ref();
-                    info.expires_at() < now || info.id() == Some(id)
-                }
-            };
-            if claimable {
-                self.store
-                    .upsert_pd(IpAddr::V6(base), dlen, network, id, expires_at, Some(state))
-                    .await?;
+            // Atomic claim: succeeds only if `base` is free, expired, or already
+            // ours. This replaces a get_pd (check) + upsert_pd (write) pair whose
+            // two separate awaits let two concurrent clients both see `base` free
+            // and both write it -- handing the same prefix out twice.
+            if self
+                .store
+                .claim_pd(IpAddr::V6(base), dlen, network, id, expires_at, Some(state))
+                .await?
+            {
                 return Ok(Some((base, dlen)));
             }
         }
@@ -907,18 +925,14 @@ where
         expires_at: SystemTime,
         state: IpState,
     ) -> Result<Option<(Ipv6Addr, u8)>, IpError<T::Error>> {
-        let now = SystemTime::now();
-        let claimable = match self.store.get_pd(IpAddr::V6(base), dlen).await? {
-            None => true,
-            Some(existing) => {
-                let info = existing.as_ref();
-                info.expires_at() < now || info.id() == Some(id)
-            }
-        };
-        if claimable {
-            self.store
-                .upsert_pd(IpAddr::V6(base), dlen, network, id, expires_at, Some(state))
-                .await?;
+        // Atomic claim (free / expired / already ours), same race-free path as
+        // `allocate_pd`'s scan -- never steal a live delegation from another
+        // client, and never double-write under concurrency.
+        if self
+            .store
+            .claim_pd(IpAddr::V6(base), dlen, network, id, expires_at, Some(state))
+            .await?
+        {
             Ok(Some((base, dlen)))
         } else {
             Ok(None)
@@ -980,10 +994,27 @@ where
                 debug!(
                     ?ip,
                     ?id,
-                    "no IP with this id found or expired. authoritative, trying insert"
+                    "no live IP with this id found. authoritative, trying to reclaim/insert"
                 );
 
-                // this will ACK even if there was no prior DISCOVER
+                // First try to reclaim an EXPIRED row: `update_unexpired` above
+                // only matched our OWN live binding, so an expired row left
+                // behind by a *different* client would make the insert below hit
+                // a primary-key conflict and wrongly NAK an address we are
+                // entitled to hand out. `update_expired` claims an expired row
+                // regardless of its previous owner.
+                if self
+                    .store
+                    .update_expired(ip, Some(IpState::Lease), id, expires_at)
+                    .await?
+                {
+                    trace!(?ip, ?id, "reclaimed expired IP for authoritative lease");
+                    return Ok(());
+                }
+
+                // No row yet (or the row is unexpired and held by someone else):
+                // insert. This will ACK even with no prior DISCOVER; a PK
+                // conflict means it's genuinely in use by another client.
                 match self
                     .store
                     .insert(ip, network.subnet(), id, expires_at, Some(IpState::Lease))

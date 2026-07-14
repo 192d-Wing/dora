@@ -193,7 +193,12 @@ impl LeaseTime {
         match requested {
             // time must be larger than `min` and smaller than `max`
             Some(req) => {
-                let t = req.clamp(min, max);
+                // Guard against a misconfigured min > max: `Duration::clamp`
+                // (Ord::clamp) panics when its bounds are inverted. Normalize the
+                // bounds so a bad config degrades gracefully instead of taking
+                // down the handler on a client-supplied lease-time option.
+                let (lo, hi) = if min <= max { (min, max) } else { (max, min) };
+                let t = req.clamp(lo, hi);
                 (t, renew(t), rebind(t))
             }
             None => (default, renew(default), rebind(default)),
