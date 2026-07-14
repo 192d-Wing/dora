@@ -72,10 +72,13 @@ where
         }
     }
 
-    pub fn cache_threshold(&self, id: &[u8]) -> Option<Duration> {
+    /// Remaining lease time if `id` is renewing `addr` within the threshold.
+    /// Bound to `addr` so the fast path can only reuse the exact binding the
+    /// client was granted, never hand out an address it doesn't hold.
+    pub fn cache_threshold(&self, id: &[u8], addr: Ipv4Addr) -> Option<Duration> {
         self.renew_cache
             .as_ref()
-            .and_then(|cache| cache.threshold(id))
+            .and_then(|cache| cache.threshold(id, addr.into()))
     }
 
     pub fn cache_remove(&self, id: &[u8]) {
@@ -83,13 +86,13 @@ where
             .as_ref()
             .and_then(|cache| cache.remove(&id.to_vec()));
     }
-    pub fn cache_insert(&self, id: &[u8], lease_time: Duration) {
+    pub fn cache_insert(&self, id: &[u8], addr: Ipv4Addr, lease_time: Duration) {
         self.renew_cache
             .as_ref()
             // TODO: try to remove to_vec?
             .and_then(|cache| {
-                let old = cache.insert(id.to_vec(), lease_time);
-                trace!(?old, ?id, "replacing old renewal time");
+                let old = cache.insert(id.to_vec(), addr.into(), lease_time);
+                trace!(?old, ?id, ?addr, "replacing old renewal time");
                 old
             });
     }
@@ -423,8 +426,11 @@ where
     ) -> Result<bool> {
         // renew-threshold fast path: reuse the outstanding lease as-is. This is
         // the hot renew path (a client re-requesting the address it holds) and
-        // applies to every request state, including INIT-REBOOT renews.
-        if let Some(remaining) = self.cache_threshold(client_id) {
+        // applies to every request state, including INIT-REBOOT renews. Keyed by
+        // (client_id, ip) so it only fires when the client re-requests the exact
+        // address it was granted -- otherwise a client with any valid cache
+        // entry could be ACKed an in-pool address it doesn't own.
+        if let Some(remaining) = self.cache_threshold(client_id, ip) {
             metrics::RENEW_CACHE_HIT.inc();
             let lease = (
                 remaining,
@@ -479,8 +485,8 @@ where
             "sending LEASE"
         );
         self.set_lease(ctx, lease, ip, expires_at, classes, range)?;
-        // insert lease into cache
-        self.cache_insert(client_id, lease.0);
+        // insert lease into cache, bound to the address we just granted
+        self.cache_insert(client_id, ip, lease.0);
 
         // do ddns update. Consider this as a plugin?
         let dhcid = dhcid(self.cfg.v4(), ctx.msg());
@@ -542,8 +548,11 @@ where
         self.ip_mgr
             .probate_ip((*declined_ip).into(), client_id, expires_at)
             .await?;
-        // IP is decline, remove from cache
-        self.cache_remove(ctx.msg().chaddr());
+        // IP is declined, remove from cache. The renew cache is keyed by
+        // client_id (opt 61 when present), NOT chaddr -- using chaddr here left
+        // the entry in place whenever the two differ, so a just-probated address
+        // could still be re-ACKed via the fast path.
+        self.cache_remove(client_id);
         debug!(
             ?declined_ip,
             expires_at = %print_time(expires_at),

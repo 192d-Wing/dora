@@ -43,6 +43,15 @@ use register_derive::Register;
 /// a Request. Committed leases persist for their full valid lifetime.
 const OFFER_WINDOW: Duration = Duration::from_secs(60);
 
+/// Upper bound on how many IA_NA / IA_PD options we will process from a single
+/// client message. A legitimate client asks for one, or a small handful; a
+/// crafted relayed datagram can pack thousands of distinct IAIDs (~16 bytes
+/// each in a 64 KB datagram), and processing each one drives a pool reservation
+/// plus DB round-trips. Capping bounds the per-packet work (and the mirrored
+/// response size) so one message can't drain the pool or amplify DB load.
+/// Options beyond the cap are ignored.
+const MAX_IAS_PER_MSG: usize = 64;
+
 #[derive(Register)]
 #[register(msg(v6::Message))]
 #[register(plugin(MsgType))]
@@ -727,7 +736,7 @@ fn extract_client(msg: &v6::Message) -> Option<(Vec<u8>, Vec<IANA>, Vec<IAPD>)> 
         Some(DhcpOption::ClientId(d)) => d.clone(),
         _ => return None,
     };
-    let ianas = opts
+    let ianas: Vec<IANA> = opts
         .get_all(OptionCode::IANA)
         .map(|os| {
             os.iter()
@@ -735,10 +744,12 @@ fn extract_client(msg: &v6::Message) -> Option<(Vec<u8>, Vec<IANA>, Vec<IAPD>)> 
                     DhcpOption::IANA(iana) => Some(iana.clone()),
                     _ => None,
                 })
+                // bound per-message work; see MAX_IAS_PER_MSG
+                .take(MAX_IAS_PER_MSG)
                 .collect()
         })
         .unwrap_or_default();
-    let iapds = opts
+    let iapds: Vec<IAPD> = opts
         .get_all(OptionCode::IAPD)
         .map(|os| {
             os.iter()
@@ -746,9 +757,18 @@ fn extract_client(msg: &v6::Message) -> Option<(Vec<u8>, Vec<IANA>, Vec<IAPD>)> 
                     DhcpOption::IAPD(iapd) => Some(iapd.clone()),
                     _ => None,
                 })
+                .take(MAX_IAS_PER_MSG)
                 .collect()
         })
         .unwrap_or_default();
+    if ianas.len() == MAX_IAS_PER_MSG || iapds.len() == MAX_IAS_PER_MSG {
+        warn!(
+            ia_na = ianas.len(),
+            ia_pd = iapds.len(),
+            cap = MAX_IAS_PER_MSG,
+            "client message hit the per-message IA cap; extra IA options ignored"
+        );
+    }
     Some((duid, ianas, iapds))
 }
 
@@ -826,6 +846,8 @@ fn iana_addrs(iana: &IANA) -> Vec<Ipv6Addr> {
                     DhcpOption::IAAddr(a) => Some(a.addr),
                     _ => None,
                 })
+                // bound per-IA work; a single IA can also carry many IAADDRs
+                .take(MAX_IAS_PER_MSG)
                 .collect()
         })
         .unwrap_or_default()
@@ -883,6 +905,7 @@ fn iapd_prefixes(iapd: &IAPD) -> Vec<(Ipv6Addr, u8)> {
                     DhcpOption::IAPrefix(p) => Some((p.prefix_ip, p.prefix_len)),
                     _ => None,
                 })
+                .take(MAX_IAS_PER_MSG)
                 .collect()
         })
         .unwrap_or_default()

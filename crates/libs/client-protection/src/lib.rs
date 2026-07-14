@@ -13,6 +13,7 @@ use std::{
     borrow::Borrow,
     fmt,
     hash::Hash,
+    net::IpAddr,
     num::NonZeroU32,
     time::{Duration, Instant},
 };
@@ -30,14 +31,22 @@ pub struct RenewExpiry {
     pub percentage: Duration,
     // full lease time
     pub lease_time: Duration,
+    // the address that was actually granted to this client. The renew fast path
+    // reuses a cached lease only when the client re-requests THIS address, so a
+    // client can't use its own valid cache entry to be handed an address it
+    // doesn't hold.
+    pub addr: IpAddr,
 }
 
 impl RenewExpiry {
     /// if the elapsed time is less than the fraction of lease time configured
     /// return the lease time remaining
     pub fn get_remaining(&self) -> Option<Duration> {
-        if self.created.elapsed() <= self.percentage {
-            Some(self.lease_time - self.created.elapsed())
+        let elapsed = self.created.elapsed();
+        if elapsed <= self.percentage {
+            // saturating: guards against a percentage > lease_time
+            // (misconfigured threshold > 100%) underflowing here.
+            Some(self.lease_time.saturating_sub(elapsed))
         } else {
             None
         }
@@ -45,11 +54,17 @@ impl RenewExpiry {
 }
 
 impl RenewExpiry {
-    pub fn new(now: Instant, lease_time: Duration, percentage: u64) -> Self {
+    pub fn new(now: Instant, addr: IpAddr, lease_time: Duration, percentage: u64) -> Self {
         Self {
-            percentage: Duration::from_secs((lease_time.as_secs() * percentage) / 100),
+            // clamp the fast-path window to the lease length so it can never
+            // outlive the DB binding (which would let the cache hand back an
+            // address that has since been reassigned). Also saturate the
+            // multiply against absurd configured percentages.
+            percentage: Duration::from_secs(lease_time.as_secs().saturating_mul(percentage) / 100)
+                .min(lease_time),
             created: now,
             lease_time,
+            addr,
         }
     }
 }
@@ -61,22 +76,36 @@ impl<K: Eq + Hash + Clone> RenewThreshold<K> {
             cache: DashMap::new(),
         }
     }
-    // insert id into cache with lease time, replacing existing entry
-    pub fn insert(&self, id: K, lease_time: Duration) -> Option<RenewExpiry> {
+    // insert id into cache with the granted address and lease time, replacing
+    // any existing entry
+    pub fn insert(&self, id: K, addr: IpAddr, lease_time: Duration) -> Option<RenewExpiry> {
         let now = Instant::now();
         self.cache
-            .insert(id, RenewExpiry::new(now, lease_time, self.percentage))
+            .insert(id, RenewExpiry::new(now, addr, lease_time, self.percentage))
     }
-    // test if threshold has been met for a given id
-    pub fn threshold<Q>(&self, id: &Q) -> Option<Duration>
+    /// Test whether the renew threshold is met for `id` renewing `addr`.
+    /// Returns the remaining lease time only when the cached entry is still
+    /// within threshold AND was granted for the same `addr`. Expired entries are
+    /// evicted on access so the cache stays bounded by the active client set.
+    pub fn threshold<Q>(&self, id: &Q, addr: IpAddr) -> Option<Duration>
     where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
     {
-        self.cache
-            .get(id)
-            .map(|e| *e)
-            .and_then(|entry| entry.get_remaining())
+        // copy the entry out (RenewExpiry: Copy) so the read guard is released
+        // before any eviction write on the same shard.
+        let entry = self.cache.get(id).map(|e| *e)?;
+        match entry.get_remaining() {
+            // past the threshold window: evict and fall through to the slow path
+            None => {
+                self.cache.remove(id);
+                None
+            }
+            // within threshold but for a different address than we granted:
+            // do NOT reuse (the caller must verify ownership via the DB).
+            Some(_) if entry.addr != addr => None,
+            Some(remaining) => Some(remaining),
+        }
     }
     pub fn remove(&self, id: &K) -> Option<(K, RenewExpiry)> {
         self.cache.remove(id)
@@ -171,7 +200,8 @@ mod tests {
 
     #[test]
     fn test_renew_remaining() {
-        let renew = RenewExpiry::new(Instant::now(), Duration::from_secs(5), 50);
+        let addr = IpAddr::from([1, 2, 3, 4]);
+        let renew = RenewExpiry::new(Instant::now(), addr, Duration::from_secs(5), 50);
         std::thread::sleep(Duration::from_secs(1));
         assert_eq!(
             renew
@@ -189,21 +219,23 @@ mod tests {
     #[test]
     fn test_cache_threshold() {
         let cache = RenewThreshold::new(50);
+        let a = IpAddr::from([10, 0, 0, 1]);
+        let b = IpAddr::from([10, 0, 0, 2]);
         let lease_time = Duration::from_secs(2);
         let lease_time_b = Duration::from_secs(6);
-        assert!(cache.insert([1, 2, 3, 4], lease_time).is_none());
+        assert!(cache.insert([1, 2, 3, 4], a, lease_time).is_none());
 
         // another client, independent threshold
-        assert!(cache.insert([4, 3, 2, 1], lease_time_b).is_none());
+        assert!(cache.insert([4, 3, 2, 1], b, lease_time_b).is_none());
 
         // half of lease time passes
         std::thread::sleep(Duration::from_secs(1));
 
-        assert!(cache.threshold(&[1, 2, 3, 4]).is_none());
-        assert!(cache.threshold(&[1, 2, 3, 4]).is_none());
+        assert!(cache.threshold(&[1, 2, 3, 4], a).is_none());
+        assert!(cache.threshold(&[1, 2, 3, 4], a).is_none());
         assert_eq!(
             cache
-                .threshold(&[4, 3, 2, 1])
+                .threshold(&[4, 3, 2, 1], b)
                 .unwrap()
                 .as_secs_f32()
                 .round(),
@@ -213,7 +245,7 @@ mod tests {
         std::thread::sleep(Duration::from_secs(1));
         assert_eq!(
             cache
-                .threshold(&[4, 3, 2, 1])
+                .threshold(&[4, 3, 2, 1], b)
                 .unwrap()
                 .as_secs_f32()
                 .round(),
@@ -221,26 +253,47 @@ mod tests {
         );
 
         std::thread::sleep(Duration::from_secs(2));
-        assert!(cache.threshold(&[4, 3, 2, 1]).is_none());
+        assert!(cache.threshold(&[4, 3, 2, 1], b).is_none());
+    }
+
+    // the fast path must only fire for the exact address the client was granted;
+    // requesting a different address falls through to the slow (DB) path even
+    // while the client has a valid cache entry.
+    #[test]
+    fn test_cache_threshold_wrong_addr() {
+        let cache = RenewThreshold::new(50);
+        let granted = IpAddr::from([10, 0, 0, 1]);
+        let other = IpAddr::from([10, 0, 0, 99]);
+        cache.insert([1, 2, 3, 4], granted, Duration::from_secs(6));
+
+        // same client, same (in-threshold) window, but a different requested IP
+        assert!(
+            cache.threshold(&[1, 2, 3, 4], other).is_none(),
+            "must not reuse a cached lease for a different address"
+        );
+        // the address it actually holds still fast-paths
+        assert!(cache.threshold(&[1, 2, 3, 4], granted).is_some());
     }
 
     #[test]
     fn test_cache_renew_0() {
         // threshold set to 0 means the cache will never return a cached lease
         let cache = RenewThreshold::new(0);
+        let a = IpAddr::from([10, 0, 0, 1]);
+        let b = IpAddr::from([10, 0, 0, 2]);
         let lease_time = Duration::from_secs(2);
         let lease_time_b = Duration::from_secs(6);
-        assert!(cache.insert([1, 2, 3, 4], lease_time).is_none());
+        assert!(cache.insert([1, 2, 3, 4], a, lease_time).is_none());
 
         // another client, independent threshold
-        assert!(cache.insert([4, 3, 2, 1], lease_time_b).is_none());
+        assert!(cache.insert([4, 3, 2, 1], b, lease_time_b).is_none());
 
         // half of lease time passes
         std::thread::sleep(Duration::from_secs(1));
 
-        assert!(cache.threshold(&[1, 2, 3, 4]).is_none());
-        assert!(cache.threshold(&[4, 3, 2, 1]).is_none());
+        assert!(cache.threshold(&[1, 2, 3, 4], a).is_none());
+        assert!(cache.threshold(&[4, 3, 2, 1], b).is_none());
         std::thread::sleep(Duration::from_secs(3));
-        assert!(cache.threshold(&[4, 3, 2, 1]).is_none());
+        assert!(cache.threshold(&[4, 3, 2, 1], b).is_none());
     }
 }

@@ -7,6 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.2] - 2026-07-14
+
+### Security
+
+- The DHCPv4 renew-cache fast path no longer hands a client an address it does
+  not hold. Entries are keyed by client-id only and stored a bare remaining
+  lease time, so a client within its renew window could send a SELECTING REQUEST
+  for any in-pool address and be ACKed it. Cache entries are now bound to the
+  granted address; the fast path fires only when the client re-requests that
+  exact address.
+- IA_PD prefix delegation is now claimed atomically (a single
+  `INSERT … ON CONFLICT DO UPDATE … WHERE … RETURNING`). The previous
+  check-then-write pair let two concurrent clients be delegated the same prefix.
+- IA_NA/IA_PD options are capped per message, bounding the pool reservations, DB
+  round-trips, and response size one relayed packet can induce.
+- The `next_expired` client-id match is now range-bounded, so a client with a
+  lease in another range/network can no longer have that binding matched,
+  mutated, and released while serving an unrelated request.
+
+### Fixed
+
+- An address found in use by duplicate-address detection is now held out for the
+  full probation period instead of being deleted (which held it out only for the
+  ping-cache TTL).
+- Released addresses are reclaimed instead of leaking: RELEASE now marks the row
+  expired and unowned rather than deleting it, so the address is reused by
+  `next_expired` instead of leaving a permanent hole below the allocator's
+  high-water mark.
+- Recycling a different client's expired lease now runs duplicate-address
+  detection (never on the client's own address); an authoritative server
+  reclaims an expired row on REQUEST instead of NAKing.
+- The renew cache is cleared by client-id (not `chaddr`) on DECLINE.
+- Client-classification expressions no longer panic on `split(x, d, 0)` or a
+  `substring` length of `isize::MIN`, and a malformed relay sub-option is treated
+  as absent rather than turning every relay lookup into an evaluation error.
+- `determine_lease` tolerates a misconfigured `min > max` instead of panicking.
+- Bumped `usg-dhcproto` to 0.19.1, hardening DHCPv6 option decoding against
+  malformed options whose declared length is shorter than their fixed header
+  (`StatusCode`, `VendorClass`, `VendorOpts`), reachable via the relay-message
+  decode path.
+
 ## [0.7.1] - 2026-07-12
 
 ### Fixed
