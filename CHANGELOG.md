@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.4] - 2026-07-14
+
+### Added
+
+- **Forensic/legal logging plugin** — compliance-grade audit logging of every
+  DHCP lease lifecycle event (v4 and v6). Events are emitted to a dedicated
+  `forensic_log` tracing target so operators can route them independently to a
+  separate file (daily rotation via `DORA_FORENSIC_LOG_PATH` env var), stdout
+  for container log shippers, or both. Runs as a `PostResponse` plugin with zero
+  latency impact on the DHCP response path. Gated by a `forensic_log:` config
+  section with `enabled` (default true) and `format` (`json` or `text`).
+
+## [0.7.3] - 2026-07-14
+
+### Added
+
+- DHCPv6 domain search list (option 24) and NTP server (option 56) option types
+  in config.
+
+### Fixed
+
+- An address found in use by duplicate-address detection is now probated outside
+  the ping cache, so the hold-out survives a cache eviction.
+- Hardened lease, allocation, and classification paths (code review findings).
+
 ## [0.7.2] - 2026-07-14
 
 ### Security

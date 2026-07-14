@@ -21,7 +21,7 @@ resolver = "2"
 
 # Shared across all workspace crates; each crate sets `version.workspace = true`.
 [workspace.package]
-version = "0.7.3"
+version = "0.7.4"
 
 [workspace.dependencies]
 # hickory 0.26 to match usg-dhcproto (its Name type must be the same hickory
