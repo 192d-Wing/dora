@@ -1,0 +1,20 @@
+apiVersion: cilium.io/v2
+kind: CiliumBGPAdvertisement
+metadata:
+  name: dora-services
+  labels:
+    {{- include "dora.labels" . | nindent 4 }}
+    advertise: {{ .Values.bgp.advertiseLabel }}
+spec:
+  advertisements:
+    - advertisementType: Service
+      service:
+        addresses:
+          - LoadBalancerIP
+      selector:
+        matchExpressions:
+          - key: dora.io/lb-pool
+            operator: In
+            values:
+              - anycast
+              - site-local

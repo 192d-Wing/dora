@@ -1,0 +1,29 @@
+apiVersion: cilium.io/v2
+kind: CiliumLoadBalancerIPPool
+metadata:
+  name: dora-anycast
+  labels:
+    {{- include "dora.labels" . | nindent 4 }}
+spec:
+  serviceSelector:
+    matchLabels:
+      dora.io/lb-pool: anycast
+  blocks:
+    - start: {{ .Values.vips.ipv4 | quote }}
+      stop: {{ .Values.vips.ipv4 | quote }}
+    - start: {{ .Values.vips.ipv6 | quote }}
+      stop: {{ .Values.vips.ipv6 | quote }}
+---
+apiVersion: cilium.io/v2
+kind: CiliumLoadBalancerIPPool
+metadata:
+  name: dora-site-local
+  labels:
+    {{- include "dora.labels" . | nindent 4 }}
+spec:
+  serviceSelector:
+    matchLabels:
+      dora.io/lb-pool: site-local
+  blocks:
+    - start: {{ .Values.vips.api | quote }}
+      stop: {{ .Values.vips.api | quote }}

@@ -1,0 +1,83 @@
+# -- Site name. The chart loads sites/<site>-config.yaml as the DHCP config.
+# Override the config entirely with --set-file doraConfig=path/to/config.yaml
+site: windep
+
+# -- Inline DHCP config override. When set, takes precedence over the site file.
+doraConfig: ""
+
+namespace: dora
+
+image:
+  registry: ghcr.io/192d-wing
+  # Per-service image names (appended to registry)
+  v4: usg-dora-v4
+  v6: usg-dora-v6
+  api: usg-dora-api
+  migrate: usg-dora-migrate
+  tag: latest
+
+# -- LoadBalancer VIPs assigned via Cilium LB-IPAM.
+vips:
+  # Anycast VIP for the DHCPv4 server (relay helper-address target)
+  ipv4: "203.0.113.10"
+  # Anycast VIP for the DHCPv6 server
+  ipv6: "2001:db8:a11::10"
+  # Site-local VIP for the management API
+  api: "10.201.0.10"
+
+bgp:
+  # Must match your CiliumBGPPeerConfig's advertisements.matchLabels.
+  # Find it: kubectl get ciliumbgppeerconfig -o yaml | grep -A2 advertisements
+  advertiseLabel: k3s-pod-cidrs
+
+db:
+  # CHANGE for production — use an external secret manager.
+  password: "CHANGE_ME"
+  user: dora
+  name: dora
+  # Storage class for the Postgres PVC (e.g. local-path, gp3, standard)
+  storageClass: ""
+  storageSize: 10Gi
+  image: postgres:16
+
+replicas:
+  v4: 2
+  v6: 2
+  api: 2
+
+resources:
+  v4:
+    requests:
+      cpu: 100m
+      memory: 64Mi
+    limits:
+      memory: 256Mi
+  v6:
+    requests:
+      cpu: 100m
+      memory: 64Mi
+    limits:
+      memory: 256Mi
+  api:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      memory: 256Mi
+  db:
+    requests:
+      cpu: 250m
+      memory: 256Mi
+    limits:
+      memory: 1Gi
+  migrate:
+    requests:
+      cpu: 50m
+      memory: 32Mi
+    limits:
+      memory: 128Mi
+
+# -- Forensic logging. Set to write forensic events to a dedicated file.
+forensicLog:
+  # Set to a path like /var/log/dora/forensic.log to enable the file appender.
+  path: ""

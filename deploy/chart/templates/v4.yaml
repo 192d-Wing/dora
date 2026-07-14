@@ -1,0 +1,78 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: usg-dora-v4-server
+  namespace: {{ .Values.namespace }}
+  labels: &labels
+    {{- include "dora.labels" . | nindent 4 }}
+    app.kubernetes.io/name: usg-dora-v4-server
+    app.kubernetes.io/component: dhcpv4
+    dora.io/workload: usg-dora-v4_server
+spec:
+  replicas: {{ .Values.replicas.v4 }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: usg-dora-v4-server
+  template:
+    metadata:
+      labels: *labels
+    spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: usg-dora-v4-server
+                topologyKey: kubernetes.io/hostname
+      initContainers:
+        {{- include "dora.initMigrate" . | nindent 8 }}
+      containers:
+        - name: dora
+          image: {{ include "dora.image" (dict "root" . "image" .Values.image.v4) }}
+          args:
+            - "-c"
+            - "/etc/dora/config.yaml"
+            - "--v4-addr"
+            - "0.0.0.0:67"
+          env:
+            {{- include "dora.envCommon" . | nindent 12 }}
+          ports:
+            - name: dhcpv4
+              containerPort: 67
+              protocol: UDP
+          volumeMounts:
+            - name: config
+              mountPath: /etc/dora
+              readOnly: true
+          resources:
+            {{- toYaml .Values.resources.v4 | nindent 12 }}
+      volumes:
+        - name: config
+          configMap:
+            name: dora-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: usg-dora-v4-server
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "dora.labels" . | nindent 4 }}
+    app.kubernetes.io/name: usg-dora-v4-server
+    dora.io/lb-pool: anycast
+  annotations:
+    io.cilium/lb-ipam-ips: {{ .Values.vips.ipv4 | quote }}
+spec:
+  type: LoadBalancer
+  ipFamilyPolicy: SingleStack
+  ipFamilies: [IPv4]
+  externalTrafficPolicy: Local
+  selector:
+    app.kubernetes.io/name: usg-dora-v4-server
+  ports:
+    - name: dhcpv4
+      port: 67
+      targetPort: dhcpv4
+      protocol: UDP

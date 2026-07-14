@@ -1,0 +1,93 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: usg-dora-api
+  namespace: {{ .Values.namespace }}
+  labels: &labels
+    {{- include "dora.labels" . | nindent 4 }}
+    app.kubernetes.io/name: usg-dora-api
+    app.kubernetes.io/component: api
+    dora.io/workload: usg-dora-api
+spec:
+  replicas: {{ .Values.replicas.api }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: usg-dora-api
+  template:
+    metadata:
+      labels: *labels
+    spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: usg-dora-api
+                topologyKey: kubernetes.io/hostname
+      initContainers:
+        {{- include "dora.initMigrate" . | nindent 8 }}
+      containers:
+        - name: dora
+          image: {{ include "dora.image" (dict "root" . "image" .Values.image.api) }}
+          args:
+            - "-c"
+            - "/etc/dora/config.yaml"
+            - "--external-api"
+            - "0.0.0.0:3333"
+          env:
+            {{- include "dora.envCommon" . | nindent 12 }}
+            - name: DORA_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: dora-api
+                  key: token
+          ports:
+            - name: http
+              containerPort: 3333
+              protocol: TCP
+          volumeMounts:
+            - name: config
+              mountPath: /etc/dora
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          resources:
+            {{- toYaml .Values.resources.api | nindent 12 }}
+      volumes:
+        - name: config
+          configMap:
+            name: dora-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: usg-dora-api
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "dora.labels" . | nindent 4 }}
+    app.kubernetes.io/name: usg-dora-api
+    dora.io/lb-pool: site-local
+  annotations:
+    io.cilium/lb-ipam-ips: {{ .Values.vips.api | quote }}
+spec:
+  type: LoadBalancer
+  externalTrafficPolicy: Local
+  selector:
+    app.kubernetes.io/name: usg-dora-api
+  ports:
+    - name: http
+      port: 3333
+      targetPort: http
+      protocol: TCP

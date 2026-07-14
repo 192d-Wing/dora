@@ -1,0 +1,30 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: usg-dora-migrate
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "dora.labels" . | nindent 4 }}
+    app.kubernetes.io/name: usg-dora-migrate
+spec:
+  backoffLimit: 6
+  ttlSecondsAfterFinished: 600
+  template:
+    metadata:
+      labels:
+        {{- include "dora.labels" . | nindent 8 }}
+        app.kubernetes.io/name: usg-dora-migrate
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: migrate
+          image: {{ include "dora.migrateImage" . }}
+          args: ["--dora-log", "info"]
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: dora-db
+                  key: DATABASE_URL
+          resources:
+            {{- toYaml .Values.resources.migrate | nindent 12 }}
