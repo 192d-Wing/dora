@@ -397,10 +397,7 @@ impl PdPool {
 }
 
 impl PdPool {
-    fn from_wire(
-        p: wire::v6::PdPool,
-        net_config: &wire::v6::NetworkConfig,
-    ) -> Result<Self> {
+    fn from_wire(p: wire::v6::PdPool, net_config: &wire::v6::NetworkConfig) -> Result<Self> {
         if p.delegated_len <= p.prefix.prefix_len() {
             bail!(
                 "pd_pool delegated_len ({}) must be greater than the parent prefix length ({}) for prefix {}",
