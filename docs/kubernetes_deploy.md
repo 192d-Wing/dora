@@ -1,11 +1,8 @@
-# Deploying dora on Kubernetes with `kubectl`
+# Deploying dora on Kubernetes with Helm
 
 A step-by-step guide to running dora on Kubernetes (or K3s) with Cilium, using
-the Kustomize manifests in [`deploy/`](../deploy). For a reference of what each
-manifest contains, see [`deploy/README.md`](../deploy/README.md).
-
-`kubectl apply -k` runs Kustomize built into `kubectl`, so no Helm or extra
-tooling is required.
+the Helm chart in [`deploy/chart/`](../deploy/chart). For a reference of what
+each template contains, see [`deploy/chart/values.yaml`](../deploy/chart/values.yaml).
 
 ## Architecture
 
@@ -39,15 +36,15 @@ the servers roll out. The DHCP servers sit behind a **Cilium anycast VIP**
   - recommended: `loadBalancer.mode=dsr` for the DHCP Services (so replies keep
     the VIP as their source and relays accept them)
 - An upstream router that will peer BGP with the cluster and accept the VIPs.
-- `kubectl` v1.27+ (for the Kustomize `replacements` used by the VIP variables).
+- `helm` v3.10+.
 - The container image `ghcr.io/192d-wing/usg-dora` must be pullable by the nodes
   (it is published by the release workflow). If the GHCR package is private,
   either make it public or add an `imagePullSecret` (see Troubleshooting).
 
 > **K3s:** install k3s with `--disable=servicelb --flannel-backend=none
 > --disable-network-policy` and then install Cilium, otherwise k3s's bundled
-> Klipper load-balancer fights Cilium for the LoadBalancer IPs. Use the
-> `overlays/k3s` overlay (it sets the `local-path` storage class).
+> Klipper load-balancer fights Cilium for the LoadBalancer IPs. Set
+> `db.storageClass` to `local-path` in your site values.
 
 ## Step 1 — Get the manifests
 
@@ -56,49 +53,44 @@ git clone https://github.com/192d-Wing/dora
 cd dora
 ```
 
-Everything below edits files under `deploy/`.
+Everything below edits files under `deploy/chart/`.
 
 ## Step 2 — Set the database password
 
-Edit [`deploy/base/db-secret.yaml`](../deploy/base/db-secret.yaml). Replace the
-`CHANGE_ME` values and make `DATABASE_URL` match:
+In your site values file (`deploy/chart/sites/<site>/values.yaml`), set
+`db.password`:
 
 ```yaml
-stringData:
-  POSTGRES_USER: dora
-  POSTGRES_PASSWORD: "<a strong password>"
-  POSTGRES_DB: dora
-  DATABASE_URL: postgres://dora:<same password>@usg-dora-db:5432/dora
+db:
+  password: "<a strong password>"
 ```
 
-For production, manage this out of band (SealedSecrets / External Secrets / SOPS /
-Vault) rather than committing plaintext.
+The chart builds `DATABASE_URL` automatically from `db.user`, `db.password`, and
+`db.name`.
+
+For production, manage the password out of band (SealedSecrets / External Secrets
+/ SOPS / Vault) rather than committing plaintext.
 
 ## Step 3 — Set your DHCP config
 
-Edit the `config.yaml` in [`deploy/base/dora-config.yaml`](../deploy/base/dora-config.yaml)
-to describe your networks, ranges, and options. Keep `interfaces:` naming an
-interface that exists in the pod (default `eth0`); DHCP arrives relayed, and dora
-selects the network from the relay, not the receiving NIC.
+Edit the site config file at `deploy/chart/sites/<site>/config.yaml` to describe
+your networks, ranges, and options. Keep `interfaces:` naming an interface that
+exists in the pod (default `eth0`); DHCP arrives relayed, and dora selects the
+network from the relay, not the receiving NIC.
 
 ## Step 4 — Set the VIPs
 
-Edit [`deploy/base/vips.yaml`](../deploy/base/vips.yaml) — this ConfigMap is the
-single source of truth for all three addresses:
+Set the VIPs in your site values file (`deploy/chart/sites/<site>/values.yaml`):
 
 ```yaml
-data:
-  ipv4_vip: "203.0.113.10"      # DHCPv4 anycast VIP
-  ipv6_vip: "2001:db8:a11::10"  # DHCPv6 anycast VIP
-  api_vip:  "10.201.0.10"       # management API site-local IP
+vips:
+  ipv4: "203.0.113.10"      # DHCPv4 anycast VIP
+  ipv6: "2001:db8:a11::10"  # DHCPv6 anycast VIP
+  api:  "10.201.0.10"       # management API site-local IP
 ```
 
-Kustomize `replacements` copy each value into both the Service's requested
-address and its Cilium LB-IPAM pool, so you set each VIP in exactly one place.
-Make sure the pool CIDRs in
-[`deploy/base/cilium-lb-ipam.yaml`](../deploy/base/cilium-lb-ipam.yaml) still
-contain your chosen VIPs (the anycast pool holds the v4+v6 VIPs; the site-local
-pool holds the API VIP).
+The Helm chart templates wire each VIP into both the Service's requested address
+and its Cilium LB-IPAM pool, so you set each VIP in exactly one place.
 
 ## Step 5 — Wire BGP advertisement
 
@@ -116,10 +108,16 @@ kubectl get ciliumbgppeerconfig -o yaml | grep -A2 advertisements
 #           advertise: k3s-pod-cidrs
 ```
 
-Then set the same value on the `advertise:` label in
-[`deploy/base/cilium-bgp.yaml`](../deploy/base/cilium-bgp.yaml) (it defaults to
-`k3s-pod-cidrs`). The advertisement selects dora's Services by their
-`dora.io/lb-pool` labels, so no ASNs or peer addresses are needed here.
+Then set `bgp.advertiseLabel` in your site values file
+(`deploy/chart/sites/<site>/values.yaml`):
+
+```yaml
+bgp:
+  advertiseLabel: "k3s-pod-cidrs"
+```
+
+The advertisement selects dora's Services by their `dora.io/lb-pool` labels, so
+no ASNs or peer addresses are needed here.
 
 > **No BGP peering yet?** If `kubectl get ciliumbgpclusterconfig` is empty, apply
 > [`deploy/examples/cilium-bgp-peer.example.yaml`](../deploy/examples/cilium-bgp-peer.example.yaml)
@@ -128,38 +126,34 @@ Then set the same value on the `advertise:` label in
 > The Cilium CRDs here are `cilium.io/v2` (current Cilium). On older Cilium that
 > still serves `cilium.io/v2alpha1`, adjust the `apiVersion` accordingly.
 
-## Step 6 — (optional) Set the image and storage class
+## Step 6 — (optional) Set the image tag and storage class
 
-- **Images** default to `ghcr.io/192d-wing/usg-dora-{v4,v6,api,migrate}:latest`.
-  To pin a version or use your own mirror, set each image:
+- **Image tag** defaults to `latest`. To pin a version:
 
-  ```sh
-  cd deploy/overlays/k8s   # or overlays/k3s
-  kustomize edit set image usg-dora-v4=ghcr.io/192d-wing/usg-dora-v4:v0.1.0
-  kustomize edit set image usg-dora-v6=ghcr.io/192d-wing/usg-dora-v6:v0.1.0
-  kustomize edit set image usg-dora-api=ghcr.io/192d-wing/usg-dora-api:v0.1.0
-  kustomize edit set image usg-dora-migrate=ghcr.io/192d-wing/usg-dora-migrate:v0.1.0
-  cd -
+  ```yaml
+  # in deploy/chart/sites/<site>/values.yaml
+  image:
+    tag: v0.7.0
   ```
 
-- **Storage class** for the Postgres volume is set by the overlay
-  (`standard` for k8s, `local-path` for k3s). Edit the overlay's
-  `kustomization.yaml` patch to match your cluster.
+  Or pass it on the command line: `--set image.tag=v0.7.0`
 
-## Step 7 — Preview, then apply
+- **Storage class** for the Postgres volume defaults to the cluster default. For
+  K3s set `db.storageClass: local-path` in your site values.
+
+## Step 7 — Preview, then install
 
 Render the manifests to review them first:
 
 ```sh
-kubectl kustomize deploy/overlays/k8s      # or overlays/k3s
+helm template dora deploy/chart/ -n dora -f deploy/chart/sites/<site>/values.yaml
 ```
 
-Then apply:
+Then install:
 
 ```sh
-kubectl apply -k deploy/overlays/k8s       # full Kubernetes
-# or
-kubectl apply -k deploy/overlays/k3s       # K3s
+helm install dora deploy/chart/ -n dora --create-namespace \
+  -f deploy/chart/sites/<site>/values.yaml
 ```
 
 ## Step 8 — Verify
@@ -193,7 +187,7 @@ VIPs as `EXTERNAL-IP`, and the BGP session to your router is `established`.
 ## Using the management API
 
 The API fails closed by default. Configure a **bearer token** by creating the
-`dora-api` secret before (or after) applying — the deployment reads it if present:
+`dora-api` secret before (or after) installing — the deployment reads it if present:
 
 ```sh
 kubectl -n dora create secret generic dora-api \
@@ -208,24 +202,23 @@ token, mTLS is mandatory.
 
 ## Upgrading
 
-Pin a new image tag and re-apply, or roll the deployments:
+Set the new image tag and upgrade the release:
 
 ```sh
-cd deploy/overlays/k8s
-kustomize edit set image usg-dora=ghcr.io/192d-wing/usg-dora:v0.2.0
-cd -
-kubectl apply -k deploy/overlays/k8s
+helm upgrade dora deploy/chart/ -n dora \
+  -f deploy/chart/sites/<site>/values.yaml \
+  --set image.tag=v0.8.0
 ```
 
 New pods run the embedded migrations on startup, so schema changes apply
-automatically. Config changes: edit `dora-config.yaml`, `kubectl apply -k`, then
-`kubectl -n dora rollout restart deploy/usg-dora-v4-server deploy/usg-dora-v6-server`
-(and `deploy/usg-dora-api`) to pick up the new config.
+automatically. Config changes: edit `deploy/chart/sites/<site>/config.yaml`,
+then run the `helm upgrade` command above. The upgrade rolls out new pods that
+pick up the updated config.
 
 ## Uninstalling
 
 ```sh
-kubectl delete -k deploy/overlays/k8s
+helm uninstall dora -n dora
 ```
 
 This removes the workloads, Services, and Cilium pool/BGP resources. The Postgres
@@ -246,7 +239,8 @@ kubectl -n dora delete pvc -l app.kubernetes.io/name=usg-dora-db
     --docker-server=ghcr.io --docker-username=<user> --docker-password=<token>
   ```
 
-  then add `imagePullSecrets: [{name: ghcr}]` to the pod specs (via a patch).
+  then add `imagePullSecrets: [{name: ghcr}]` to the pod specs (via a values
+  override or post-renderer).
 
 - **LoadBalancer Service stuck `<pending>`** — Cilium LB-IPAM isn't assigning an
   IP. Check the VIP falls inside its pool's CIDR

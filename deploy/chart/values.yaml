@@ -7,8 +7,6 @@ site: ""
 # Can also be passed with: --set-file doraConfig=path/to/config.yaml
 doraConfig: ""
 
-namespace: dora
-
 image:
   registry: ghcr.io/192d-wing
   v4: usg-dora-v4

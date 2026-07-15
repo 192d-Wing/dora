@@ -23,14 +23,16 @@ app.kubernetes.io/name: {{ .name }}
 {{- end -}}
 
 {{- define "dora.databaseUrl" -}}
-postgres://{{ .Values.db.user }}:{{ .Values.db.password }}@usg-dora-db:5432/{{ .Values.db.name }}
+postgres://{{ .Values.db.user }}:{{ .Values.db.password | urlquery }}@usg-dora-db:5432/{{ .Values.db.name }}
 {{- end -}}
 
 {{- define "dora.doraConfig" -}}
 {{- if .Values.doraConfig -}}
 {{ .Values.doraConfig }}
-{{- else -}}
+{{- else if .Values.site -}}
 {{ .Files.Get (printf "sites/%s/config.yaml" .Values.site) }}
+{{- else -}}
+{{- fail "set either 'site' or 'doraConfig' (or pass --set-file doraConfig=path/to/config.yaml)" -}}
 {{- end -}}
 {{- end -}}
 

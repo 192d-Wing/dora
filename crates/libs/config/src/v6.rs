@@ -396,18 +396,10 @@ impl PdPool {
     }
 }
 
-impl TryFrom<wire::v6::PdPool> for PdPool {
-    type Error = anyhow::Error;
-
-    fn try_from(p: wire::v6::PdPool) -> Result<Self> {
-        Self::from_wire(p, None)
-    }
-}
-
 impl PdPool {
     fn from_wire(
         p: wire::v6::PdPool,
-        net_config: Option<&wire::v6::NetworkConfig>,
+        net_config: &wire::v6::NetworkConfig,
     ) -> Result<Self> {
         if p.delegated_len <= p.prefix.prefix_len() {
             bail!(
@@ -417,23 +409,13 @@ impl PdPool {
                 p.prefix
             );
         }
-        // < 128: a /128 "prefix" is a single address and would collide with the
-        // IA_NA namespace in storage (both stored as prefix_len 128).
         if p.delegated_len >= 128 {
             bail!(
                 "pd_pool delegated_len ({}) must be < 128 (a delegated prefix cannot be a single address)",
                 p.delegated_len
             );
         }
-        let cfg = p
-            .config
-            .or_else(|| net_config.cloned())
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "pd_pool {}: missing config (set lease_time/preferred_time on the pool or the network)",
-                    p.prefix
-                )
-            })?;
+        let cfg = p.config.unwrap_or_else(|| net_config.clone());
         let valid: LeaseTime = cfg.lease_time.into();
         let preferred: LeaseTime = cfg.preferred_time.into();
         check_lifetimes(&format!("pd_pool {}", p.prefix), preferred, valid)?;
@@ -670,7 +652,7 @@ impl TryFrom<wire::v6::Config> for Config {
                 }
                 let pd_pools: Vec<PdPool> = pd_pools
                     .into_iter()
-                    .map(|p| PdPool::from_wire(p, Some(&config)))
+                    .map(|p| PdPool::from_wire(p, &config))
                     .collect::<Result<_>>()?;
 
                 // If any interfaces are explicitly set for the network,

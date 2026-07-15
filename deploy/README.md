@@ -65,6 +65,19 @@ files. To use a config file outside the chart, pass it with
   `CiliumBGPAdvertisement` plugs into it)
 - Recommended: `loadBalancer.mode=dsr` for the DHCP Services
 
+## Securing the API
+
+The API **fails closed** by default — it will not serve requests without
+authentication configured.
+
+Configure a **bearer token** by creating the `dora-api` secret (step 6 above).
+For production prefer **mTLS**: mount a server cert/key and a client-CA bundle
+and set `--external-api-tls-cert` / `--external-api-tls-key` /
+`--external-api-tls-client-ca` (see [`docs/management-api.md`](../docs/management-api.md)).
+
+> With a client-CA configured and no bearer token, mTLS is mandatory — the API
+> will reject any request that does not present a valid client certificate.
+
 ## Upgrading
 
 ```sh

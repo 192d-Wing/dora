@@ -4,7 +4,7 @@ metadata:
   name: dora-services
   labels:
     {{- include "dora.labels" . | nindent 4 }}
-    advertise: {{ .Values.bgp.advertiseLabel }}
+    advertise: {{ required "bgp.advertiseLabel is required (must match your CiliumBGPPeerConfig advertisements.matchLabels)" .Values.bgp.advertiseLabel }}
 spec:
   advertisements:
     - advertisementType: Service
