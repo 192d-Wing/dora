@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.5] - 2026-07-14
+
+### Changed
+
+- **Kustomize → Helm migration** — deployment manifests are now a Helm chart at
+  `deploy/chart/`. Old `deploy/base/` and `deploy/overlays/` removed. Site
+  configs live under `deploy/chart/sites/<site>/` with per-site `values.yaml`
+  and `config.yaml`.
+- DHCPv6 `options` and `config` fields on ranges and PD pools are now optional;
+  values fall back to the enclosing network-level config when omitted.
+- Deployment docs (`docs/kubernetes_deploy.md`, `deploy/README.md`) rewritten
+  for Helm.
+
+### Fixed
+
+- Helm templates use `.Release.Namespace` instead of a hardcoded value.
+- `dora.databaseUrl` URL-encodes the DB password (special chars no longer break
+  the connection string).
+- `dora.doraConfig` fails early when neither `site` nor `doraConfig` is set.
+- Cilium LB-IPAM and BGP templates require VIP and label values (catches missing
+  config at `helm install` time instead of deploying broken resources).
+- Removed dead `TryFrom<PdPool>` impl; simplified `PdPool::from_wire` signature.
+- `deploy/README.md` restores "Securing the API" section (fail-closed, mTLS).
+- Migrate Job reuses the `dora.initMigrate` helper (no inline duplication).
+
 ## [0.7.4] - 2026-07-14
 
 ### Added

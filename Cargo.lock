@@ -113,7 +113,7 @@ checksum = "2a4385e2e34eb35d6b3efe798b9eb88096925d87726c0798709bf56d9ed84af3"
 
 [[package]]
 name = "api-server"
-version = "0.7.4"
+version = "0.7.5"
 dependencies = [
  "anyhow",
  "config",
@@ -499,7 +499,7 @@ checksum = "c8d4a3bb8b1e0c1050499d1815f5ab16d04f0959b233085fb31653fbfc9d98f9"
 
 [[package]]
 name = "client-classification"
-version = "0.7.4"
+version = "0.7.5"
 dependencies = [
  "criterion",
  "hex",
@@ -511,7 +511,7 @@ dependencies = [
 
 [[package]]
 name = "client-protection"
-version = "0.7.4"
+version = "0.7.5"
 dependencies = [
  "config",
  "dashmap",
@@ -555,7 +555,7 @@ dependencies = [
 
 [[package]]
 name = "config"
-version = "0.7.4"
+version = "0.7.5"
 dependencies = [
  "anyhow",
  "base64",
@@ -786,7 +786,7 @@ checksum = "a4ae5f15dda3c708c0ade84bfee31ccab44a3da4f88015ed22f63732abe300c8"
 
 [[package]]
 name = "ddns"
-version = "0.7.4"
+version = "0.7.5"
 dependencies = [
  "base64",
  "config",
@@ -887,7 +887,7 @@ dependencies = [
 
 [[package]]
 name = "dora-cfg"
-version = "0.7.4"
+version = "0.7.5"
 dependencies = [
  "anyhow",
  "clap",
@@ -900,7 +900,7 @@ dependencies = [
 
 [[package]]
 name = "dora-core"
-version = "0.7.4"
+version = "0.7.5"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -936,7 +936,7 @@ dependencies = [
 
 [[package]]
 name = "dora-runtime"
-version = "0.7.4"
+version = "0.7.5"
 dependencies = [
  "anyhow",
  "config",
@@ -979,7 +979,7 @@ dependencies = [
 
 [[package]]
 name = "env-parser"
-version = "0.7.4"
+version = "0.7.5"
 dependencies = [
  "anyhow",
 ]
@@ -1034,7 +1034,7 @@ dependencies = [
 
 [[package]]
 name = "external-api"
-version = "0.7.4"
+version = "0.7.5"
 dependencies = [
  "anyhow",
  "axum",
@@ -1130,7 +1130,7 @@ checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
 
 [[package]]
 name = "forensic-log"
-version = "0.7.4"
+version = "0.7.5"
 dependencies = [
  "dora-core",
  "leases",
@@ -1651,7 +1651,7 @@ dependencies = [
 
 [[package]]
 name = "icmp-ping"
-version = "0.7.4"
+version = "0.7.5"
 dependencies = [
  "dora-core",
  "parking_lot",
@@ -1786,7 +1786,7 @@ dependencies = [
 
 [[package]]
 name = "integration-tests"
-version = "0.7.4"
+version = "0.7.5"
 dependencies = [
  "anyhow",
  "crossbeam-channel",
@@ -1802,7 +1802,7 @@ dependencies = [
 
 [[package]]
 name = "ip-manager"
-version = "0.7.4"
+version = "0.7.5"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1998,7 +1998,7 @@ dependencies = [
 
 [[package]]
 name = "leases"
-version = "0.7.4"
+version = "0.7.5"
 dependencies = [
  "client-protection",
  "config",
@@ -2016,7 +2016,7 @@ dependencies = [
 
 [[package]]
 name = "leases-v6"
-version = "0.7.4"
+version = "0.7.5"
 dependencies = [
  "config",
  "dora-core",
@@ -2162,7 +2162,7 @@ dependencies = [
 
 [[package]]
 name = "message-type"
-version = "0.7.4"
+version = "0.7.5"
 dependencies = [
  "client-protection",
  "config",
@@ -2181,7 +2181,7 @@ checksum = "c2a86d3146ed3995b5913c414f6664344b9617457320782e64f0bb44afd49d74"
 
 [[package]]
 name = "migrate"
-version = "0.7.4"
+version = "0.7.5"
 dependencies = [
  "anyhow",
  "dora-core",
@@ -3141,7 +3141,7 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
 name = "register_derive"
-version = "0.7.4"
+version = "0.7.5"
 dependencies = [
  "dora-core",
  "register_derive_impl",
@@ -3149,7 +3149,7 @@ dependencies = [
 
 [[package]]
 name = "register_derive_impl"
-version = "0.7.4"
+version = "0.7.5"
 dependencies = [
  "dora-core",
  "proc-macro2",
@@ -3853,7 +3853,7 @@ checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
 
 [[package]]
 name = "static-addr"
-version = "0.7.4"
+version = "0.7.5"
 dependencies = [
  "config",
  "dora-core",
@@ -4131,7 +4131,7 @@ dependencies = [
 
 [[package]]
 name = "topo_sort"
-version = "0.7.4"
+version = "0.7.5"
 dependencies = [
  "thiserror 2.0.18",
 ]
@@ -4465,7 +4465,7 @@ dependencies = [
 
 [[package]]
 name = "v4-server"
-version = "0.7.4"
+version = "0.7.5"
 dependencies = [
  "anyhow",
  "config",
@@ -4482,7 +4482,7 @@ dependencies = [
 
 [[package]]
 name = "v6-server"
-version = "0.7.4"
+version = "0.7.5"
 dependencies = [
  "anyhow",
  "config",
