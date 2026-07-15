@@ -1,0 +1,74 @@
+# -- Site name. The chart loads sites/<site>/config.yaml as the DHCP config.
+# Each site directory can also contain a values.yaml with site-specific
+# overrides — pass it with: helm install dora deploy/chart/ -f deploy/chart/sites/<site>/values.yaml
+site: ""
+
+# -- Inline DHCP config override. When set, takes precedence over the site file.
+# Can also be passed with: --set-file doraConfig=path/to/config.yaml
+doraConfig: ""
+
+image:
+  registry: ghcr.io/192d-wing
+  v4: usg-dora-v4
+  v6: usg-dora-v6
+  api: usg-dora-api
+  migrate: usg-dora-migrate
+  tag: latest
+
+# -- LoadBalancer VIPs assigned via Cilium LB-IPAM. Override per site.
+vips:
+  ipv4: ""
+  ipv6: ""
+  api: ""
+
+bgp:
+  # Must match your CiliumBGPPeerConfig's advertisements.matchLabels.
+  advertiseLabel: ""
+
+db:
+  password: "CHANGE_ME"
+  user: dora
+  name: dora
+  storageClass: ""
+  storageSize: 10Gi
+  image: postgres:16
+
+replicas:
+  v4: 2
+  v6: 2
+  api: 2
+
+resources:
+  v4:
+    requests:
+      cpu: 100m
+      memory: 64Mi
+    limits:
+      memory: 256Mi
+  v6:
+    requests:
+      cpu: 100m
+      memory: 64Mi
+    limits:
+      memory: 256Mi
+  api:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      memory: 256Mi
+  db:
+    requests:
+      cpu: 250m
+      memory: 256Mi
+    limits:
+      memory: 1Gi
+  migrate:
+    requests:
+      cpu: 50m
+      memory: 32Mi
+    limits:
+      memory: 128Mi
+
+forensicLog:
+  path: ""

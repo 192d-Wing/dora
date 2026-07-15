@@ -1,9 +1,9 @@
 # EXAMPLE — a Cilium BGP cluster + peer config, for a cluster that does not
 # already peer BGP with an upstream router.
 #
-# This is NOT part of the Kustomize build (deploy/base does not reference it),
+# This is NOT part of the Helm chart (deploy/chart does not reference it),
 # because a running cluster typically already has this and dora should plug into
-# it via deploy/base/cilium-bgp.yaml (the CiliumBGPAdvertisement). Apply this
+# it via deploy/chart/templates/cilium-bgp.yaml (the CiliumBGPAdvertisement). Apply this
 # ONLY if `kubectl get ciliumbgpclusterconfig` is empty.
 #
 # The peer config selects advertisements labeled `advertise: <value>`; keep that

@@ -1,0 +1,32 @@
+v4:
+    interfaces:
+        - eth0
+    networks:
+        192.168.1.0/24:
+            ranges:
+                - start: 192.168.1.100
+                  end: 192.168.1.200
+                  config:
+                      lease_time:
+                          default: 3600
+                  options:
+                      values:
+                          3:
+                              type: ip
+                              value: 192.168.1.1
+                          6:
+                              type: ip
+                              value: 192.168.1.1
+v6:
+    interfaces:
+        - eth0
+    networks:
+        2001:db8:1::/64:
+            config:
+                lease_time:
+                    default: 7200
+                preferred_time:
+                    default: 3600
+            ranges:
+                - start: 2001:db8:1::1000
+                  end: 2001:db8:1::2000

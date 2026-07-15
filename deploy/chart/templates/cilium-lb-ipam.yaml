@@ -1,0 +1,29 @@
+apiVersion: cilium.io/v2
+kind: CiliumLoadBalancerIPPool
+metadata:
+  name: dora-anycast
+  labels:
+    {{- include "dora.labels" . | nindent 4 }}
+spec:
+  serviceSelector:
+    matchLabels:
+      dora.io/lb-pool: anycast
+  blocks:
+    - start: {{ required "vips.ipv4 is required" .Values.vips.ipv4 | quote }}
+      stop: {{ required "vips.ipv4 is required" .Values.vips.ipv4 | quote }}
+    - start: {{ required "vips.ipv6 is required" .Values.vips.ipv6 | quote }}
+      stop: {{ required "vips.ipv6 is required" .Values.vips.ipv6 | quote }}
+---
+apiVersion: cilium.io/v2
+kind: CiliumLoadBalancerIPPool
+metadata:
+  name: dora-site-local
+  labels:
+    {{- include "dora.labels" . | nindent 4 }}
+spec:
+  serviceSelector:
+    matchLabels:
+      dora.io/lb-pool: site-local
+  blocks:
+    - start: {{ required "vips.api is required" .Values.vips.api | quote }}
+      stop: {{ required "vips.api is required" .Values.vips.api | quote }}

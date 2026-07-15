@@ -88,7 +88,8 @@ pub struct PdPool {
     pub delegated_len: u8,
     #[serde(default)]
     pub options: Options,
-    pub config: NetworkConfig,
+    #[serde(default)]
+    pub config: Option<NetworkConfig>,
     /// delegated prefixes to skip (never hand out)
     #[serde(default)]
     pub except: Vec<Ipv6Net>,
@@ -162,8 +163,10 @@ pub struct IpRange {
     // RangeInclusive includes `start`/`end` so flatten will parse those fields
     #[serde(flatten)]
     pub range: RangeInclusive<Ipv6Addr>,
+    #[serde(default)]
     pub options: Options,
-    pub config: NetworkConfig,
+    #[serde(default)]
+    pub config: Option<NetworkConfig>,
     #[serde(default)]
     pub except: Vec<Ipv6Addr>,
 }
