@@ -147,6 +147,7 @@ pub struct IpRange {
     // RangeInclusive includes `start`/`end` so flatten will parse those fields
     #[serde(flatten)]
     pub range: RangeInclusive<Ipv4Addr>,
+    #[serde(default)]
     pub options: Options,
     /// name of a policy (see [`Config::policies`]) whose options apply to this
     /// range. Overridden by this range's own `options`.

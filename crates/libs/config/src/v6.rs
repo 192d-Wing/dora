@@ -318,12 +318,13 @@ impl NetRange {
     }
 }
 
-impl From<wire::v6::IpRange> for NetRange {
-    fn from(r: wire::v6::IpRange) -> Self {
+impl NetRange {
+    fn from_wire(r: wire::v6::IpRange, net_config: &wire::v6::NetworkConfig) -> Self {
+        let cfg = r.config.unwrap_or_else(|| net_config.clone());
         Self {
             addrs: r.range,
-            valid: r.config.lease_time.into(),
-            preferred: r.config.preferred_time.into(),
+            valid: cfg.lease_time.into(),
+            preferred: cfg.preferred_time.into(),
             opts: r.options.get(),
             exclude: r.except.into_iter().collect(),
         }
@@ -399,6 +400,15 @@ impl TryFrom<wire::v6::PdPool> for PdPool {
     type Error = anyhow::Error;
 
     fn try_from(p: wire::v6::PdPool) -> Result<Self> {
+        Self::from_wire(p, None)
+    }
+}
+
+impl PdPool {
+    fn from_wire(
+        p: wire::v6::PdPool,
+        net_config: Option<&wire::v6::NetworkConfig>,
+    ) -> Result<Self> {
         if p.delegated_len <= p.prefix.prefix_len() {
             bail!(
                 "pd_pool delegated_len ({}) must be greater than the parent prefix length ({}) for prefix {}",
@@ -415,8 +425,17 @@ impl TryFrom<wire::v6::PdPool> for PdPool {
                 p.delegated_len
             );
         }
-        let valid: LeaseTime = p.config.lease_time.into();
-        let preferred: LeaseTime = p.config.preferred_time.into();
+        let cfg = p
+            .config
+            .or_else(|| net_config.cloned())
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "pd_pool {}: missing config (set lease_time/preferred_time on the pool or the network)",
+                    p.prefix
+                )
+            })?;
+        let valid: LeaseTime = cfg.lease_time.into();
+        let preferred: LeaseTime = cfg.preferred_time.into();
         check_lifetimes(&format!("pd_pool {}", p.prefix), preferred, valid)?;
         Ok(Self {
             prefix: p.prefix,
@@ -638,7 +657,10 @@ impl TryFrom<wire::v6::Config> for Config {
                 let net_ctx = fold_opts(options.get(), &[&net_policy, &global]);
 
                 // convert address pools (IA_NA) and prefix pools (IA_PD)
-                let ranges: Vec<NetRange> = ranges.into_iter().map(NetRange::from).collect();
+                let ranges: Vec<NetRange> = ranges
+                    .into_iter()
+                    .map(|r| NetRange::from_wire(r, &config))
+                    .collect();
                 for r in &ranges {
                     check_lifetimes(
                         &format!("range {}-{}", r.start(), r.end()),
@@ -648,7 +670,7 @@ impl TryFrom<wire::v6::Config> for Config {
                 }
                 let pd_pools: Vec<PdPool> = pd_pools
                     .into_iter()
-                    .map(PdPool::try_from)
+                    .map(|p| PdPool::from_wire(p, Some(&config)))
                     .collect::<Result<_>>()?;
 
                 // If any interfaces are explicitly set for the network,

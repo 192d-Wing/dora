@@ -23,8 +23,10 @@ v6:
     networks:
         2001:db8:1::/64:
             config:
-                preferred_lifetime: 3600
-                valid_lifetime: 7200
+                lease_time:
+                    default: 7200
+                preferred_time:
+                    default: 3600
             ranges:
                 - start: 2001:db8:1::1000
                   end: 2001:db8:1::2000
