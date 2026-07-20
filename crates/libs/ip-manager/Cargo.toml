@@ -22,7 +22,7 @@ moka = { version = "0.12.15", features = ["future"] }
 # sqlx 0.7 split the combined runtime+tls feature and made offline mode part of
 # the default `macros` feature. `tls-rustls-ring` keeps the ring backend (now
 # on the patched 0.17 line) instead of pulling in aws-lc-rs.
-sqlx = { version = "0.8", default-features = false, features = [
+sqlx = { version = "0.9", default-features = false, features = [
     "postgres",
     "runtime-tokio",
     "tls-rustls-ring",
