@@ -46,7 +46,7 @@ jobs:
 
       - name: Filter paths
         id: filter
-        uses: dorny/paths-filter@v3
+        uses: dorny/paths-filter@v4
         with:
           filters: |
             image:
@@ -171,7 +171,7 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.x"
 
@@ -285,10 +285,10 @@ jobs:
 
       - name: Set up Docker Buildx
         id: buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Log in to Iron Bank
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: registry1.dso.mil
           username: ${{ secrets.REPO1_USER }}
@@ -302,7 +302,7 @@ jobs:
       # incremental state, falling back to the most recent prior cache.
       - name: Cache Rust build artifacts
         id: cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             buildkit-cache/cargo-registry
@@ -324,7 +324,7 @@ jobs:
             }
 
       - name: Build image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: infra-build/Containerfile
