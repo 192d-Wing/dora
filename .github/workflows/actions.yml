@@ -76,6 +76,13 @@ jobs:
       - name: Run cargo check
         run: cargo check --all-features
 
+      # the storage trait and the runtime bootstrap must build with no
+      # backend selected (what a non-Postgres binary links against)
+      - name: Check feature-gated builds
+        run: |
+          cargo check -p ip-manager --no-default-features
+          cargo check -p dora-runtime --no-default-features
+
   test:
     name: Test Suite
     runs-on: ubuntu-latest
@@ -161,7 +168,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Run cargo clippy
-        run: cargo clippy -- -D warnings
+        run: cargo clippy --workspace --all-features --all-targets -- -D warnings
 
   openapi:
     name: OpenAPI validate

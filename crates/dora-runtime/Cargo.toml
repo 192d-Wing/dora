@@ -9,10 +9,15 @@ license = "MPL-2.0"
 # warm-load, shared mode/token, and the shutdown-signal helpers. Each service
 # binary wires only its own role on top of this.
 
+[features]
+default = ["postgres"]
+# Postgres connect helper (`bootstrap`) for the split services.
+postgres = ["ip-manager/postgres"]
+
 [dependencies]
 dora-core = { path = "../dora-core" }
 config = { path = "../libs/config" }
-ip-manager = { path = "../libs/ip-manager" }
+ip-manager = { path = "../libs/ip-manager", default-features = false }
 anyhow = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }

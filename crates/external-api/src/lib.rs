@@ -3653,7 +3653,7 @@ mod tests {
     };
 
     use dora_core::mode::{ServerMode, SharedMode};
-    use ip_manager::postgres::PostgresDb;
+    use ip_manager::testing::{TestStore, new_test_store};
     use tokio_util::sync::CancellationToken;
 
     use super::*;
@@ -3696,9 +3696,9 @@ mod tests {
         SocketAddr,
         CancellationToken,
         SharedMode,
-        Arc<IpManager<PostgresDb>>,
+        Arc<IpManager<TestStore>>,
     )> {
-        let mgr = Arc::new(IpManager::new(PostgresDb::new_test().await?)?);
+        let mgr = Arc::new(IpManager::new(new_test_store().await?)?);
         let cfg = Arc::new(DhcpConfig::default());
         let state = models::blank_health();
         *state.lock() = health;
@@ -3706,7 +3706,7 @@ mod tests {
         let mode = SharedMode::default();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         let addr = listener.local_addr()?;
-        let app = api_router::<PostgresDb>(
+        let app = api_router::<TestStore>(
             state,
             ApiState {
                 started_at: SystemTime::now(),
@@ -3740,13 +3740,13 @@ mod tests {
         auth: ApiAuth,
         cfg: Arc<DhcpConfig>,
     ) -> anyhow::Result<(SocketAddr, CancellationToken)> {
-        let mgr = Arc::new(IpManager::new(PostgresDb::new_test().await?)?);
+        let mgr = Arc::new(IpManager::new(new_test_store().await?)?);
         let state = models::blank_health();
         *state.lock() = health;
         let token = CancellationToken::new();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         let addr = listener.local_addr()?;
-        let app = api_router::<PostgresDb>(
+        let app = api_router::<TestStore>(
             state,
             ApiState {
                 started_at: SystemTime::now(),
@@ -4897,14 +4897,14 @@ v4:
     ) -> anyhow::Result<(SocketAddr, CancellationToken)> {
         // mirror ExternalApi::with_tls: advertise mtls when a client-CA is set
         auth.mtls_enabled = tls.client_ca.is_some();
-        let mgr = Arc::new(IpManager::new(PostgresDb::new_test().await?)?);
+        let mgr = Arc::new(IpManager::new(new_test_store().await?)?);
         let cfg = Arc::new(DhcpConfig::default());
         let state = models::blank_health();
         *state.lock() = Health::Good;
         let token = CancellationToken::new();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         let addr = listener.local_addr()?;
-        let app = api_router::<PostgresDb>(
+        let app = api_router::<TestStore>(
             state,
             ApiState {
                 started_at: SystemTime::now(),
