@@ -24,13 +24,63 @@ use dora_core::dhcproto::{
 };
 use integration_tests::{bin_path, block_on};
 
+/// what to tear down when the server is dropped
+enum Store {
+    Postgres {
+        db_name: String,
+    },
+    /// `dora-embedded`'s redb file (not sudo'd here, so a plain remove works)
+    Redb {
+        path: String,
+    },
+}
+
 /// a running `dora` server bound to loopback, killed and cleaned up on drop
 struct DoraV6 {
     child: Child,
-    db_name: String,
+    store: Store,
 }
 
 impl DoraV6 {
+    /// The single-process `dora-embedded` binary on a fresh redb file, with
+    /// its API on `api_port` so parallel tests don't collide on 3333.
+    fn start_embedded(v6_port: u16, v4_port: u16, api_port: u16) -> Self {
+        let path = format!(
+            "{}/dora_it_v6_relay_{v6_port}.redb",
+            env!("CARGO_TARGET_TMPDIR")
+        );
+        let _ = std::fs::remove_file(&path);
+        let config = format!(
+            "{}/tests/test_configs/v6_relay.yaml",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let child = Command::new(bin_path("dora-embedded"))
+            .args([
+                "-c",
+                &config,
+                "-d",
+                &format!("redb://{path}"),
+                "--v4-addr",
+                &format!("0.0.0.0:{v4_port}"),
+                "--v6-addr",
+                &format!("[::1]:{v6_port}"),
+                "--external-api",
+                &format!("127.0.0.1:{api_port}"),
+                "--dora-log",
+                "warn",
+            ])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("failed to start dora-embedded");
+        thread::sleep(Duration::from_millis(500));
+        Self {
+            child,
+            store: Store::Redb { path },
+        }
+    }
+
     fn start(v6_port: u16, v4_port: u16) -> Self {
         // dora is Postgres-only; provision a transient database for this test.
         // dora runs in the default namespace here (bound to loopback), so it
@@ -74,7 +124,10 @@ impl DoraV6 {
             .expect("failed to start dora-v6");
         // give it a moment to bind; the exchange helper also retries
         thread::sleep(Duration::from_millis(500));
-        Self { child, db_name }
+        Self {
+            child,
+            store: Store::Postgres { db_name },
+        }
     }
 }
 
@@ -82,8 +135,15 @@ impl Drop for DoraV6 {
     fn drop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
-        if let Err(err) = block_on(ip_manager::postgres::drop_test_database(&self.db_name)) {
-            eprintln!("failed to drop test database {}: {err:?}", self.db_name);
+        match &self.store {
+            Store::Postgres { db_name } => {
+                if let Err(err) = block_on(ip_manager::postgres::drop_test_database(db_name)) {
+                    eprintln!("failed to drop test database {db_name}: {err:?}");
+                }
+            }
+            Store::Redb { path } => {
+                let _ = std::fs::remove_file(path);
+            }
         }
     }
 }
@@ -196,7 +256,18 @@ fn iana_with(addr: Ipv6Addr, iaid: u32) -> DhcpOption {
 #[test]
 fn v6_relay_ia_na_lifecycle() {
     let _srv = DoraV6::start(15480, 15481);
-    let sock = client(15480);
+    ia_na_lifecycle(15480);
+}
+
+/// The same lifecycle served by `dora-embedded` on a redb file.
+#[test]
+fn embedded_v6_relay_ia_na_lifecycle() {
+    let _srv = DoraV6::start_embedded(15486, 15487, 15488);
+    ia_na_lifecycle(15486);
+}
+
+fn ia_na_lifecycle(v6_port: u16) {
+    let sock = client(v6_port);
     let duid = b"\x00\x03\x00\x01\xaa\xbb\xcc\xdd\xee\x01";
 
     // Solicit -> Advertise with an address from the configured range

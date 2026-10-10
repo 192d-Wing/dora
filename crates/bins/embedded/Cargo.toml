@@ -1,0 +1,42 @@
+[package]
+name = "embedded"
+version.workspace = true
+edition = "2024"
+license = "MPL-2.0"
+
+# `dora-embedded`: the DHCPv4 server, the DHCPv6 server and the management API
+# in ONE process on ONE embedded redb file. For routers and other single hosts
+# that have no PostgreSQL. redb allows a single writer process, which is why
+# the roles cannot be split here the way the Postgres services are.
+#
+# This package selects only the `redb` backend. Note that cargo unifies
+# features per invocation: `cargo build --workspace` still links sqlx into this
+# binary (unused) because other members enable `postgres`. Build it on its own
+# (`cargo build -p embedded`) for an sqlx-free binary — the Containerfile and
+# CI do.
+
+[[bin]]
+name = "dora-embedded"
+path = "src/main.rs"
+
+[dependencies]
+dora-runtime = { path = "../../dora-runtime", default-features = false }
+dora-core = { path = "../../dora-core" }
+config = { path = "../../libs/config" }
+ip-manager = { path = "../../libs/ip-manager", default-features = false, features = [
+    "redb",
+] }
+external-api = { path = "../../external-api" }
+# plugins: the v4 chain, the v6 chain, and the shared post-response logger
+message-type = { path = "../../plugins/message-type" }
+static-addr = { path = "../../plugins/static-addr" }
+leases = { path = "../../plugins/leases" }
+leases-v6 = { path = "../../plugins/leases-v6" }
+forensic-log = { path = "../../plugins/forensic-log" }
+# external
+anyhow = { workspace = true }
+clap = { workspace = true }
+dotenv = { package = "dotenvy", version = "0.15.7" }
+
+[target.'cfg(not(target_env = "musl"))'.dependencies]
+jemallocator = { version = "0.5.4", features = ["background_threads"] }

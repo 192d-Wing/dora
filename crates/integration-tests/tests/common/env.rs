@@ -6,13 +6,35 @@ use std::{
 
 use integration_tests::{bin_path, block_on};
 
+/// Which store a test's dora processes run against.
+#[derive(Debug)]
+pub(crate) enum Backend {
+    /// The split services (`dora-api` + `dora-v4`) on a transient Postgres
+    /// database, schema applied by `dora-migrate` first.
+    Postgres { db_name: String },
+    /// The single-process `dora-embedded` binary on a redb file. The daemon
+    /// runs under sudo, so the file is root-owned and cleaned up with sudo too.
+    Redb { path: String },
+}
+
+impl Backend {
+    /// A string unique to this test's processes that appears in their `-d`
+    /// argument, so `pkill -f` can find the orphaned dora children.
+    fn process_marker(&self) -> &str {
+        match self {
+            Backend::Postgres { db_name } => db_name,
+            Backend::Redb { path } => path,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct DhcpServerEnv {
-    // one process per service now: the API (health endpoint) and the v4 server.
-    // They share the per-test database; the schema is applied by `dora-migrate`
-    // before either starts.
+    // Postgres: one process per service (the API for the health endpoint and
+    // the v4 server). Embedded: a single dora-embedded process.
     daemons: Vec<Child>,
-    db_name: String,
+    backend: Backend,
+    config: String,
     netns: String,
     veth_cli: String,
     // veth_srv: String,
@@ -53,7 +75,8 @@ impl DhcpServerEnv {
         // only after readiness would leak all of that on the failure path.
         let mut server = Self {
             daemons: Vec::new(),
-            db_name,
+            backend: Backend::Postgres { db_name },
+            config: config.to_owned(),
             netns: netns.to_owned(),
             veth_cli: veth_cli.to_owned(),
             // veth_srv: veth_srv.to_owned(),
@@ -68,6 +91,96 @@ impl DhcpServerEnv {
         wait_ready(netns, &mut server.daemons);
         server
     }
+
+    /// Like [`start`](Self::start), but runs the single-process `dora-embedded`
+    /// binary on a fresh redb file (`name` keys the file) instead of the split
+    /// Postgres services. No database to provision and no migrate step.
+    pub(crate) fn start_embedded(
+        config: &str,
+        name: &str,
+        netns: &str,
+        veth_cli: &str,
+        veth_srv: &str,
+        srv_ip: &str,
+    ) -> Self {
+        remove_test_veth_nics(veth_cli);
+        remove_test_net_namespace(netns);
+
+        let path = redb_path(name);
+        // leftover from a failed run: the daemon ran as root, so remove as root
+        remove_redb_file(&path);
+
+        let mut server = Self {
+            daemons: Vec::new(),
+            backend: Backend::Redb { path },
+            config: config.to_owned(),
+            netns: netns.to_owned(),
+            veth_cli: veth_cli.to_owned(),
+        };
+
+        create_test_net_namespace(netns);
+        create_test_veth_nics(netns, srv_ip, veth_cli, veth_srv);
+        server.daemons = server.spawn_daemons();
+        wait_ready(netns, &mut server.daemons);
+        server
+    }
+
+    /// Stop the dora processes with `signal` (`TERM` or `KILL`), leave the
+    /// store in place, start them again and wait until they serve. This is how
+    /// the embedded tests prove leases survive a restart and a crash.
+    pub(crate) fn restart(&mut self, signal: &str) {
+        for daemon in &mut self.daemons {
+            stop_dhcp_server(daemon);
+        }
+        let marker = self.backend.process_marker().to_owned();
+        run_cmd_ignore_failure(&format!("{SUDO} pkill -{signal} -f {marker}"));
+        // wait for the orphaned dora children to be gone (and the redb file
+        // lock released) before starting the replacement
+        for _ in 0..40 {
+            let alive = Command::new("pgrep")
+                .args(["-f", &marker])
+                .stdout(Stdio::null())
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false);
+            if !alive {
+                break;
+            }
+            thread::sleep(std::time::Duration::from_millis(250));
+        }
+        self.daemons = self.spawn_daemons();
+        wait_ready(&self.netns, &mut self.daemons);
+    }
+
+    /// `GET` a management-API path inside the namespace and return the body.
+    /// The embedded daemon is started with `DORA_API_ALLOW_UNAUTHENTICATED`.
+    pub(crate) fn api_get(&self, path: &str) -> String {
+        let url = format!("http://127.0.0.1:3333{path}");
+        let out = netns_command(&self.netns, "curl", &["-sf", "--max-time", "2", &url])
+            .output()
+            .expect("failed to run curl");
+        assert!(out.status.success(), "GET {path} failed: {:?}", out.status);
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    }
+
+    fn spawn_daemons(&self) -> Vec<Child> {
+        match &self.backend {
+            Backend::Postgres { db_name } => {
+                spawn_services(&self.config, &self.netns, &pg_url_for(db_name))
+            }
+            Backend::Redb { path } => spawn_embedded(&self.config, &self.netns, path),
+        }
+    }
+}
+
+/// The redb file for an embedded test, under cargo's per-crate temp dir.
+fn redb_path(name: &str) -> String {
+    format!("{}/dora_it_{name}.redb", env!("CARGO_TARGET_TMPDIR"))
+}
+
+/// The embedded daemon runs under sudo, so its store file is root-owned.
+fn remove_redb_file(path: &str) {
+    run_cmd_ignore_failure(&format!("{SUDO} rm -f {path} {path}.lock"));
 }
 
 impl Drop for DhcpServerEnv {
@@ -80,13 +193,26 @@ impl Drop for DhcpServerEnv {
         for daemon in &mut self.daemons {
             stop_dhcp_server(daemon);
         }
-        run_cmd_ignore_failure(&format!("{SUDO} pkill -TERM -f {}", self.db_name));
+        run_cmd_ignore_failure(&format!(
+            "{SUDO} pkill -TERM -f {}",
+            self.backend.process_marker()
+        ));
         remove_test_veth_nics(&self.veth_cli);
         remove_test_net_namespace(&self.netns);
-        // the daemons are dead, so their connections are gone; WITH (FORCE) in
-        // drop_test_database evicts any that lingers.
-        if let Err(err) = block_on(ip_manager::postgres::drop_test_database(&self.db_name)) {
-            eprintln!("failed to drop test database {}: {err:?}", self.db_name);
+        match &self.backend {
+            Backend::Postgres { db_name } => {
+                // the daemons are dead, so their connections are gone; WITH
+                // (FORCE) in drop_test_database evicts any that lingers.
+                if let Err(err) = block_on(ip_manager::postgres::drop_test_database(db_name)) {
+                    eprintln!("failed to drop test database {db_name}: {err:?}");
+                }
+            }
+            Backend::Redb { path } => {
+                // give the killed process a moment to release the file, then
+                // remove it as root (it was created by the sudo'd daemon)
+                thread::sleep(std::time::Duration::from_millis(200));
+                remove_redb_file(path);
+            }
         }
     }
 }
@@ -172,7 +298,19 @@ fn remove_test_veth_nics(veth_cli: &str) {
 /// a space (e.g. `CARGO_MANIFEST_DIR` under a spaced checkout) stays a single
 /// argument.
 fn netns_command(netns: &str, program: &str, args: &[&str]) -> Command {
+    netns_command_env(netns, &[], program, args)
+}
+
+/// [`netns_command`] with environment variables for the child. `sudo` resets
+/// the environment, so they are injected with `env` on the sudo side.
+fn netns_command_env(netns: &str, envs: &[(&str, &str)], program: &str, args: &[&str]) -> Command {
     let mut cmd = Command::new(SUDO);
+    if !envs.is_empty() {
+        cmd.arg("env");
+        for (k, v) in envs {
+            cmd.arg(format!("{k}={v}"));
+        }
+    }
     cmd.args(["ip", "netns", "exec", netns, program]);
     cmd.args(args);
     cmd.stdin(Stdio::null());
@@ -222,6 +360,35 @@ fn spawn_services(config: &str, netns: &str, db_url: &str) -> Vec<Child> {
         spawn(&bin_path("dora-api"), &[]),
         spawn(&bin_path("dora-v4"), &["--v4-addr", "0.0.0.0:9900"]),
     ]
+}
+
+/// Spawn the single `dora-embedded` process (API + v4 + v6 in one) inside the
+/// namespace on the redb file at `path`. The API is unauthenticated so tests
+/// can read `/v1/leases`.
+fn spawn_embedded(config: &str, netns: &str, path: &str) -> Vec<Child> {
+    let config_path = format!("{}/tests/test_configs/{config}", env!("CARGO_MANIFEST_DIR"));
+    let db_url = format!("redb://{path}");
+    let bin = bin_path("dora-embedded");
+    let child = netns_command_env(
+        netns,
+        &[("DORA_API_ALLOW_UNAUTHENTICATED", "true")],
+        &bin,
+        &[
+            "-d",
+            &db_url,
+            "--config-path",
+            config_path.as_str(),
+            "--threads",
+            "2",
+            "--dora-log",
+            "debug",
+            "--v4-addr",
+            "0.0.0.0:9900",
+        ],
+    )
+    .spawn()
+    .unwrap_or_else(|e| panic!("Failed to start {bin}: {e}"));
+    vec![child]
 }
 
 /// Block until the services are ready to serve, or bail via panic if one dies.

@@ -163,6 +163,15 @@ jobs:
       - name: Run redb conformance suite
         run: cargo nextest run -p ip-manager --no-default-features --features redb
 
+      # dora-embedded must not link sqlx when built on its own (feature
+      # unification only kicks in for workspace-wide invocations)
+      - name: Build dora-embedded without sqlx
+        run: |
+          cargo build -p embedded --bin dora-embedded
+          if cargo tree -p embedded -e normal -i sqlx >/dev/null 2>&1; then
+            echo "::error::sqlx is linked into dora-embedded"; exit 1
+          fi
+
   fmt:
     name: Rustfmt
     runs-on: ubuntu-latest
@@ -196,6 +205,10 @@ jobs:
 
       - name: Run cargo clippy
         run: cargo clippy --workspace --all-features --all-targets -- -D warnings
+
+      # on its own, the embedded binary resolves ip-manager with redb only
+      - name: Run cargo clippy (dora-embedded standalone)
+        run: cargo clippy -p embedded --all-targets -- -D warnings
 
   openapi:
     name: OpenAPI validate

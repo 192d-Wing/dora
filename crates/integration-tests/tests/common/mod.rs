@@ -1,3 +1,6 @@
+// each test binary compiles `common` on its own and uses a different subset of
+// the harness (Postgres vs embedded), so unused items here are expected
+#[allow(dead_code)]
 pub mod env;
 
 pub mod builder;

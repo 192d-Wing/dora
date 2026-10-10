@@ -996,6 +996,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "embedded"
+version = "0.7.5"
+dependencies = [
+ "anyhow",
+ "clap",
+ "config",
+ "dora-core",
+ "dora-runtime",
+ "dotenvy",
+ "external-api",
+ "forensic-log",
+ "ip-manager",
+ "jemallocator",
+ "leases",
+ "leases-v6",
+ "message-type",
+ "static-addr",
+]
+
+[[package]]
 name = "embedded-io"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
