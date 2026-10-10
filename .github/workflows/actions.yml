@@ -81,6 +81,7 @@ jobs:
       - name: Check feature-gated builds
         run: |
           cargo check -p ip-manager --no-default-features
+          cargo check -p ip-manager --no-default-features --features redb
           cargo check -p dora-runtime --no-default-features
 
   test:
@@ -135,6 +136,32 @@ jobs:
       # nextest does not run doctests, so run them separately to keep them covered
       - name: Run doctests
         run: cargo test --all-features --workspace --exclude register_derive_impl --doc
+
+  # The embedded redb backend needs no external service: run its conformance
+  # suite with only that feature enabled, with no Postgres around, to prove
+  # the store (and the plugin/API tests that use `ip_manager::testing`) are
+  # self-contained.
+  redb:
+    name: redb backend (no Postgres)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v7
+
+      - name: Install toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install nextest
+        uses: taiki-e/install-action@nextest
+
+      - name: Allow ICMP socket creation
+        run: sudo sysctl -w net.ipv4.ping_group_range="0 2147483647"
+
+      - name: Run redb conformance suite
+        run: cargo nextest run -p ip-manager --no-default-features --features redb
 
   fmt:
     name: Rustfmt
