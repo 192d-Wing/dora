@@ -1316,12 +1316,15 @@ macro_rules! storage_conformance_tests {
         assert_eq!(ids, vec!["c-new".to_owned(), "c-old".to_owned()], "created_at DESC");
         assert!(db.active_config_candidate().await?.is_none());
 
-        db.activate_config_candidate("c-old", secs_from_now(-50)).await?;
-        db.activate_config_candidate("c-new", secs_from_now(-10)).await?;
+        // capture the timestamps once: `secs_from_now` re-reads the clock and a
+        // second boundary between two calls would shift the expected value
+        let (act_old, act_new) = (secs_from_now(-50), secs_from_now(-10));
+        db.activate_config_candidate("c-old", act_old).await?;
+        db.activate_config_candidate("c-new", act_new).await?;
         let active = db.active_config_candidate().await?.expect("active");
         assert_eq!(active.candidate_id, "c-new");
         assert_eq!(active.status, "activated");
-        assert_eq!(active.activated_at, Some(secs_from_now(-10)));
+        assert_eq!(active.activated_at, Some(act_new));
         let old = db.get_config_candidate("c-old").await?.expect("exists");
         assert_eq!(old.status, "superseded", "activation supersedes in the same txn");
         Ok(())
