@@ -37,7 +37,7 @@ jobs:
       fail-fast: false
       matrix:
         # one single-binary image per service, built for each architecture
-        service: [v4, v6, api, migrate]
+        service: [v4, v6, api, migrate, embedded]
         platform: [linux/amd64, linux/arm64]
         # attach the arch label + native runner to each platform
         include:
@@ -128,7 +128,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        service: [v4, v6, api, migrate]
+        service: [v4, v6, api, migrate, embedded]
     steps:
       # only this service's per-arch digests
       - name: Download digests

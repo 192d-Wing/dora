@@ -2,7 +2,7 @@
 
 ![](dora.jpg)
 
-`dora` is a DHCP server written in Rust using tokio. It is built on the [`dhcproto`](https://github.com/bluecatengineering/dhcproto) library and `sqlx`. Lease and management state is stored in **PostgreSQL**. The goal of `dora` is to provide a complete, performant, and correct implementation of DHCPv4, and eventually DHCPv6. Dora supports duplicate address detection, ping, binding multiple interfaces, static addresses, client classes, DDNS (**new!**), metrics and leases HTTP API [see example.yaml for all options](./example.yaml).
+`dora` is a DHCP server written in Rust using tokio. It is built on the [`dhcproto`](https://github.com/bluecatengineering/dhcproto) library. Lease and management state is stored in **PostgreSQL** (split services) or in an **embedded [redb](https://github.com/cberner/redb) file** (`dora-embedded`, for routers and other single hosts — see [docs/embedded.md](./docs/embedded.md)). The goal of `dora` is to provide a complete, performant, and correct implementation of DHCPv4, and eventually DHCPv6. Dora supports duplicate address detection, ping, binding multiple interfaces, static addresses, client classes, DDNS (**new!**), metrics and leases HTTP API [see example.yaml for all options](./example.yaml).
 
 It is, however, in development and may contain bugs. We hope to build a community around this project. To that end, PRs, issues, and constructive comments are welcome.
 
@@ -16,11 +16,12 @@ If started on non-default dhcp port, it is assumed this is for testing, and dora
 
 ## Building dora from source
 
-`dora` stores its state in PostgreSQL. Its SQL queries are checked against the
-database at compile time by `sqlx`, but a checked-in offline query cache
-(`crates/libs/ip-manager/sqlx-data.json`) means **you do not need a database to
-build** — the build sets `SQLX_OFFLINE=true` (see `.env`/CI). You only need a
-running Postgres to run the server or the test suite.
+The split services store their state in PostgreSQL. Their SQL queries are
+checked against the database at compile time by `sqlx`, but a checked-in
+offline query cache (the workspace-root `.sqlx/` directory) means **you do not
+need a database to build** — the build sets `SQLX_OFFLINE=true` (see
+`.env`/CI). You only need a running Postgres to run those services or the
+Postgres part of the test suite. `dora-embedded` needs no database at all.
 
 To build, just use cargo (below). To run against a local Postgres, create a
 database and point `DATABASE_URL` at it, then apply the schema once with
@@ -52,8 +53,9 @@ dora is split into one binary per service, all in `crates/bins`:
 | `dora-v6` | DHCPv6 server |
 | `dora-api` | management/observability HTTP API |
 | `dora-migrate` | run-once database schema migrator |
+| `dora-embedded` | v4 + v6 + API in **one process** on an embedded redb file (no PostgreSQL) |
 
-The three services share the same CLI flags (config path, database URL, listen
+The services share the same CLI flags (config path, database URL, listen
 addresses, …). By default a server binds privileged ports, which may require
 sudo. Run help for any of them:
 
@@ -88,6 +90,21 @@ cargo run --bin dora-migrate -- -d postgres://user:pass@localhost/dora
 cargo run --bin dora-v4 -- -c path/to/config.json -d postgres://user:pass@localhost/dora
 ```
 
+### Run the embedded single-process server
+
+No Postgres: `dora-embedded` runs the v4 server, the v6 server (if configured)
+and the management API together on one redb file. The store is created and
+upgraded on start, so there is no migrate step. The `DATABASE_URL` scheme
+selects the backend: `redb:///abs/path` (three slashes) here, `postgres://`
+for the split services.
+
+```
+cargo run -p embedded --bin dora-embedded -- -c path/to/config.yaml -d redb:///var/lib/dora/dora.redb
+```
+
+See [docs/embedded.md](./docs/embedded.md) for durability (`--redb-sync`),
+flash-wear and backup guidance.
+
 ### Build a dora binary
 
 ```
@@ -97,7 +114,15 @@ cargo build
 optional: use `--release` flag for optimized binary without debug symbols
 
 `cargo build` builds the whole workspace; the service binaries will be present at
-target/{debug,release}/{dora-v4,dora-v6,dora-api,dora-migrate}
+target/{debug,release}/{dora-v4,dora-v6,dora-api,dora-migrate,dora-embedded}
+
+For an `dora-embedded` binary that does not link the Postgres client at all,
+build the package on its own (cargo unifies features across a workspace-wide
+build):
+
+```
+cargo build --release -p embedded --bin dora-embedded
+```
 
 ### Cross compiling to ARM
 
@@ -109,6 +134,8 @@ There is a project called `cross` that does most of the heavy lifting and will b
 cargo install cross
 # build each service you need; dora-v4 shown, swap in dora-v6/dora-api/dora-migrate
 cross build --target armv7-unknown-linux-gnueabihf --bin dora-v4 --release
+# the embedded single-process server for a router (no Postgres client linked)
+cross build --target aarch64-unknown-linux-gnu -p embedded --bin dora-embedded --release
 ```
 
 **Note** Remember to pass `--release` to `cross` if you want an optimized version of the binary
@@ -145,8 +172,11 @@ TARGET_CC=arm-linux-gnueabihf-gcc TARGET_AR=arm-linux-gnueabihf-gcc-ar cargo bui
 ## Dora options & environment vars
 
 Every service shares the same options; run `cargo run --bin dora-v4 -- --help`
-(or `dora-v6` / `dora-api` / `dora-migrate`) to see them. Each flag also has an
-environment-variable form (see [example.yaml](./example.yaml) for config options).
+(or `dora-v6` / `dora-api` / `dora-migrate` / `dora-embedded`) to see them. Each
+flag also has an environment-variable form (see [example.yaml](./example.yaml)
+for config options). `-d` / `--database-url` / `DATABASE_URL` selects the store
+by URL scheme (`postgres://…` or `redb:///…`); `dora-embedded` adds
+`--redb-sync` and `--redb-flush-ms`.
 
 dora uses the [tracing](https://github.com/tokio-rs/tracing) library for stdout logs.
 

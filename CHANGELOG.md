@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`usg-dora-embedded` container image** (amd64 + arm64) built and published
+  alongside the service images; the Containerfile builds per package so the
+  embedded image does not link the Postgres client. New
+  [docs/embedded.md](docs/embedded.md) (durability, flash wear, backup,
+  upgrades, file ownership); README, architecture and docker docs cover the
+  embedded deployment.
 - **`dora-embedded` binary**: the DHCPv4 server, the DHCPv6 server and the
   management API in one process on one redb file, for routers and other
   single hosts without PostgreSQL (#57). `DATABASE_URL` defaults to
