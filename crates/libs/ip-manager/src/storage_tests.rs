@@ -1370,13 +1370,14 @@ macro_rules! storage_conformance_tests {
                 // Postgres resolves a race with a key conflict for every loser,
                 // so one round of contention settles one task; under coverage
                 // instrumentation it can take many rounds. Back off a little.
+                let excl = HashSet::new();
                 for attempt in 0..200u64 {
-                    match alloc(&*db, &range, &HashSet::new(), net, &id, exp).await {
-                        Ok(ip) => return Some(ip),
-                        Err(_) => {
-                            tokio::time::sleep(Duration::from_millis(attempt.min(20))).await
-                        }
+                    // the Box<dyn Error> is dropped before the await below (it is
+                    // not Send)
+                    if let Ok(ip) = alloc(&*db, &range, &excl, net, &id, exp).await {
+                        return Some(ip);
                     }
+                    tokio::time::sleep(Duration::from_millis(attempt.min(20))).await;
                 }
                 None
             }));
