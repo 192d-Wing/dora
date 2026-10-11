@@ -1367,10 +1367,15 @@ macro_rules! storage_conformance_tests {
             let (db, range) = (std::sync::Arc::clone(&db), range.clone());
             handles.push(tokio::spawn(async move {
                 let id = i.to_be_bytes();
-                for _ in 0..10 {
+                // Postgres resolves a race with a key conflict for every loser,
+                // so one round of contention settles one task; under coverage
+                // instrumentation it can take many rounds. Back off a little.
+                for attempt in 0..200u64 {
                     match alloc(&*db, &range, &HashSet::new(), net, &id, exp).await {
                         Ok(ip) => return Some(ip),
-                        Err(_) => continue,
+                        Err(_) => {
+                            tokio::time::sleep(Duration::from_millis(attempt.min(20))).await
+                        }
                     }
                 }
                 None
