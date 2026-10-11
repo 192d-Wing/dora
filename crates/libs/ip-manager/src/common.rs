@@ -39,24 +39,23 @@ pub fn first_available(start: IpAddr, end: IpAddr, exclusions: &HashSet<IpAddr>)
     }
 }
 
-/// Get the next IP between start and end, skipping any exclusions. `start` is
-/// the current max allocated address, so `nth(1)` returns the next address
-/// after it (both v4 and v6).
+/// The next address after `max` (the current highest allocated address) up to
+/// and including `end`, skipping any exclusions. `None` when `max` is the end
+/// of the range or everything above it is excluded.
 ///
-/// Note: the exclusions filter is applied before `nth(1)`, so if `start` is
-/// itself excluded the address immediately after it is skipped too. Every
-/// backend shares this function so they allocate identically; fix it here
-/// (with a conformance case) rather than in one backend.
-pub fn inc_ip(start: IpAddr, end: IpAddr, exclusions: &HashSet<IpAddr>) -> Option<IpAddr> {
-    match (start, end) {
+/// `max` itself is skipped unconditionally: it already has a row. Filtering it
+/// through the exclusion set first (as an earlier version did) lost one address
+/// whenever `max` was excluded, see #62.
+pub fn inc_ip(max: IpAddr, end: IpAddr, exclusions: &HashSet<IpAddr>) -> Option<IpAddr> {
+    match (max, end) {
         (IpAddr::V4(ip), IpAddr::V4(end)) => ipnet::Ipv4AddrRange::new(ip, end)
             .map(IpAddr::V4)
-            .filter(|ip| !exclusions.contains(ip))
-            .nth(1),
+            .skip(1)
+            .find(|ip| !exclusions.contains(ip)),
         (IpAddr::V6(ip), IpAddr::V6(end)) => ipnet::Ipv6AddrRange::new(ip, end)
             .map(IpAddr::V6)
-            .filter(|ip| !exclusions.contains(ip))
-            .nth(1),
+            .skip(1)
+            .find(|ip| !exclusions.contains(ip)),
         _ => None,
     }
 }
