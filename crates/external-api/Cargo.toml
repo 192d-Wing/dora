@@ -22,7 +22,7 @@ axum = "0.8.9"
 chrono = "0.4.45"
 hex = "0.4.3"
 tokio = { workspace = true }
-tower-http = { version = "0.7.0", features = ["trace", "timeout"] }
+tower-http = { version = "0.7.1", features = ["trace", "timeout"] }
 tokio-util = { workspace = true }
 tracing-futures = { workspace = true }
 tracing = { workspace = true }
@@ -41,7 +41,6 @@ tokio-rustls = { version = "0.26", default-features = false, features = [
     "tls12",
     "logging",
 ] }
-rustls-pemfile = "2"
 # hand-rolled TLS accept loop: axum 0.7's `serve` is hardcoded to a plain
 # TcpListener, so we drive the Router over each TLS connection with hyper
 # ourselves (the axum `low-level-rustls` pattern).
