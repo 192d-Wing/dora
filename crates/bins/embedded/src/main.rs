@@ -111,8 +111,8 @@ async fn start(cli: EmbeddedCli) -> Result<()> {
     info!(path = %path.display(), sync = ?opts.sync, "opening embedded store");
     // `open` is blocking (file lock + schema upgrade); keep it off the workers
     let store = {
-        let path = path.clone();
-        tokio::task::spawn_blocking(move || RedbDb::open(&path, opts))
+        let open_path = path.clone();
+        tokio::task::spawn_blocking(move || RedbDb::open(&open_path, opts))
             .await
             .context("store open task failed")?
             .with_context(|| format!("opening embedded store {}", path.display()))?
