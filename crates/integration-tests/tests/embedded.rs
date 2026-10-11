@@ -52,17 +52,6 @@ fn dora(client: &mut Client<v4::Message>, mac: MacAddress) -> Result<Ipv4Addr> {
     Ok(offered)
 }
 
-/// A DISCOVER alone; returns the offered address.
-fn discover(client: &mut Client<v4::Message>, mac: MacAddress) -> Result<Ipv4Addr> {
-    let msg_args = DiscoverBuilder::default()
-        .giaddr([192, 168, 2, 1])
-        .chaddr(mac)
-        .build()?;
-    let resp = client.run(MsgType::Discover(msg_args))?;
-    assert_eq!(resp.opts().msg_type().unwrap(), v4::MessageType::Offer);
-    Ok(resp.yiaddr())
-}
-
 #[test]
 #[traced_test]
 /// Discover / Offer / Request / Ack, then a renewing Request, through
@@ -121,8 +110,18 @@ fn leases_survive(signal: &str, name: &str) -> Result<()> {
 
     srv.restart(signal);
 
-    // B gets its own binding back, not A's (the lowest free) address
-    let again = discover(&mut client, mac_b)?;
+    // before any traffic: both leases are back from the file
+    let leases = srv.api_get("/v1/leases");
+    for ip in [ip_a, ip_b] {
+        assert!(
+            leases.contains(&ip.to_string()),
+            "{ip} missing from /v1/leases after {signal}: {leases}"
+        );
+    }
+    // B gets its own binding back, not A's (the lowest free) address. A full
+    // DORA, not just a DISCOVER: an OFFER alone moves the binding back to the
+    // offered state, which /v1/leases does not list.
+    let again = dora(&mut client, mac_b)?;
     assert_eq!(again, ip_b, "client B's lease did not survive {signal}");
     // and A's binding is still held, so a new client gets a third address
     let ip_c = dora(&mut client, utils::rand_mac())?;
@@ -133,7 +132,7 @@ fn leases_survive(signal: &str, name: &str) -> Result<()> {
     for ip in [ip_a, ip_b, ip_c] {
         assert!(
             leases.contains(&ip.to_string()),
-            "{ip} missing after {signal}"
+            "{ip} missing after {signal}: {leases}"
         );
     }
     Ok(())
