@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`dora-embedded` binary**: the DHCPv4 server, the DHCPv6 server and the
+  management API in one process on one redb file, for routers and other
+  single hosts without PostgreSQL (#57). `DATABASE_URL` defaults to
+  `redb:///var/lib/dora/dora.redb`; `--redb-sync immediate|lazy` and
+  `--redb-flush-ms` control durability. No `dora-migrate` step (the store
+  upgrades itself on open) and no state refresher (API writes are visible to
+  the datapath immediately). Integration tests cover DORA through the binary,
+  lease survival across SIGTERM and SIGKILL restarts, and the v6 relay path.
 - **Embedded `redb` storage backend** (`ip-manager` feature `redb`,
   `ip_manager::redb::RedbDb`) for single-process deployments without
   PostgreSQL (#57). One file, one writer process; every mutation is a single
