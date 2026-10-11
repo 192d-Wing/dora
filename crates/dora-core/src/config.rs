@@ -59,7 +59,9 @@ pub mod cli {
 
     #[derive(Parser, Debug, Clone, PartialEq, Eq)]
     #[clap(author, name = "dora", bin_name = "dora", about, long_about = None)]
-    /// parses from cli & environment var. dora will load `.env` in the same dir as the binary as well
+    /// parses from cli & environment var. Each binary loads a `.env` file (found
+    /// from the current directory upwards) into the environment before parsing,
+    /// without overriding variables that are already set.
     pub struct Config {
         /// path to dora's config
         #[clap(

@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Every binary now loads `.env` **before** parsing its command line, so
+  values in it (`DATABASE_URL`, `DORA_LOG`, …) actually reach the `env`-backed
+  flags; previously `.env` was read after clap had already resolved them
+  (#64). Variables already set in the environment still take precedence.
+
+### Fixed
+
 - `insert_max_in_range` no longer skips one usable address when the highest
   allocated address is itself excluded (#62). Both storage backends share the
   fix via `ip_manager::common::inc_ip`.

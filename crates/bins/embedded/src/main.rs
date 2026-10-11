@@ -71,11 +71,17 @@ impl EmbeddedCli {
 }
 
 fn main() -> Result<()> {
+    // Load `.env` BEFORE clap parses: the `env` attributes read the process
+    // environment at parse time, and dotenvy never overrides a variable that is
+    // already set, so an explicit environment still wins (#64). The outcome is
+    // logged once tracing is up.
+    let dotenv = dotenv::dotenv();
     let cli = EmbeddedCli::parse_embedded();
     let trace_config = trace::Config::parse(&cli.base.dora_log)?;
     debug!(?cli, ?trace_config);
-    if let Err(err) = dotenv::dotenv() {
-        debug!(?err, ".env file not loaded");
+    match dotenv {
+        Ok(path) => debug!(?path, ".env loaded"),
+        Err(err) => debug!(?err, ".env file not loaded"),
     }
 
     let rt = build_runtime(&cli.base)?;
