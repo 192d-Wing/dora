@@ -32,11 +32,17 @@ use jemallocator::Jemalloc;
 static GLOBAL: Jemalloc = Jemalloc;
 
 fn main() -> Result<()> {
+    // Load `.env` BEFORE clap parses: the `env` attributes read the process
+    // environment at parse time, and dotenvy never overrides a variable that is
+    // already set, so an explicit environment still wins (#64). The outcome is
+    // logged once tracing is up.
+    let dotenv = dotenv::dotenv();
     let config = cli::Config::parse();
     let trace_config = trace::Config::parse(&config.dora_log)?;
     debug!(?config, ?trace_config);
-    if let Err(err) = dotenv::dotenv() {
-        debug!(?err, ".env file not loaded");
+    match dotenv {
+        Ok(path) => debug!(?path, ".env loaded"),
+        Err(err) => debug!(?err, ".env file not loaded"),
     }
 
     let rt = build_runtime(&config)?;
