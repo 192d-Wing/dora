@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Embedded `redb` storage backend** (`ip-manager` feature `redb`,
+  `ip_manager::redb::RedbDb`) for single-process deployments without
+  PostgreSQL (#57). One file, one writer process; every mutation is a single
+  serialized write transaction; schema versioned in-file and upgraded on open;
+  `SyncMode::Immediate` (fsync per commit, default) or `Lazy` (periodic
+  flush). Opened from a `redb:///abs/path` URL. The ip-manager conformance
+  suite runs against both backends, and the plugin / external-api tests use
+  redb when both features are enabled.
+
 ### Changed
 
 - **Storage backend is now a cargo feature** (groundwork for the embedded

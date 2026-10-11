@@ -25,10 +25,12 @@ use tracing::{debug, error, info, trace, warn};
 mod storage_tests;
 
 // only the backends use these helpers
-#[cfg_attr(not(feature = "postgres"), allow(dead_code))]
+#[cfg_attr(not(any(feature = "postgres", feature = "redb")), allow(dead_code))]
 pub(crate) mod common;
 #[cfg(feature = "postgres")]
 pub mod postgres;
+#[cfg(feature = "redb")]
+pub mod redb;
 #[doc(hidden)]
 pub mod testing;
 pub mod url;

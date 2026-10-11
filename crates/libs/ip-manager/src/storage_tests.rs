@@ -760,12 +760,69 @@ macro_rules! storage_conformance_tests {
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
     use std::time::{Duration, SystemTime};
 
-    use $crate::{IpState, State, Storage};
+    use $crate::{
+        ConfigCandidateRecord, IpState, OperationRecord, OperationStatus,
+        RuntimeReservationRecord, State, Storage,
+    };
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 
     fn v6(s: &str) -> IpAddr {
         IpAddr::V6(s.parse::<Ipv6Addr>().unwrap())
+    }
+
+    fn v4(s: &str) -> IpAddr {
+        IpAddr::V4(s.parse::<Ipv4Addr>().unwrap())
+    }
+
+    fn secs_from_now(delta: i64) -> SystemTime {
+        let now = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        SystemTime::UNIX_EPOCH + Duration::from_secs((now + delta) as u64)
+    }
+
+    fn op(id: &str, status: OperationStatus, created_at: SystemTime) -> OperationRecord {
+        OperationRecord {
+            operation_id: id.to_owned(),
+            action: "test".to_owned(),
+            status,
+            actor: Some("tester".to_owned()),
+            input_summary: None,
+            result: None,
+            error_code: None,
+            error_message: None,
+            created_at,
+            started_at: None,
+            completed_at: None,
+        }
+    }
+
+    fn reservation(family: &str, ip: &str) -> RuntimeReservationRecord {
+        RuntimeReservationRecord {
+            family: family.to_owned(),
+            ip: ip.to_owned(),
+            prefix: None,
+            network: Some("net".to_owned()),
+            match_json: "{}".to_owned(),
+            options_json: None,
+            class: None,
+            lease_time: Some(300),
+            created_at: secs_from_now(0),
+        }
+    }
+
+    fn candidate(id: &str, status: &str, created_at: SystemTime) -> ConfigCandidateRecord {
+        ConfigCandidateRecord {
+            candidate_id: id.to_owned(),
+            status: status.to_owned(),
+            document: "v4: {}".to_owned(),
+            message: None,
+            validation: None,
+            created_at,
+            activated_at: None,
+        }
     }
 
     /// mimics IpManager::reserve_first's two-step: try next_expired (or id
@@ -944,6 +1001,391 @@ macro_rules! storage_conformance_tests {
         Ok(())
     }
 
+
+    // ----- semantics every backend must share --------------------------------
+
+    #[tokio::test]
+    async fn insert_pk_conflict_errors() -> TestResult {
+        let db = $new.await?;
+        let (ip, net) = (v4("10.1.0.5"), v4("10.1.0.0"));
+        let exp = secs_from_now(60);
+        db.insert(ip, net, &[1], exp, Some(IpState::Lease)).await?;
+        assert!(
+            db.insert(ip, net, &[2], exp, Some(IpState::Lease)).await.is_err(),
+            "a second insert of the same address must fail (try_lease maps it to AddrInUse)"
+        );
+        // the original owner is untouched
+        assert_eq!(db.get(ip).await?.unwrap().as_ref().id(), Some(&[1u8][..]));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn expiry_comparison_is_strict() -> TestResult {
+        let db = $new.await?;
+        let net = v4("10.2.0.0");
+        // expires_at == now (second-truncated) is neither live nor expired
+        let edge = v4("10.2.0.1");
+        db.insert(edge, net, &[1], secs_from_now(0), Some(IpState::Lease)).await?;
+        assert_eq!(db.get_id(&[1]).await?, None, "expires_at == now is not live");
+        assert_eq!(db.count(IpState::Lease).await?, 0);
+        // clearly expired: anyone may take it over
+        let old = v4("10.2.0.2");
+        db.insert(old, net, &[2], secs_from_now(-10), Some(IpState::Lease)).await?;
+        assert!(db.update_expired(old, Some(IpState::Lease), &[9], secs_from_now(60)).await?);
+        assert_eq!(db.get(old).await?.unwrap().as_ref().id(), Some(&[9u8][..]));
+        // live: only the owner may update it
+        let live = v4("10.2.0.3");
+        db.insert(live, net, &[3], secs_from_now(60), Some(IpState::Lease)).await?;
+        assert!(!db.update_expired(live, Some(IpState::Lease), &[9], secs_from_now(90)).await?);
+        assert!(db.update_expired(live, Some(IpState::Lease), &[3], secs_from_now(90)).await?);
+        assert_eq!(db.get_id(&[3]).await?, Some(live));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn update_unexpired_none_id_clears_client() -> TestResult {
+        let db = $new.await?;
+        let (ip, net) = (v4("10.3.0.5"), v4("10.3.0.0"));
+        db.insert(ip, net, &[1], secs_from_now(60), Some(IpState::Lease)).await?;
+        // probate_ip: declined address loses its owner
+        assert_eq!(
+            db.update_unexpired(ip, IpState::Probate, &[1], secs_from_now(120), None).await?,
+            Some(ip)
+        );
+        match db.get(ip).await? {
+            Some(State::Probated(info)) => assert_eq!(info.id(), None),
+            other => panic!("expected Probated with no owner, got {other:?}"),
+        }
+        assert_eq!(db.get_id(&[1]).await?, None);
+        // wrong id / expired rows are not touched
+        let other = v4("10.3.0.6");
+        db.insert(other, net, &[2], secs_from_now(-5), Some(IpState::Lease)).await?;
+        assert_eq!(
+            db.update_unexpired(other, IpState::Lease, &[2], secs_from_now(60), Some(&[2])).await?,
+            None,
+            "expired rows are not renewable via update_unexpired"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn release_ip_keeps_row_expired_unowned() -> TestResult {
+        let db = $new.await?;
+        let (ip, net) = (v4("10.4.0.5"), v4("10.4.0.0"));
+        db.insert(ip, net, &[1], secs_from_now(60), Some(IpState::Lease)).await?;
+        let prior = db.release_ip(ip, &[1]).await?.expect("release returns prior info");
+        assert_eq!(prior.id(), Some(&[1u8][..]));
+        assert_eq!(prior.ip(), ip);
+        match db.get(ip).await? {
+            Some(State::Reserved(info)) => {
+                assert_eq!(info.id(), None);
+                assert_eq!(info.expires_at(), SystemTime::UNIX_EPOCH);
+                assert_eq!(info.network(), net, "network is retained");
+            }
+            other => panic!("expected retained Reserved row, got {other:?}"),
+        }
+        assert_eq!(db.get_id(&[1]).await?, None);
+        // and it is immediately reclaimable
+        let range = v4("10.4.0.1")..=v4("10.4.0.10");
+        assert_eq!(
+            db.next_expired(range, net, &[7], secs_from_now(60), Some(IpState::Lease)).await?,
+            Some(ip)
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn next_expired_picks_lowest_expired_before_own_row_and_clears_probation() -> TestResult {
+        let db = $new.await?;
+        let net = v4("10.5.0.0");
+        let (a, b, c) = (v4("10.5.0.100"), v4("10.5.0.101"), v4("10.5.0.102"));
+        db.insert(a, net, &[0xaa], secs_from_now(-10), Some(IpState::Probate)).await?; // expired, other
+        db.insert(b, net, &[1], secs_from_now(60), Some(IpState::Lease)).await?; // live, ours
+        db.insert(c, net, &[0xcc], secs_from_now(-10), Some(IpState::Lease)).await?; // expired
+        let range = v4("10.5.0.100")..=v4("10.5.0.110");
+        let got = db
+            .next_expired(range, net, &[1], secs_from_now(60), Some(IpState::Lease))
+            .await?;
+        assert_eq!(got, Some(a), "the lowest expired address wins over our own live row");
+        match db.get(a).await? {
+            Some(State::Leased(info)) => assert_eq!(info.id(), Some(&[1u8][..])),
+            other => panic!("expected Leased by us (probation cleared), got {other:?}"),
+        }
+        // our live row at b is left alone
+        assert_eq!(db.get(b).await?.unwrap().as_ref().id(), Some(&[1u8][..]));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn next_expired_id_match_is_range_bounded() -> TestResult {
+        let db = $new.await?;
+        let net = v4("10.6.0.0");
+        db.insert(v4("10.6.0.5"), net, &[1], secs_from_now(60), Some(IpState::Lease)).await?;
+        let other_range = v4("192.168.1.100")..=v4("192.168.1.110");
+        assert_eq!(
+            db.next_expired(other_range, net, &[1], secs_from_now(60), Some(IpState::Lease)).await?,
+            None,
+            "a binding outside the range must not be reused"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn insert_max_in_range_quirk_excluded_max() -> TestResult {
+        let db = $new.await?;
+        let net = v4("10.7.0.0");
+        let range = v4("10.7.0.100")..=v4("10.7.0.110");
+        let mut excl = HashSet::new();
+        excl.insert(v4("10.7.0.105"));
+        for i in 100..=105u8 {
+            db.insert(v4(&format!("10.7.0.{i}")), net, &[i], secs_from_now(60), Some(IpState::Lease))
+                .await?;
+        }
+        // max (.105) is itself excluded: `inc_ip` filters the exclusion out and
+        // then takes nth(1), so .106 is skipped. Documented quirk shared by every
+        // backend through `common::inc_ip`; flip this when it is fixed there.
+        let got = db
+            .insert_max_in_range(range, &excl, net, &[0xee], secs_from_now(60), Some(IpState::Reserve))
+            .await?;
+        assert_eq!(got, Some(v4("10.7.0.107")));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn insert_max_in_range_exhausted_returns_none() -> TestResult {
+        let db = $new.await?;
+        let net = v4("10.8.0.0");
+        let range = v4("10.8.0.1")..=v4("10.8.0.3");
+        let excl = HashSet::new();
+        for i in 1..=3u8 {
+            assert_eq!(
+                db.insert_max_in_range(range.clone(), &excl, net, &[i], secs_from_now(60), None)
+                    .await?,
+                Some(v4(&format!("10.8.0.{i}")))
+            );
+        }
+        assert_eq!(
+            db.insert_max_in_range(range.clone(), &excl, net, &[9], secs_from_now(60), None)
+                .await?,
+            None
+        );
+        // a fully excluded empty range is also exhausted
+        let range2 = v4("10.8.1.1")..=v4("10.8.1.2");
+        let all: HashSet<IpAddr> = [v4("10.8.1.1"), v4("10.8.1.2")].into_iter().collect();
+        assert_eq!(
+            db.insert_max_in_range(range2, &all, net, &[9], secs_from_now(60), None).await?,
+            None
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn pd_ia_na_separation() -> TestResult {
+        let db = $new.await?;
+        let addr = v6("2001:db8:2::1");
+        let net = v6("2001:db8:2::");
+        let exp = secs_from_now(60);
+        db.insert(addr, net, &[1], exp, Some(IpState::Lease)).await?;
+        db.upsert_pd(addr, 64, net, &[2], exp, Some(IpState::Lease)).await?;
+        // same address, two bindings
+        assert_eq!(db.get(addr).await?.unwrap().as_ref().id(), Some(&[1u8][..]));
+        assert_eq!(db.get_pd(addr, 64).await?.unwrap().as_ref().id(), Some(&[2u8][..]));
+        // a /128 "prefix" addresses the IA_NA binding
+        assert_eq!(db.get_pd(addr, 128).await?.unwrap().as_ref().id(), Some(&[1u8][..]));
+        assert_eq!(db.get_id_v6(&[1]).await?, Some(addr));
+        assert_eq!(db.get_id_v6(&[2]).await?, None, "PD rows are not IA_NA");
+        assert_eq!(db.get_id_pd(&[2]).await?, Some((addr, 64)));
+        assert_eq!(db.get_id_pd(&[1]).await?, None, "IA_NA rows are not PD");
+        assert_eq!(db.select_all().await?.len(), 2);
+        assert_eq!(db.count(IpState::Lease).await?, 2, "count includes PD");
+        // delete only removes the IA_NA row
+        db.delete(addr).await?;
+        assert!(db.get(addr).await?.is_none());
+        assert!(db.get_pd(addr, 64).await?.is_some());
+        // v4 inputs are a no-op
+        assert!(db.get_pd(v4("10.0.0.1"), 24).await?.is_none());
+        assert!(!db.claim_pd(v4("10.0.0.1"), 24, v4("10.0.0.0"), &[1], exp, None).await?);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn claim_pd_free_expired_own_vs_blocked() -> TestResult {
+        let db = $new.await?;
+        let p = v6("2001:db8:3:100::");
+        let net = v6("2001:db8:3::");
+        // free
+        assert!(db.claim_pd(p, 56, net, &[1], secs_from_now(60), Some(IpState::Lease)).await?);
+        // live and someone else's: blocked, owner unchanged
+        assert!(!db.claim_pd(p, 56, net, &[2], secs_from_now(60), Some(IpState::Lease)).await?);
+        assert_eq!(db.get_pd(p, 56).await?.unwrap().as_ref().id(), Some(&[1u8][..]));
+        // live and ours: ok
+        assert!(db.claim_pd(p, 56, net, &[1], secs_from_now(120), Some(IpState::Lease)).await?);
+        // expired: anyone may take it
+        db.upsert_pd(p, 56, net, &[1], secs_from_now(-10), Some(IpState::Lease)).await?;
+        assert!(db.claim_pd(p, 56, net, &[2], secs_from_now(60), Some(IpState::Lease)).await?);
+        assert_eq!(db.get_pd(p, 56).await?.unwrap().as_ref().id(), Some(&[2u8][..]));
+        // renew: only owner + live; sets leased
+        assert_eq!(db.renew_pd(p, 56, &[1], secs_from_now(90)).await?, None);
+        assert_eq!(db.renew_pd(p, 56, &[2], secs_from_now(90)).await?, Some(p));
+        assert!(matches!(db.get_pd(p, 56).await?, Some(State::Leased(_))));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn release_pd_deletes_and_returns_prior() -> TestResult {
+        let db = $new.await?;
+        let p = v6("2001:db8:4:200::");
+        let net = v6("2001:db8:4::");
+        db.upsert_pd(p, 60, net, &[1], secs_from_now(60), Some(IpState::Lease)).await?;
+        assert!(db.release_pd(p, 60, &[9]).await?.is_none(), "wrong id releases nothing");
+        assert!(db.get_pd(p, 60).await?.is_some());
+        let prior = db.release_pd(p, 60, &[1]).await?.expect("prior info");
+        assert_eq!(prior.ip(), p);
+        assert_eq!(prior.id(), Some(&[1u8][..]));
+        assert!(db.get_pd(p, 60).await?.is_none(), "released delegations are deleted");
+        assert_eq!(db.get_id_pd(&[1]).await?, None);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn operations_dup_errors_update_absent_noop_created_at_kept() -> TestResult {
+        let db = $new.await?;
+        let created = secs_from_now(-100);
+        db.insert_operation(&op("op-1", OperationStatus::Accepted, created)).await?;
+        assert!(
+            db.insert_operation(&op("op-1", OperationStatus::Running, created)).await.is_err(),
+            "duplicate operation id must error"
+        );
+        // update of an unknown id is a silent no-op
+        db.update_operation(&op("nope", OperationStatus::Failed, created)).await?;
+        assert!(db.get_operation("nope").await?.is_none());
+        // update never rewrites created_at
+        let mut upd = op("op-1", OperationStatus::Succeeded, secs_from_now(0));
+        upd.completed_at = Some(secs_from_now(0));
+        db.update_operation(&upd).await?;
+        let got = db.get_operation("op-1").await?.expect("exists");
+        assert_eq!(got.status, OperationStatus::Succeeded);
+        assert_eq!(got.created_at, created);
+        assert_eq!(got.completed_at, upd.completed_at);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn reservations_upsert_get_delete_list_ordered() -> TestResult {
+        let db = $new.await?;
+        db.upsert_reservation(&reservation("v6", "2001:db8::10")).await?;
+        db.upsert_reservation(&reservation("v4", "10.0.0.20")).await?;
+        db.upsert_reservation(&reservation("v4", "10.0.0.10")).await?;
+        let mut again = reservation("v4", "10.0.0.10");
+        again.class = Some("printers".to_owned());
+        db.upsert_reservation(&again).await?; // upsert replaces
+        let got = db.get_reservation("v4", "10.0.0.10").await?.expect("exists");
+        assert_eq!(got.class.as_deref(), Some("printers"));
+        let keys: Vec<(String, String)> = db
+            .list_reservations()
+            .await?
+            .into_iter()
+            .map(|r| (r.family, r.ip))
+            .collect();
+        assert_eq!(
+            keys,
+            vec![
+                ("v4".to_owned(), "10.0.0.10".to_owned()),
+                ("v4".to_owned(), "10.0.0.20".to_owned()),
+                ("v6".to_owned(), "2001:db8::10".to_owned()),
+            ],
+            "ordered by (family, ip)"
+        );
+        assert!(db.delete_reservation("v4", "10.0.0.20").await?);
+        assert!(!db.delete_reservation("v4", "10.0.0.20").await?);
+        assert_eq!(db.list_reservations().await?.len(), 2);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn candidates_list_desc_active_latest_and_activate() -> TestResult {
+        let db = $new.await?;
+        db.upsert_config_candidate(&candidate("c-old", "valid", secs_from_now(-300))).await?;
+        db.upsert_config_candidate(&candidate("c-new", "valid", secs_from_now(-100))).await?;
+        let ids: Vec<String> = db
+            .list_config_candidates()
+            .await?
+            .into_iter()
+            .map(|c| c.candidate_id)
+            .collect();
+        assert_eq!(ids, vec!["c-new".to_owned(), "c-old".to_owned()], "created_at DESC");
+        assert!(db.active_config_candidate().await?.is_none());
+
+        // capture the timestamps once: `secs_from_now` re-reads the clock and a
+        // second boundary between two calls would shift the expected value
+        let (act_old, act_new) = (secs_from_now(-50), secs_from_now(-10));
+        db.activate_config_candidate("c-old", act_old).await?;
+        db.activate_config_candidate("c-new", act_new).await?;
+        let active = db.active_config_candidate().await?.expect("active");
+        assert_eq!(active.candidate_id, "c-new");
+        assert_eq!(active.status, "activated");
+        assert_eq!(active.activated_at, Some(act_new));
+        let old = db.get_config_candidate("c-old").await?.expect("exists");
+        assert_eq!(old.status, "superseded", "activation supersedes in the same txn");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn activate_unknown_id_leaves_none_active() -> TestResult {
+        let db = $new.await?;
+        db.upsert_config_candidate(&candidate("c-a", "valid", secs_from_now(-100))).await?;
+        db.activate_config_candidate("c-a", secs_from_now(-50)).await?;
+        assert_eq!(db.active_config_candidate().await?.unwrap().candidate_id, "c-a");
+        db.activate_config_candidate("does-not-exist", secs_from_now(0)).await?;
+        assert_eq!(db.get_config_candidate("c-a").await?.unwrap().status, "superseded");
+        assert!(db.active_config_candidate().await?.is_none());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn server_mode_fresh_is_normal_then_set() -> TestResult {
+        let db = $new.await?;
+        assert_eq!(db.get_server_mode().await?, Some("normal".to_owned()));
+        db.set_server_mode("drain").await?;
+        assert_eq!(db.get_server_mode().await?, Some("drain".to_owned()));
+        db.set_server_mode("normal").await?;
+        assert_eq!(db.get_server_mode().await?, Some("normal".to_owned()));
+        Ok(())
+    }
+
+    /// Concurrent DISCOVERs must never be handed the same address. Mirrors the
+    /// two-step allocation of `IpManager::reserve_first`, retrying on a storage
+    /// error (Postgres may report a key conflict under a race).
+    #[tokio::test]
+    async fn concurrent_alloc_unique() -> TestResult {
+        let db = std::sync::Arc::new($new.await?);
+        let range = v4("10.9.0.1")..=v4("10.9.0.200");
+        let net = v4("10.9.0.0");
+        let exp = secs_from_now(60);
+        let mut handles = Vec::new();
+        for i in 0u16..16 {
+            let (db, range) = (std::sync::Arc::clone(&db), range.clone());
+            handles.push(tokio::spawn(async move {
+                let id = i.to_be_bytes();
+                for _ in 0..10 {
+                    match alloc(&*db, &range, &HashSet::new(), net, &id, exp).await {
+                        Ok(ip) => return Some(ip),
+                        Err(_) => continue,
+                    }
+                }
+                None
+            }));
+        }
+        let mut seen = HashSet::new();
+        for h in handles {
+            let ip = h.await.unwrap().expect("allocation succeeded within retries");
+            assert!(range.contains(&ip));
+            assert!(seen.insert(ip), "duplicate allocation {ip}");
+        }
+        assert_eq!(seen.len(), 16);
+        assert_eq!(db.count(IpState::Reserve).await?, 16);
+        Ok(())
+    }
         }
     };
 }

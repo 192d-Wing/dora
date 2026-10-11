@@ -10,7 +10,10 @@ default = ["postgres"]
 # PostgreSQL store (`postgres::PostgresDb`) used by the split dora-v4/v6/api
 # services and `dora-migrate`.
 postgres = ["dep:sqlx"]
-# (The embedded single-process `redb` backend adds a `redb` feature here.)
+# Embedded single-process redb store (`redb::RedbDb`) used by `dora-embedded`.
+# `tempfile` is a normal (optional) dep because `RedbDb::new_test` is public for
+# downstream crates' tests, like `PostgresDb::new_test`.
+redb = ["dep:redb", "dep:postcard", "dep:serde", "dep:tokio", "dep:tempfile"]
 
 [dependencies]
 config = { path = "../../libs/config" }
@@ -35,6 +38,11 @@ sqlx = { version = "0.8", optional = true, default-features = false, features = 
     "macros",
     "migrate",
 ] }
+redb = { version = "4.3", optional = true }
+postcard = { version = "1.1", features = ["use-std"], optional = true }
+serde = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true }
+tempfile = { version = "3", optional = true }
 
 [dev-dependencies]
 tokio-test = "0.4.5"
