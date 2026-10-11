@@ -25,7 +25,7 @@ use tokio_rustls::{
     rustls::{
         RootCertStore, ServerConfig,
         crypto::CryptoProvider,
-        pki_types::{CertificateDer, PrivateKeyDer},
+        pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject},
         server::WebPkiClientVerifier,
     },
 };
@@ -335,7 +335,9 @@ fn read_file(path: &Path) -> Result<Vec<u8>> {
 }
 
 fn load_certs(pem: &[u8]) -> Result<Vec<CertificateDer<'static>>> {
-    let certs = rustls_pemfile::certs(&mut &pem[..])
+    // rustls-pki-types' PEM support (via rustls) replaces the unmaintained
+    // rustls-pemfile crate (RUSTSEC-2025-0134)
+    let certs = CertificateDer::pem_slice_iter(pem)
         .collect::<std::result::Result<Vec<_>, _>>()
         .context("parsing PEM certificates")?;
     if certs.is_empty() {
@@ -345,7 +347,12 @@ fn load_certs(pem: &[u8]) -> Result<Vec<CertificateDer<'static>>> {
 }
 
 fn load_key(pem: &[u8]) -> Result<PrivateKeyDer<'static>> {
-    rustls_pemfile::private_key(&mut &pem[..])
-        .context("parsing PEM private key")?
-        .ok_or_else(|| anyhow!("no private key found in PEM"))
+    // accepts PKCS#8, PKCS#1 (RSA) and SEC1 (EC) sections, like rustls-pemfile did
+    match PrivateKeyDer::from_pem_slice(pem) {
+        Ok(key) => Ok(key),
+        Err(tokio_rustls::rustls::pki_types::pem::Error::NoItemsFound) => {
+            Err(anyhow!("no private key found in PEM"))
+        }
+        Err(err) => Err(anyhow!(err)).context("parsing PEM private key"),
+    }
 }

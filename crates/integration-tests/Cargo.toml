@@ -29,9 +29,9 @@ tokio = { workspace = true }
 dora-core = { path = "../dora-core" }
 ip-manager = { path = "../libs/ip-manager" }
 anyhow = { workspace = true }
-mac_address = "1.1.8"
+mac_address = "1.2.1"
 derive_builder = "0.20.2"
-crossbeam-channel = "0.5.15"
+crossbeam-channel = "0.5.17"
 rand = "0.10"
 socket2 = { workspace = true }
 tracing-test = { workspace = true }

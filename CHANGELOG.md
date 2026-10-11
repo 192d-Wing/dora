@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- `cargo audit` clean: `h2` 0.4.20 (RUSTSEC-2026-0258) and `rustls` 0.23.45
+  (RUSTSEC-2026-0285) via lockfile update; the management API's TLS code reads
+  PEM through `rustls-pki-types` instead of the unmaintained `rustls-pemfile`
+  (RUSTSEC-2025-0134); `postcard` built without its default `heapless`
+  feature, dropping the unmaintained `atomic-polyfill` and the yanked `spin`
+  from the lockfile (RUSTSEC-2023-0089). Routine dependency bumps across the
+  workspace.
+
 ## [0.8.1] - 2026-10-11
 
 ### Fixed
