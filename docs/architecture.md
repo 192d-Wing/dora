@@ -2,12 +2,15 @@
 
 dora is a DHCPv4/DHCPv6 server with a management/observability HTTP API. It runs
 as a set of **independent microservices** — one binary and one container image per
-role — that share a single PostgreSQL database. This document describes how those
-pieces fit together, from crates to processes to a Kubernetes deployment.
+role — that share a single PostgreSQL database, or as a **single embedded
+process** (`dora-embedded`) on a local redb file for hosts without a database
+server. This document describes how those pieces fit together, from crates to
+processes to a Kubernetes deployment.
 
 - [Services at a glance](#services-at-a-glance)
 - [Crate layout](#crate-layout)
 - [Runtime topology](#runtime-topology)
+- [Embedded deployment](#embedded-deployment)
 - [Service startup](#service-startup)
 - [DHCP request flow](#dhcp-request-flow)
 - [Kubernetes deployment](#kubernetes-deployment)
@@ -21,8 +24,9 @@ pieces fit together, from crates to processes to a Kubernetes deployment.
 | DHCPv6 server | `dora-v6` | `usg-dora-v6` | v6 datapath (`MsgType` → `LeasesV6`) |
 | Management API | `dora-api` | `usg-dora-api` | health, metrics, mode, runtime reservations |
 | Schema migrator | `dora-migrate` | `usg-dora-migrate` | run-once DB migrations |
+| Embedded (all roles) | `dora-embedded` | `usg-dora-embedded` | v4 + v6 + API in one process on a redb file |
 
-All four are thin `main`s built on the shared [`dora-runtime`](../crates/dora-runtime)
+All are thin `main`s built on the shared [`dora-runtime`](../crates/dora-runtime)
 library; the DHCP datapath itself lives in [`dora-core`](../crates/dora-core).
 
 ## Crate layout
@@ -34,6 +38,7 @@ graph TD
         V6["v6-server<br/><b>dora-v6</b>"]
         API["api-server<br/><b>dora-api</b>"]
         MIG["migrate<br/><b>dora-migrate</b>"]
+        EMB["embedded<br/><b>dora-embedded</b>"]
     end
 
     RT["dora-runtime<br/><i>shared bootstrap</i>"]
@@ -49,7 +54,7 @@ graph TD
 
     subgraph libs["libs"]
         CFG["config"]
-        IPM["ip-manager<br/><i>PostgresDb</i>"]
+        IPM["ip-manager<br/><i>Storage: PostgresDb | RedbDb</i>"]
         MISC["ddns · client-classification ·<br/>client-protection · icmp-ping · …"]
     end
 
@@ -57,6 +62,7 @@ graph TD
     V6 --> RT & MT & LE6
     API --> RT & EXT
     MIG --> IPM
+    EMB --> RT & EXT & MT & SA & LE & LE6
 
     RT --> CORE & CFG & IPM
     CORE --> CFG
@@ -64,15 +70,19 @@ graph TD
     MT & SA & LE & LE6 --> CORE & CFG
     LE & LE6 & SA --> IPM
     IPM --> PG[("PostgreSQL")]
+    IPM --> RDB[("redb file")]
 
     classDef bin fill:#2563eb,stroke:#1e40af,color:#fff;
     classDef store fill:#7c3aed,stroke:#5b21b6,color:#fff;
-    class V4,V6,API,MIG bin;
-    class PG store;
+    class V4,V6,API,MIG,EMB bin;
+    class PG,RDB store;
 ```
 
 Each service compiles only the crates its role needs, so the v4 image never links
-the v6 plugins, the API image never links the datapath, and so on.
+the v6 plugins, the API image never links the datapath, and so on. The storage
+backend is a cargo feature of `ip-manager` (`postgres`, the default, or `redb`);
+`dora-embedded` is the only package that selects `redb`, and when built on its own
+(`cargo build -p embedded`) it does not link sqlx.
 
 ## Runtime topology
 
@@ -105,6 +115,49 @@ graph LR
 
 `dora-migrate` runs to completion **before** the servers start and then exits;
 the servers connect assuming the schema already exists (they never migrate).
+
+## Embedded deployment
+
+For a router or any single host without a database server, `dora-embedded` runs
+every role in **one process** against **one redb file**. redb permits a single
+writer process, so this is the whole deployment: there are no replicas and no
+separate API process.
+
+```mermaid
+graph LR
+    relay4["DHCPv4 clients/relays"] -->|UDP/67| EMB
+    relay6["DHCPv6 clients/relays"] -->|UDP/547| EMB
+    ops["operators"] -->|HTTP(S)/3333| EMB
+
+    subgraph process["dora-embedded (one process)"]
+        EMB["v4 server · v6 server · API<br/><i>shared IpManager, SharedMode,<br/>RuntimeReservations, CancellationToken</i>"]
+    end
+
+    EMB --> RDB[("redb file<br/>/var/lib/dora/dora.redb")]
+
+    classDef bin fill:#2563eb,stroke:#1e40af,color:#fff;
+    classDef store fill:#7c3aed,stroke:#5b21b6,color:#fff;
+    class EMB bin;
+    class RDB store;
+```
+
+What changes compared to the split services:
+
+- **No `dora-migrate`.** `RedbDb::open` applies its own schema upgrades inside one
+  write transaction on start and refuses a file written by a newer build.
+- **No state refresher.** The API mutates the same in-memory `SharedMode` and
+  `RuntimeReservations` handles the datapath reads (and writes them through to the
+  store), so mode changes and runtime reservations apply immediately.
+- **Startup** is `RedbDb::open` → `dora_runtime::bootstrap_with(config, store)` →
+  the same role wiring the three services use, on one cancellation token. Ctrl-C
+  reaches the v4 server's `shutdown_signal`, which cancels the token and stops the
+  API and v6 with it.
+- **Every write is one serialized redb transaction**, which replaces the Postgres
+  `UPDATE … RETURNING` / `ON CONFLICT` atomicity; `--redb-sync` chooses between an
+  fsync per commit (default) and periodic flushes.
+
+Operational detail (file ownership, durability, flash wear, backup, upgrades) is
+in [embedded.md](./embedded.md).
 
 ## Service startup
 
@@ -203,9 +256,11 @@ for the full manifests, VIP wiring, and Cilium/BGP prerequisites.
 
 ## Design notes
 
-- **Database is the coordination point.** The services never call each other. Leases,
+- **Storage is the coordination point.** The services never call each other. Leases,
   runtime reservations, operation/audit records, and config candidates all live in
-  Postgres, which is how the separate v4/v6/api processes share state.
+  the store (Postgres for the split services, a redb file for `dora-embedded`),
+  behind the `ip_manager::Storage` trait. A backend-neutral conformance suite in
+  `ip-manager` runs against every backend so they allocate identically.
 - **Mode & reservations are per-process in memory.** `SharedMode` and the in-memory
   `RuntimeReservations` are populated per process at startup (reservations are warm-
   loaded from the DB). A mode change made through the API does **not** propagate
@@ -216,8 +271,11 @@ for the full manifests, VIP wiring, and Cilium/BGP prerequisites.
   startup race where multiple services/replicas would try to migrate the shared DB
   at once.
 - **One binary per image.** The [`Containerfile`](../infra-build/Containerfile) is
-  parameterized by a `SERVICE` build-arg (`v4|v6|api|migrate`) and bakes `DORA_BIN`;
-  the entrypoint execs that binary and forwards flag args.
+  parameterized by a `SERVICE` build-arg (`v4|v6|api|migrate|embedded`) and bakes
+  `DORA_BIN`; the entrypoint execs that binary and forwards flag args. It builds
+  with `-p <package>` so the embedded image resolves only the `redb` feature.
 - **Tests spawn real binaries.** The [`integration-tests`](../crates/integration-tests)
   crate runs `dora-migrate` then spawns `dora-api` + `dora-v4` (and `dora-v6` for the
-  relay test) as child processes, exercising the real split end-to-end.
+  relay test) as child processes, exercising the real split end-to-end. The
+  `embedded` tests spawn `dora-embedded` instead and restart it (SIGTERM and
+  SIGKILL) to prove leases persist.

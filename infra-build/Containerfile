@@ -4,13 +4,16 @@
 # Cache bust: 2026-07-11
 #
 # dora is split into one binary per role. This file builds ONE service image at a
-# time, selected by the SERVICE build-arg (v4 | v6 | api | migrate), producing the
-# `dora-${SERVICE}` binary. Build from the REPO ROOT (the build context needs the
-# whole workspace), e.g.:
+# time, selected by the SERVICE build-arg (v4 | v6 | api | migrate | embedded),
+# producing the `dora-${SERVICE}` binary. Build from the REPO ROOT (the build
+# context needs the whole workspace), e.g.:
 #   podman build -f infra-build/Containerfile --build-arg SERVICE=v4  -t usg-dora-v4  .
 #   podman build -f infra-build/Containerfile --build-arg SERVICE=api -t usg-dora-api .
 #   docker buildx build --platform linux/amd64,linux/arm64 \
 #       -f infra-build/Containerfile --build-arg SERVICE=v6 -t usg-dora-v6 .
+#
+# `embedded` is the single-process dora-embedded binary (v4 + v6 + API on one
+# redb file, no PostgreSQL) for routers and other single hosts.
 #
 # The runtime base is the Iron Bank hardened UBI 10 image, which requires
 # authenticating to registry1.dso.mil first (see the CI `docker` job).
@@ -25,7 +28,7 @@ WORKDIR /usr/src/dora
 # uses — so no sqlx-cli, database, or migrations are needed at image-build time.
 ENV SQLX_OFFLINE=true
 ARG BUILD_MODE=release
-# Which service binary to build: v4 | v6 | api | migrate -> dora-${SERVICE}.
+# Which service binary to build: v4 | v6 | api | migrate | embedded -> dora-${SERVICE}.
 ARG SERVICE
 COPY . .
 # BuildKit cache mounts keep the cargo registry and the compiled `target/` dir
@@ -35,11 +38,18 @@ COPY . .
 # edit recompiles only what changed instead of the whole workspace. The binary
 # lives inside the mounted target dir, so copy it out to a stable path before the
 # mount is released at the end of the RUN.
+# The build uses `-p <package>` so cargo resolves features for that package
+# alone: this is what keeps sqlx out of the embedded image (a workspace-wide
+# build would unify the Postgres feature into every binary).
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
     --mount=type=cache,target=/usr/src/dora/target,sharing=locked \
-    test -n "${SERVICE}" || { echo "SERVICE build-arg is required (v4|v6|api|migrate)" >&2; exit 1; } \
-    && cargo build --${BUILD_MODE} --bin "dora-${SERVICE}" \
+    case "${SERVICE}" in \
+        v4) PKG=v4-server ;; v6) PKG=v6-server ;; api) PKG=api-server ;; \
+        migrate) PKG=migrate ;; embedded) PKG=embedded ;; \
+        *) echo "SERVICE build-arg is required (v4|v6|api|migrate|embedded)" >&2; exit 1 ;; \
+    esac \
+    && cargo build --${BUILD_MODE} -p "${PKG}" --bin "dora-${SERVICE}" \
     && cp "target/${BUILD_MODE}/dora-${SERVICE}" /usr/local/bin/dora-service
 
 # ---- runtime ----
@@ -66,7 +76,8 @@ RUN dnf -y install --setopt=install_weak_deps=False --nodocs \
 COPY --from=builder /usr/local/bin/dora-service /usr/local/bin/dora-service
 ENV DORA_BIN=/usr/local/bin/dora-service
 # Which role this image is: the entrypoint uses it to decide whether to run the
-# DHCP data-dir/interface-wait dance (v4/v6) or just exec the binary (api/migrate).
+# DHCP data-dir/interface-wait dance (v4/v6/embedded) or just exec the binary
+# (api/migrate).
 ENV DORA_SERVICE=${SERVICE}
 # Record which role this image is for (useful for `podman inspect` / debugging).
 LABEL dora.io/service="${SERVICE}"

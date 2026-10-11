@@ -2,7 +2,9 @@
 
 Helm chart to run dora as four workloads against a shared PostgreSQL,
 with the DHCP servers behind an **anycast VIP** and the management API on a
-separate **site-local** address.
+separate **site-local** address. (This chart is the Postgres / split-service
+deployment; for a single host without a database use the `dora-embedded`
+binary or image instead — see [docs/embedded.md](../docs/embedded.md).)
 
 ## Quick start
 

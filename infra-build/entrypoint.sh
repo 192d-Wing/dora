@@ -3,7 +3,8 @@
 set -e
 
 # The image bakes DORA_BIN to the single service binary it ships (dora-v4 /
-# dora-v6 / dora-api / dora-migrate); fall back to a sane default if unset.
+# dora-v6 / dora-api / dora-migrate / dora-embedded); fall back to a sane
+# default if unset.
 : "${DORA_BIN:=/usr/local/bin/dora-service}"
 
 # Prefer `docker run --init` / `podman --init`, which obsoletes dumb-init. Only
@@ -17,10 +18,10 @@ fi
 
 # Only the DHCP servers use the data-dir / interface-wait dance below. The API
 # and the migrator take their config/DB from flags or env and need no config
-# file or interface. A v4/v6 image (or an unset DORA_SERVICE, for backward
-# compatibility) falls through to that dance.
+# file or interface. A v4/v6/embedded image (or an unset DORA_SERVICE, for
+# backward compatibility) falls through to that dance.
 case "${DORA_SERVICE:-}" in
-    v4 | v6 | "")
+    v4 | v6 | embedded | "")
         : # fall through
         ;;
     *)
@@ -86,10 +87,13 @@ if [ -n "$IFACE" ]; then
     groupmod -og $gid dhcpd
     usermod -ou $uid dhcpd
 
-    [ -e "$data_dir/em.db" ] || touch "$data_dir/em.db"
-    chown dhcpd:dhcpd "$data_dir/em.db"
-    if [ -e "$data_dir/em.db~" ]; then
-        chown dhcpd:dhcpd "$data_dir/em.db~"
+    # The embedded image keeps its lease store in the data dir
+    # (dora-embedded's default DATABASE_URL is redb:///var/lib/dora/dora.redb);
+    # make sure it is owned like the rest of the bind mount. The Postgres
+    # services keep no local state.
+    if [ "${DORA_SERVICE:-}" = "embedded" ]; then
+        [ -e "$data_dir/dora.redb" ] || touch "$data_dir/dora.redb"
+        chown dhcpd:dhcpd "$data_dir/dora.redb"
     fi
 
     # Warn when we are not on the host network: outside --net=host the
