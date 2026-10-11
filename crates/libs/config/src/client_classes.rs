@@ -465,7 +465,6 @@ mod tests {
             ]
             .into_iter()
             .collect(),
-            ..Default::default()
         };
         let opts = classes.collect_opts(Some(&["foo".to_owned(), "bar".to_owned()]));
         // includes opts from "foo" and "bar", favouring "foo" for duplicates because it shows up earlier in the `client_classes` list
@@ -500,7 +499,6 @@ mod tests {
             )]
             .into_iter()
             .collect(),
-            ..Default::default()
         };
         let uns = Ipv4Addr::UNSPECIFIED;
         let bootp = v4::Message::new(uns, uns, uns, uns, &[1, 2, 3, 4, 5, 6]);

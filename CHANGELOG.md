@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Storage backend is now a cargo feature** (groundwork for the embedded
+  redb backend, #57). `ip-manager` puts the Postgres store behind a default
+  `postgres` feature; `dora-runtime` is generic over `Storage` (`Shared<S>`,
+  `bootstrap_with`) with the Postgres `bootstrap` behind its `postgres`
+  feature. The plugins and `external-api` no longer depend on the Postgres
+  backend; their tests obtain a store through `ip_manager::testing`.
+- `DATABASE_URL` is parsed as a `StorageUrl` (`postgres://` or `redb:///`);
+  the Postgres services and `dora-migrate` reject a `redb://` URL with a
+  clear error instead of a connection failure.
+- Database credentials are redacted in startup logs.
+- ip-manager's unit tests are a backend-neutral conformance suite
+  (`storage_conformance_tests!`) instantiated per backend.
+
+### Fixed
+
+- `--database-url` was documented but only `-d` / `DATABASE_URL` existed; the
+  long flag is now accepted.
+
 ## [0.7.5] - 2026-07-14
 
 ### Changed

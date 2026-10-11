@@ -5,6 +5,13 @@ edition = "2024"
 license = "MPL-2.0"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+[features]
+default = ["postgres"]
+# PostgreSQL store (`postgres::PostgresDb`) used by the split dora-v4/v6/api
+# services and `dora-migrate`.
+postgres = ["dep:sqlx"]
+# (The embedded single-process `redb` backend adds a `redb` feature here.)
+
 [dependencies]
 config = { path = "../../libs/config" }
 icmp-ping = { path = "../icmp-ping" }
@@ -16,17 +23,15 @@ thiserror = { workspace = true }
 tracing = { workspace = true, features = [
     "log",
 ] } # TODO: do we need the log feature?
-chrono = "0.4.45"
 moka = { version = "0.12.15", features = ["future"] }
 # TODO: hopefully the rustls feature can go away, the lib requires it
 # sqlx 0.7 split the combined runtime+tls feature and made offline mode part of
 # the default `macros` feature. `tls-rustls-ring` keeps the ring backend (now
 # on the patched 0.17 line) instead of pulling in aws-lc-rs.
-sqlx = { version = "0.8", default-features = false, features = [
+sqlx = { version = "0.8", optional = true, default-features = false, features = [
     "postgres",
     "runtime-tokio",
     "tls-rustls-ring",
-    "chrono",
     "macros",
     "migrate",
 ] }

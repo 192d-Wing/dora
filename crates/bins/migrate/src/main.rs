@@ -27,8 +27,16 @@ fn main() -> Result<()> {
     // A single-threaded runtime is plenty: connect, migrate, drop.
     let rt = Builder::new_current_thread().enable_all().build()?;
     rt.block_on(async move {
-        let database_url = config.database_url.clone();
-        info!(?database_url, "running migrations");
+        // Postgres only: an embedded redb store migrates itself in-process.
+        let database_url = config
+            .database_url
+            .parse::<ip_manager::url::StorageUrl>()
+            .context("invalid DATABASE_URL / --database-url")?
+            .into_postgres()?;
+        info!(
+            database_url = %ip_manager::url::redact_url(&database_url),
+            "running migrations"
+        );
         PostgresDb::migrate(&database_url)
             .await
             .context("failed to run migrations")?;

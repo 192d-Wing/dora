@@ -9,7 +9,10 @@ license = "MPL-2.0"
 
 [dependencies]
 dora-core = { path = "../dora-core" }
-ip-manager = { path = "../libs/ip-manager" }
+# backend-agnostic: only the `Storage` trait + `IpManager` are used here, so a
+# `dora-embedded` build does not pull in sqlx. Tests get a backend via the
+# dev-dependency below (`ip_manager::testing`).
+ip-manager = { path = "../libs/ip-manager", default-features = false }
 config = { path = "../libs/config" }
 ddns = { path = "../libs/ddns" }
 
@@ -47,6 +50,7 @@ hyper-util = { version = "0.1", features = ["server-auto", "tokio"] }
 tower = { version = "0.5", features = ["util"] }
 
 [dev-dependencies]
+ip-manager = { path = "../libs/ip-manager", features = ["postgres"] }
 reqwest = { version = "0.12.28", default-features = false, features = [
     "json",
     "rustls-tls",

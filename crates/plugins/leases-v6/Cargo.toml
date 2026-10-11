@@ -10,11 +10,15 @@ config = { path = "../../libs/config" }
 message-type = { path = "../message-type" }
 
 register_derive = { path = "../../libs/register_derive" }
-ip-manager = { path = "../../libs/ip-manager" }
+# backend-agnostic: only the `Storage` trait + `IpManager` are used here, so a
+# `dora-embedded` build does not pull in sqlx. Tests get a backend via the
+# dev-dependency below (`ip_manager::testing`).
+ip-manager = { path = "../../libs/ip-manager", default-features = false }
 
 # needed directly because `#[instrument]` expands to absolute `::tracing::` paths
 tracing = { workspace = true }
 
 [dev-dependencies]
+ip-manager = { path = "../../libs/ip-manager", features = ["postgres"] }
 tracing-test = { workspace = true }
 tokio = { workspace = true }

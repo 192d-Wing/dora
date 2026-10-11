@@ -21,21 +21,23 @@ use dora_core::{
     tokio::{self, runtime::Builder, signal, task::JoinHandle},
     tracing::*,
 };
-use ip_manager::{IpManager, postgres::PostgresDb};
+use ip_manager::{IpManager, Storage};
 use tokio_util::sync::CancellationToken;
 
 /// State shared by every service: the parsed DHCP config, the IP manager backed
-/// by the shared Postgres store, the API-managed server mode, the API-managed
+/// by the storage backend `S`, the API-managed server mode, the API-managed
 /// runtime reservations, and the process-wide cancellation token.
 ///
 /// In the split deployment `mode` and `reservations` are per-process — the API
 /// process mutating them no longer reaches the v4/v6 datapaths in memory; the
 /// datapaths coordinate through the database (reservations are DB-backed and
 /// warm-loaded below). Each service still constructs both so the shared plugin
-/// and API code keeps its existing shape.
-pub struct Shared {
+/// and API code keeps its existing shape. A single-process deployment
+/// (`dora-embedded`) hands the same handles to every role, so there the API's
+/// writes are visible to the datapath immediately.
+pub struct Shared<S: Storage> {
     pub dhcp_cfg: Arc<DhcpConfig>,
-    pub ip_mgr: Arc<IpManager<PostgresDb>>,
+    pub ip_mgr: Arc<IpManager<S>>,
     pub mode: SharedMode,
     pub reservations: RuntimeReservations,
     pub token: CancellationToken,
@@ -53,13 +55,47 @@ pub fn build_runtime(config: &cli::Config) -> Result<tokio::runtime::Runtime> {
     Ok(builder.build()?)
 }
 
-/// The role-agnostic startup shared by every service: publish `DORA_ID` for the
-/// plugins, parse the DHCP config, connect to Postgres (assuming `dora-migrate`
-/// already applied the schema — see [`PostgresDb::connect`]), and warm-load the
-/// runtime reservations from the database into the in-memory store.
-pub async fn bootstrap(config: &cli::Config) -> Result<Shared> {
-    let database_url = config.database_url.clone();
-    info!(?database_url, "connecting to database");
+/// Parse and validate `DATABASE_URL` for the Postgres-backed split services.
+/// A `redb://` URL is a configuration error here: that store is single-process
+/// and served by `dora-embedded`.
+#[cfg(feature = "postgres")]
+pub fn postgres_url(config: &cli::Config) -> Result<String> {
+    use anyhow::Context;
+    use ip_manager::url::StorageUrl;
+
+    let url: StorageUrl = config
+        .database_url
+        .parse()
+        .context("invalid DATABASE_URL / --database-url")?;
+    url.into_postgres().map_err(Into::into)
+}
+
+/// The Postgres startup used by `dora-v4` / `dora-v6` / `dora-api`: validate
+/// the URL, connect **without** migrating (the run-once `dora-migrate` job
+/// owns the schema, so replicas never race on migrations — see
+/// [`PostgresDb::connect`](ip_manager::postgres::PostgresDb::connect)), then
+/// [`bootstrap_with`].
+#[cfg(feature = "postgres")]
+pub async fn bootstrap(config: &cli::Config) -> Result<Shared<ip_manager::postgres::PostgresDb>> {
+    use anyhow::Context;
+    use ip_manager::postgres::PostgresDb;
+
+    let database_url = postgres_url(config)?;
+    info!(
+        database_url = %ip_manager::url::redact_url(&database_url),
+        "connecting to database"
+    );
+    let store = PostgresDb::connect(database_url)
+        .await
+        .context("failed to connect to the database")?;
+    bootstrap_with(config, store).await
+}
+
+/// The role- and backend-agnostic startup shared by every service: publish
+/// `DORA_ID` for the plugins, parse the DHCP config, wrap `store` in an
+/// [`IpManager`], and warm-load the server mode and runtime reservations from
+/// storage into the in-memory handles.
+pub async fn bootstrap_with<S: Storage>(config: &cli::Config, store: S) -> Result<Shared<S>> {
     let dora_id = config.dora_id.clone();
     info!(?dora_id, "using id");
     // setting DORA_ID for other plugins
@@ -68,10 +104,7 @@ pub async fn bootstrap(config: &cli::Config) -> Result<Shared> {
 
     debug!("parsing DHCP config");
     let dhcp_cfg = Arc::new(DhcpConfig::parse(&config.config_path)?);
-    debug!("connecting to database");
-    // Schema is owned by the run-once `dora-migrate` job; services connect without
-    // migrating so multiple services/replicas never race on migrations.
-    let ip_mgr = Arc::new(IpManager::new(PostgresDb::connect(database_url).await?)?);
+    let ip_mgr = Arc::new(IpManager::new(store)?);
     // shared server mode: the management API sets it (maintenance / drain /
     // shutdown) and the DHCP datapath reads it to decide whether to answer. In
     // the split deployment the API is a separate process, so the mode is durably
@@ -109,7 +142,7 @@ const STATE_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 /// Reload the runtime reservations from the database into the in-memory store,
 /// replacing its contents. Best-effort: a database error is logged and the
 /// previous contents are kept.
-async fn load_reservations(ip_mgr: &IpManager<PostgresDb>, reservations: &RuntimeReservations) {
+async fn load_reservations<S: Storage>(ip_mgr: &IpManager<S>, reservations: &RuntimeReservations) {
     match ip_mgr.list_reservations().await {
         Ok(records) => {
             let loaded: Vec<_> = records
@@ -147,7 +180,7 @@ async fn load_reservations(ip_mgr: &IpManager<PostgresDb>, reservations: &Runtim
 /// API take effect without a restart. Every [`STATE_REFRESH_INTERVAL`] it
 /// re-reads the server mode and the runtime reservations. Stops when the shared
 /// token is cancelled.
-pub fn spawn_state_refresher(shared: &Shared) -> JoinHandle<()> {
+pub fn spawn_state_refresher<S: Storage>(shared: &Shared<S>) -> JoinHandle<()> {
     let ip_mgr = Arc::clone(&shared.ip_mgr);
     let mode = shared.mode.clone();
     let reservations = shared.reservations.clone();

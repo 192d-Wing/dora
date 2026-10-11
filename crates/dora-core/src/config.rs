@@ -40,6 +40,9 @@ pub mod cli {
     /// default database connection string (Postgres). Override in production via
     /// `--database-url` / `DATABASE_URL` (e.g. `postgres://usg-dora-db/dora`).
     pub const DEFAULT_DATABASE_URL: &str = "postgres://dora:dora@localhost/dora";
+    /// default store for the single-process `dora-embedded` binary: an embedded
+    /// redb file (`redb:///abs/path`, three slashes).
+    pub const DEFAULT_EMBEDDED_DATABASE_URL: &str = "redb:///var/lib/dora/dora.redb";
     /// default dora id
     pub const DEFAULT_DORA_ID: &str = "dora_id";
     /// default log level. Can use this argument or DORA_LOG env var
@@ -51,7 +54,7 @@ pub mod cli {
         time::Duration,
     };
 
-    pub use clap::Parser;
+    pub use clap::{CommandFactory, FromArgMatches, Parser};
     use dhcproto::{v4, v6};
 
     #[derive(Parser, Debug, Clone, PartialEq, Eq)]
@@ -112,10 +115,11 @@ pub mod cli {
         /// set the log level. All valid RUST_LOG arguments are accepted
         #[clap(long, env, value_parser, default_value = DEFAULT_DORA_LOG)]
         pub dora_log: String,
-        /// Postgres connection string for the lease/state store, e.g.
-        /// `postgres://user:pass@host:5432/dbname`. dora runs the embedded
-        /// migrations against it on startup.
-        #[clap(short, env, value_parser, default_value = DEFAULT_DATABASE_URL)]
+        /// Lease/state store URL. The scheme selects the backend:
+        /// `postgres://user:pass@host:5432/dbname` for the split services
+        /// (schema applied by `dora-migrate`), or `redb:///abs/path/dora.redb`
+        /// for the single-process `dora-embedded` binary.
+        #[clap(short, long, env, value_parser, default_value = DEFAULT_DATABASE_URL)]
         pub database_url: String,
     }
 
@@ -133,6 +137,21 @@ pub mod cli {
         /// are we bound to the default dhcpv6 port?
         pub fn is_default_port_v6(&self) -> bool {
             self.v6_addr.port() == v6::SERVER_PORT
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn database_url_short_and_long_flags() {
+            let short = Config::try_parse_from(["dora", "-d", "redb:///tmp/a.redb"]).unwrap();
+            assert_eq!(short.database_url, "redb:///tmp/a.redb");
+            let long =
+                Config::try_parse_from(["dora", "--database-url", "postgres://u@h/d"]).unwrap();
+            assert_eq!(long.database_url, "postgres://u@h/d");
+            // (no default assertion: CI exports DATABASE_URL, which clap picks up)
         }
     }
 }

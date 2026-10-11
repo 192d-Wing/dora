@@ -3,7 +3,7 @@ use std::{
     net::{IpAddr, Ipv6Addr},
     ops::RangeInclusive,
     str::FromStr,
-    time::{Duration, SystemTime},
+    time::SystemTime,
 };
 
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -998,16 +998,8 @@ mod util {
     use crate::State;
 
     use super::*;
-    pub fn systime_epoch(time: SystemTime) -> i64 {
-        // / get secs as i64 (for use in sqlite) from epoch to `time`
-        time.duration_since(SystemTime::UNIX_EPOCH)
-            .expect("failed to get system time")
-            .as_secs() as i64
-    }
-
-    pub fn to_systime(time: i64) -> SystemTime {
-        SystemTime::UNIX_EPOCH + Duration::from_secs(time as u64)
-    }
+    // address stepping + timestamp helpers are shared by every backend
+    pub use crate::common::{first_available, inc_ip, into_clientinfo, systime_epoch, to_systime};
 
     pub async fn delete<'a, E>(conn: E, ip: i64) -> Result<(), sqlx::Error>
     where
@@ -1345,50 +1337,6 @@ mod util {
             };
             into_clientinfo(info, cur.leased, cur.probation)
         }))
-    }
-
-    /// the first address in `[start, end]` that is not excluded. Used when a
-    /// range is empty so the excluded start of a range is not handed out.
-    pub fn first_available(
-        start: IpAddr,
-        end: IpAddr,
-        exclusions: &HashSet<IpAddr>,
-    ) -> Option<IpAddr> {
-        match (start, end) {
-            (IpAddr::V4(start), IpAddr::V4(end)) => ipnet::Ipv4AddrRange::new(start, end)
-                .map(IpAddr::V4)
-                .find(|ip| !exclusions.contains(ip)),
-            (IpAddr::V6(start), IpAddr::V6(end)) => ipnet::Ipv6AddrRange::new(start, end)
-                .map(IpAddr::V6)
-                .find(|ip| !exclusions.contains(ip)),
-            _ => None,
-        }
-    }
-
-    /// get the next IP between start and end, skipping any exclusions.
-    /// `start` is the current max allocated address, so `nth(1)` returns the
-    /// next address after it (both v4 and v6).
-    pub fn inc_ip(start: IpAddr, end: IpAddr, exclusions: &HashSet<IpAddr>) -> Option<IpAddr> {
-        match (start, end) {
-            (IpAddr::V4(ip), IpAddr::V4(end)) => ipnet::Ipv4AddrRange::new(ip, end)
-                .map(IpAddr::V4)
-                .filter(|ip| !exclusions.contains(ip))
-                .nth(1),
-            (IpAddr::V6(ip), IpAddr::V6(end)) => ipnet::Ipv6AddrRange::new(ip, end)
-                .map(IpAddr::V6)
-                .filter(|ip| !exclusions.contains(ip))
-                .nth(1),
-            _ => None,
-        }
-    }
-    pub(super) fn into_clientinfo(info: ClientInfo, leased: bool, probation: bool) -> State {
-        if leased {
-            State::Leased(info)
-        } else if probation {
-            State::Probated(info)
-        } else {
-            State::Reserved(info)
-        }
     }
 
     pub async fn update_ip<'a, E>(
@@ -2002,193 +1950,6 @@ mod util_v6 {
 }
 
 #[cfg(test)]
-mod v6_tests {
-    use std::collections::HashSet;
-    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
-    use std::time::{Duration, SystemTime};
-
-    use super::PostgresDb;
-    use crate::{IpState, State, Storage};
-
-    type TestResult = Result<(), Box<dyn std::error::Error>>;
-
-    fn v6(s: &str) -> IpAddr {
-        IpAddr::V6(s.parse::<Ipv6Addr>().unwrap())
-    }
-
-    /// mimics IpManager::reserve_first's two-step: try next_expired (or id
-    /// match), else insert the next available address in the range.
-    async fn alloc(
-        db: &PostgresDb,
-        range: &std::ops::RangeInclusive<IpAddr>,
-        excl: &HashSet<IpAddr>,
-        network: IpAddr,
-        id: &[u8],
-        expires_at: SystemTime,
-    ) -> Result<IpAddr, sqlx::Error> {
-        if let Some(ip) = db
-            .next_expired(
-                range.clone(),
-                network,
-                id,
-                expires_at,
-                Some(IpState::Reserve),
-            )
-            .await?
-        {
-            return Ok(ip);
-        }
-        Ok(db
-            .insert_max_in_range(
-                range.clone(),
-                excl,
-                network,
-                id,
-                expires_at,
-                Some(IpState::Reserve),
-            )
-            .await?
-            .expect("range should have an available address"))
-    }
-
-    #[tokio::test]
-    async fn v6_insert_get_id_release() -> TestResult {
-        let db = PostgresDb::new_test().await?;
-        let addr = v6("2001:db8:1::100");
-        let net = v6("2001:db8:1::");
-        let id: &[u8] = &[0xaa, 0xbb, 0xcc];
-        let exp = SystemTime::now() + Duration::from_secs(60);
-
-        db.insert(addr, net, id, exp, Some(IpState::Lease)).await?;
-
-        match db.get(addr).await? {
-            Some(State::Leased(info)) => {
-                assert_eq!(info.ip(), addr);
-                assert_eq!(info.id(), Some(id));
-                assert_eq!(info.network(), net);
-            }
-            other => panic!("expected Leased, got {other:?}"),
-        }
-        assert_eq!(db.get_id_v6(id).await?, Some(addr));
-
-        // a release carrying the wrong id must NOT delete another client's lease
-        let wrong = db.release_ip(addr, &[0xde, 0xad]).await?;
-        assert!(wrong.is_none(), "wrong-id release returns no info");
-        assert!(
-            db.get(addr).await?.is_some(),
-            "lease must survive wrong-id release"
-        );
-
-        let released = db.release_ip(addr, id).await?;
-        assert!(released.is_some(), "release should return prior info");
-        // The row is retained but expired + unowned (reclaimable) rather than
-        // deleted, so released addresses aren't leaked from the allocator.
-        assert!(
-            matches!(db.get(addr).await?, Some(State::Reserved(_))),
-            "released address is retained as reclaimable, not leased/deleted"
-        );
-        assert!(
-            db.get_id_v6(id).await?.is_none(),
-            "released id no longer maps to a live lease"
-        );
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn v6_next_available_sequential_honors_exclusions() -> TestResult {
-        let db = PostgresDb::new_test().await?;
-        let net = v6("2001:db8:1::");
-        let range = v6("2001:db8:1::100")..=v6("2001:db8:1::110");
-        let exp = SystemTime::now() + Duration::from_secs(60);
-        let mut excl = HashSet::new();
-        excl.insert(v6("2001:db8:1::101"));
-
-        // empty range -> start of range
-        assert_eq!(
-            alloc(&db, &range, &excl, net, &[1], exp).await?,
-            v6("2001:db8:1::100")
-        );
-        // ::101 excluded -> ::102
-        assert_eq!(
-            alloc(&db, &range, &excl, net, &[2], exp).await?,
-            v6("2001:db8:1::102")
-        );
-        // then ::103
-        assert_eq!(
-            alloc(&db, &range, &excl, net, &[3], exp).await?,
-            v6("2001:db8:1::103")
-        );
-
-        // same id returns its existing address (idempotent via next_expired id-match)
-        assert_eq!(
-            alloc(&db, &range, &excl, net, &[2], exp).await?,
-            v6("2001:db8:1::102")
-        );
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn v6_empty_range_skips_excluded_start() -> TestResult {
-        // regression: an empty range whose first address is excluded must not
-        // hand out that excluded address (which would then be rejected and loop).
-        let db = PostgresDb::new_test().await?;
-        let net = v6("2001:db8:1::");
-        let range = v6("2001:db8:1::100")..=v6("2001:db8:1::110");
-        let exp = SystemTime::now() + Duration::from_secs(60);
-        let mut excl = HashSet::new();
-        excl.insert(v6("2001:db8:1::100")); // exclude the start
-
-        assert_eq!(
-            alloc(&db, &range, &excl, net, &[1], exp).await?,
-            v6("2001:db8:1::101")
-        );
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn v6_reserve_then_lease_via_update_unexpired() -> TestResult {
-        let db = PostgresDb::new_test().await?;
-        let addr = v6("2001:db8:1::100");
-        let net = v6("2001:db8:1::");
-        let id: &[u8] = &[9, 9, 9];
-        let exp = SystemTime::now() + Duration::from_secs(60);
-
-        // reserve (offer), then transition to lease (request/reply)
-        db.insert(addr, net, id, exp, Some(IpState::Reserve))
-            .await?;
-        let leased = db
-            .update_unexpired(addr, IpState::Lease, id, exp, Some(id))
-            .await?;
-        assert_eq!(leased, Some(addr));
-        assert!(matches!(db.get(addr).await?, Some(State::Leased(_))));
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn v4_and_v6_coexist_in_separate_tables() -> TestResult {
-        let db = PostgresDb::new_test().await?;
-        let v4 = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 50));
-        let v4net = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 0));
-        let a6 = v6("2001:db8:1::100");
-        let n6 = v6("2001:db8:1::");
-        let exp = SystemTime::now() + Duration::from_secs(60);
-
-        db.insert(v4, v4net, &[1, 2, 3], exp, Some(IpState::Lease))
-            .await?;
-        db.insert(a6, n6, &[4, 5, 6], exp, Some(IpState::Lease))
-            .await?;
-
-        assert!(matches!(db.get(v4).await?, Some(State::Leased(i)) if i.ip() == v4));
-        assert!(matches!(db.get(a6).await?, Some(State::Leased(i)) if i.ip() == a6));
-        assert_eq!(db.get_id_v6(&[4, 5, 6]).await?, Some(a6));
-        assert_eq!(db.get_id(&[1, 2, 3]).await?, Some(v4));
-        // family lookups do not cross tables: v6 id absent from v4 table and vice versa
-        assert_eq!(db.get_id(&[4, 5, 6]).await?, None);
-        assert_eq!(db.get_id_v6(&[1, 2, 3]).await?, None);
-
-        // select_all and count(Lease) include both families
-        assert_eq!(db.select_all().await?.len(), 2);
-        assert_eq!(db.count(IpState::Lease).await?, 2);
-        Ok(())
-    }
+mod conformance {
+    storage_conformance_tests!(crate::postgres::PostgresDb::new_test());
 }
