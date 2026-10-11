@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `insert_max_in_range` no longer skips one usable address when the highest
+  allocated address is itself excluded (#62). Both storage backends share the
+  fix via `ip_manager::common::inc_ip`.
+
 ## [0.8.0] - 2026-10-11
 
 ### Added

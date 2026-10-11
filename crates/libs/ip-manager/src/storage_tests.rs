@@ -1131,23 +1131,28 @@ macro_rules! storage_conformance_tests {
     }
 
     #[tokio::test]
-    async fn insert_max_in_range_quirk_excluded_max() -> TestResult {
+    async fn insert_max_in_range_excluded_max_does_not_skip() -> TestResult {
         let db = $new.await?;
         let net = v4("10.7.0.0");
         let range = v4("10.7.0.100")..=v4("10.7.0.110");
         let mut excl = HashSet::new();
         excl.insert(v4("10.7.0.105"));
+        excl.insert(v4("10.7.0.107"));
         for i in 100..=105u8 {
             db.insert(v4(&format!("10.7.0.{i}")), net, &[i], secs_from_now(60), Some(IpState::Lease))
                 .await?;
         }
-        // max (.105) is itself excluded: `inc_ip` filters the exclusion out and
-        // then takes nth(1), so .106 is skipped. Documented quirk shared by every
-        // backend through `common::inc_ip`; flip this when it is fixed there.
+        // max (.105) is itself excluded (an exclusion added after it was
+        // allocated): the next free address is .106, not .107 (#62)
         let got = db
-            .insert_max_in_range(range, &excl, net, &[0xee], secs_from_now(60), Some(IpState::Reserve))
+            .insert_max_in_range(range.clone(), &excl, net, &[0xee], secs_from_now(60), Some(IpState::Reserve))
             .await?;
-        assert_eq!(got, Some(v4("10.7.0.107")));
+        assert_eq!(got, Some(v4("10.7.0.106")));
+        // and an excluded address above max is still stepped over
+        let got = db
+            .insert_max_in_range(range, &excl, net, &[0xef], secs_from_now(60), Some(IpState::Reserve))
+            .await?;
+        assert_eq!(got, Some(v4("10.7.0.108")));
         Ok(())
     }
 
